@@ -1,0 +1,15 @@
+{
+  "name": "@ace/telemetry",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/gpmf-node.ts"
+  },
+  "dependencies": {
+    "@ace/media360": "workspace:*",
+    "gopro-telemetry": "^1.2.11"
+  }
+}

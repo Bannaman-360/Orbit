@@ -1,0 +1,21 @@
+{
+  "name": "action-cam-editor",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@10.12.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter desktop dev",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "selftest": "pnpm --filter desktop selftest"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@webgpu/types": "^0.1.74",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1"
+  }
+}

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+out/
+release/
+*.log
+.DS_Store
+# Sample footage stays local, never committed
+fixtures/**
+!fixtures/README.md
+selftest-out/

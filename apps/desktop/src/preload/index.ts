@@ -9,6 +9,7 @@ const api = {
   orientation: (path: string, req: unknown) => ipcRenderer.invoke('telemetry:orientation', path, req),
   writeFixture: (name: string, data: Uint8Array) => ipcRenderer.invoke('fixtures:write', name, data),
   capture: (name: string) => ipcRenderer.invoke('selftest:capture', name),
+  writeOut: (name: string, data: Uint8Array) => ipcRenderer.invoke('selftest:write', name, data),
   selftestDone: (report: unknown) => ipcRenderer.invoke('selftest:done', report),
 };
 

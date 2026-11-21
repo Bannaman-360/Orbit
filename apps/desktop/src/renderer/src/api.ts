@@ -11,6 +11,7 @@ export interface AceApi {
   writeFixture(name: string, data: Uint8Array): Promise<string>;
   capture(name: string): Promise<string>;
   selftestDone(report: unknown): Promise<void>;
+  writeOut(name: string, data: Uint8Array): Promise<string>;
 }
 
 declare global {

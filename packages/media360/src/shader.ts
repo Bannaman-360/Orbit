@@ -6,7 +6,7 @@ struct Tile {
   center : vec4f, // xyz = axis, w = stream index
   right  : vec4f, // xyz = axis
   down   : vec4f, // xyz = axis
-  rect   : vec4f, // x, y, size (pixels), unused
+  rect   : vec4f, // x, y, size (pixels), lens-overlap gap in the middle (pixels, 0 = whole face)
 };
 
 struct Uniforms {
@@ -74,10 +74,25 @@ fn sampleSphere(dirIn : vec3f) -> vec4f {
   let es = (4.0 / PI) * atan(s);
   let ev = (4.0 / PI) * atan(v);
   let size = t.rect.z;
+  let gap = t.rect.w;
   // Clamp half a pixel inside the tile so filtering never bleeds into a neighbour.
-  let px = clamp(t.rect.x + (es + 1.0) * 0.5 * size, t.rect.x + 0.5, t.rect.x + size - 0.5);
   let py = clamp(t.rect.y + (ev + 1.0) * 0.5 * size, t.rect.y + 0.5, t.rect.y + size - 0.5);
-  return sampleStreams(t.center.w, vec2f(px, py) / u.stream.xy);
+  let stream = t.center.w;
+  if (gap < 0.5) {
+    let px = clamp(t.rect.x + (es + 1.0) * 0.5 * size, t.rect.x + 0.5, t.rect.x + size - 0.5);
+    return sampleStreams(stream, vec2f(px, py) / u.stream.xy);
+  }
+  // Split face: left half, overlap strip, right half. Each half continues gap/2 pixels
+  // past the midline into the strip; crossfade between them across that band.
+  let half = size * 0.5;
+  let mid = t.rect.x + half + gap * 0.5;
+  let xl = clamp(t.rect.x + (es + 1.0) * half, t.rect.x + 0.5, mid - 0.5);
+  let xr = clamp(t.rect.x + half + gap + es * half, mid + 0.5, t.rect.x + size + gap - 0.5);
+  let band = gap * 0.5 / half; // overlap half-width in es units
+  let w = smoothstep(-band, band, es);
+  let a = sampleStreams(stream, vec2f(xl, py) / u.stream.xy);
+  let b = sampleStreams(stream, vec2f(xr, py) / u.stream.xy);
+  return mix(a, b, w);
 }
 
 fn faceColor(i : u32) -> vec3f {
@@ -100,9 +115,14 @@ fn rawDebug(ndc : vec2f) -> vec4f {
       let t = u.tiles[i];
       if (abs(t.center.w - stream) > 0.5) { continue; }
       let r = t.rect;
-      let inside = p.x >= r.x && p.x < r.x + r.z && p.y >= r.y && p.y < r.y + r.z;
-      let edge = min(min(p.x - r.x, r.x + r.z - p.x), min(p.y - r.y, r.y + r.z - p.y));
+      let tw = r.z + r.w;
+      let inside = p.x >= r.x && p.x < r.x + tw && p.y >= r.y && p.y < r.y + r.z;
+      let edge = min(min(p.x - r.x, r.x + tw - p.x), min(p.y - r.y, r.y + r.z - p.y));
       if (inside && edge < lw) { col = vec4f(faceColor(i), 1.0); }
+      // Dashed lines bounding the lens-overlap strip.
+      let m0 = r.x + r.z * 0.5;
+      let onStrip = r.w > 0.5 && (abs(p.x - m0) < lw * 0.5 || abs(p.x - m0 - r.w) < lw * 0.5);
+      if (inside && onStrip && fract(p.y / 40.0) < 0.5) { col = vec4f(faceColor(i), 1.0); }
     }
   }
   return col;

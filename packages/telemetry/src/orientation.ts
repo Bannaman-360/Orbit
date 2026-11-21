@@ -24,10 +24,12 @@ export type StabilizeMode = 'off' | 'horizon' | 'lock';
 /**
  * How GoPro's sensor axes map onto ours (+x right, +y up, +z forward).
  * Each entry picks a source axis and sign, e.g. ['-y', 'z', 'x'].
- * Default is a guess to be confirmed on real Max / Max 2 footage.
+ * Default confirmed on GoPro Max 2 footage (GRAV has +y pointing down). Note it is
+ * a reflection, not a rotation: GRAV's reported frame is not right-handed in our
+ * convention. Still to be confirmed on the original Max.
  */
 export type AxisMap = [string, string, string];
-export const DEFAULT_AXIS_MAP: AxisMap = ['x', 'y', 'z'];
+export const DEFAULT_AXIS_MAP: AxisMap = ['x', '-y', 'z'];
 
 export function axisMapMatrix(map: AxisMap): Mat3 {
   const m = [0, 0, 0, 0, 0, 0, 0, 0, 0] as Mat3;

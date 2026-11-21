@@ -3,12 +3,14 @@
 // playback. Also opens any real clips in fixtures/ and records what it finds.
 // Output: selftest-out/report.json and selftest-out/*.png at the repo root.
 
-import { DEFAULT_VIEW, TINY_PLANET_VIEW, type RenderMode, type ViewParams } from '@ace/media360';
-import type { CorrectionOptions } from '@ace/telemetry';
+import { DEFAULT_VIEW, TINY_PLANET_VIEW, type EacLayout, type RenderMode, type ViewParams } from '@ace/media360';
+import { DEFAULT_AXIS_MAP, type CorrectionOptions } from '@ace/telemetry';
 import { ace } from './api';
+import { calibrateSession } from './calib';
 import type { Session } from './session';
 
 export interface Controller {
+  setLayout(layout: EacLayout): void;
   generate(): Promise<string>;
   load(path: string): Promise<Session>;
   set(o: { mode?: RenderMode; view?: ViewParams; stab?: CorrectionOptions; showTiles?: boolean }): void;
@@ -108,7 +110,8 @@ export async function runSelftest(ctl: Controller, versions: Record<string, stri
         const tag = f.split(/fixtures[\\/]/)[1]!.replace(/[\\/]/g, '_');
         rs.player.seek(Math.min(2_000_000, rs.player.durationUs / 2));
         if (rs.is360) {
-          for (const [name, mode, view] of VIEWS.filter(([n]) => ['front', 'back', 'raw', 'tiny-planet'].includes(n))) {
+          const realViews: typeof VIEWS = [...VIEWS, ['front-right-edge', '360', { ...DEFAULT_VIEW, yaw: 45, fov: 70 }], ['front-left-edge', '360', { ...DEFAULT_VIEW, yaw: -45, fov: 70 }]];
+          for (const [name, mode, view] of realViews) {
             ctl.set({ mode, view, showTiles: true, stab: { mode: 'off', axisMap: ['x', 'y', 'z'] } });
             await settle(ctl);
             await ace.capture(`${tag}-${name}`);
@@ -117,6 +120,49 @@ export async function runSelftest(ctl: Controller, versions: Record<string, stri
           ctl.set({ mode: 'flat' });
           await settle(ctl);
           await ace.capture(`${tag}-flat`);
+        }
+        if (rs.is360) {
+          // The view from the user's seam report (start of clip, looking forward/up, wide lens).
+          rs.player.seek(0);
+          ctl.set({ mode: '360', view: { yaw: -4.5, pitch: 47.1, roll: 0, fov: 172.5, projection: 'stereographic' }, stab: { mode: 'off', axisMap: DEFAULT_AXIS_MAP } });
+          await settle(ctl);
+          await ace.capture(`${tag}-report-view`);
+          rs.player.seek(Math.min(2_000_000, rs.player.durationUs / 2));
+          // Full-resolution copies of both decoded streams, for inspecting seams.
+          await settle(ctl);
+          for (const [i, d] of rs.player.decoders.entries()) {
+            const f = d.frameAt(rs.player.time);
+            if (!f) continue;
+            const c = new OffscreenCanvas(f.displayWidth, f.displayHeight);
+            c.getContext('2d')!.drawImage(f, 0, 0);
+            const blob = await c.convertToBlob({ type: 'image/png' });
+            await ace.writeOut(`${tag}-stream${i}.png`, new Uint8Array(await blob.arrayBuffer()));
+          }
+          const t0 = performance.now();
+          const cal = await calibrateSession(rs);
+          entry.calibration = { ms: Math.round(performance.now() - t0), score: +cal.score.toFixed(2), baselineScore: +cal.baselineScore.toFixed(2), seam: cal.seam, mirroredTiles: cal.mirroredTiles, edges: cal.edges, tiles: cal.layout.tiles.map((t) => ({ face: t.face, stream: t.stream, x: t.x, gap: t.gap, right: t.right, down: t.down })) };
+          ctl.setLayout(cal.layout);
+          rs.player.seek(Math.min(2_000_000, rs.player.durationUs / 2));
+          for (const [name, mode, view] of VIEWS.filter(([n]) => ['front', 'right', 'back', 'raw', 'tiny-planet', 'seam-corner'].includes(n))) {
+            ctl.set({ mode, view, showTiles: true });
+            await settle(ctl);
+            await ace.capture(`${tag}-cal-${name}`);
+          }
+          ctl.set({ mode: '360', view: { ...DEFAULT_VIEW, yaw: 45, fov: 70 } });
+          await settle(ctl);
+          await ace.capture(`${tag}-cal-front-right-edge`);
+        }
+        if (rs.orientation) {
+          // Horizon leveling check: a level view should show a horizontal horizon at mid-height.
+          for (const sec of [2, 10, 20]) {
+            if (sec * 1e6 >= rs.player.durationUs) continue;
+            rs.player.seek(sec * 1e6);
+            for (const name of ['off', 'horizon'] as const) {
+              ctl.set({ mode: '360', view: { ...DEFAULT_VIEW, fov: 120 }, stab: { mode: name, axisMap: DEFAULT_AXIS_MAP } });
+              await settle(ctl);
+              await ace.capture(`${tag}-level-${sec}s-${name}`);
+            }
+          }
         }
         entry.playback = await measurePlayback(ctl, 3);
         real.push(entry);

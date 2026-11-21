@@ -14,6 +14,7 @@ import { ace } from './api';
 import { openSession, type Session } from './session';
 import { generateSynthetic360 } from './synth';
 import { runSelftest, type Controller } from './selftest';
+import { calibrateSession } from './calib';
 
 const AXES = ['x', '-x', 'y', '-y', 'z', '-z'];
 const fmt = (us: number) => {
@@ -41,6 +42,14 @@ export function App() {
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [stats, setStats] = useState({ renderFps: 0, decoded: [] as number[], dropped: [] as number[], stalls: 0, errors: [] as string[] });
+
+  const [calibration, setCalibration] = useState<string | null>(null);
+
+  function applyLayoutObj(l: EacLayout) {
+    rendererRef.current?.setLayout(l);
+    if (sessionRef.current) sessionRef.current.layout = l;
+    setLayoutText(JSON.stringify(l, null, 1));
+  }
 
   // Hot-path state lives in refs so the render loop never waits on React.
   const live = useRef({ mode, view, stab, showTiles });
@@ -135,6 +144,7 @@ export function App() {
     void ace.info().then((info) => {
       if (!info.selftest) return;
       const ctl: Controller = {
+        setLayout: (l) => applyLayoutObj(l),
         generate: () => generateSynthetic360({}, (p) => setBusy(`Generating synthetic .360… ${Math.round(p * 100)}%`)),
         load: (p) => load(p),
         set: (o) => {
@@ -192,11 +202,25 @@ export function App() {
     try {
       const l = JSON.parse(layoutText) as EacLayout;
       validateLayout(l);
-      rendererRef.current?.setLayout(l);
-      if (sessionRef.current) sessionRef.current.layout = l;
+      applyLayoutObj(l);
       setError(null);
     } catch (e) {
       setError(`Layout: ${e}`);
+    }
+  };
+
+  const autoCalibrate = async () => {
+    const s = sessionRef.current;
+    if (!s) return;
+    setBusy('Calibrating layout from footage…');
+    try {
+      const r = await calibrateSession(s);
+      applyLayoutObj(r.layout);
+      setCalibration(`Edge mismatch ${r.baselineScore.toFixed(1)} → ${r.score.toFixed(1)} (${r.seam}${r.mirroredTiles.length ? `, mirrored: ${r.mirroredTiles.join(', ')}` : ''})`);
+    } catch (e) {
+      setError(`Calibration: ${e}`);
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -318,7 +342,11 @@ export function App() {
           <section>
             <h3>Layout (calibration)</h3>
             <textarea value={layoutText} onChange={(e) => setLayoutText(e.target.value)} spellCheck={false} />
-            <button onClick={applyLayout}>Apply layout</button>
+            <div className="seg">
+              <button onClick={applyLayout}>Apply layout</button>
+              <button onClick={autoCalibrate}>Auto-calibrate from footage</button>
+            </div>
+            {calibration && <p className="muted small">{calibration}</p>}
           </section>
         )}
       </aside>

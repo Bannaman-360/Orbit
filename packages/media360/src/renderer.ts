@@ -74,7 +74,7 @@ export class ReframeRenderer {
     data.set([sw, sh, f0.displayWidth / f0.displayHeight, input.showTiles ? 1 : 0], 16);
     layout?.tiles.forEach((t, i) => {
       const o = 20 + i * 16;
-      data.set([...t.center, t.stream, ...t.right, 0, ...t.down, 0, t.x, t.y, t.size, 0], o);
+      data.set([...t.center, t.stream, ...t.right, 0, ...t.down, 0, t.x, t.y, t.size, t.gap ?? 0], o);
     });
     device.queue.writeBuffer(this.uniforms, 0, data);
 

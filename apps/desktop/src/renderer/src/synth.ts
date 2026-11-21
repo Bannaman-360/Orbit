@@ -5,7 +5,7 @@
 // is available (it does not prove the layout matches GoPro's).
 
 import { BufferTarget, CanvasSource, canEncodeVideo, Mp4OutputFormat, Output, QUALITY_HIGH } from 'mediabunny';
-import { directionToStream, goproMaxLayout, streamToDirection, type Vec3 } from '@ace/media360';
+import { directionToStream, goproMaxLayout, streamToDirection, tileWidth, type Vec3 } from '@ace/media360';
 import { ace } from './api';
 
 const FACE_TINT: Record<string, [number, number, number]> = {
@@ -25,7 +25,7 @@ function paintBase(layout: ReturnType<typeof goproMaxLayout>, stream: number): I
       if (!dir) { d[i] = 255; d[i + 1] = 0; d[i + 2] = 255; d[i + 3] = 255; continue; } // seam: magenta
       const lon = Math.atan2(dir[0], dir[2]) * deg; // 0 = front, +90 = right
       const lat = Math.asin(Math.max(-1, Math.min(1, dir[1]))) * deg;
-      const face = layout.tiles.find((t) => t.stream === stream && x >= t.x && x < t.x + t.size)!.face;
+      const face = layout.tiles.find((t) => t.stream === stream && x >= t.x && x < t.x + tileWidth(t))!.face;
       let [r, g, b] = FACE_TINT[face]!;
       const near = (v: number, step: number, w: number) => Math.abs(v - Math.round(v / step) * step) < w;
       if (near(lon, 15, 0.35) || near(lat, 15, 0.35)) { r *= 0.35; g *= 0.35; b *= 0.35; }
@@ -46,8 +46,8 @@ function drawLabels(ctx: OffscreenCanvasRenderingContext2D, layout: ReturnType<t
   ctx.textBaseline = 'middle';
   for (const t of layout.tiles.filter((t) => t.stream === stream)) {
     const label = t.face.toUpperCase();
-    ctx.strokeText(label, t.x + t.size / 2, t.y + t.size * 0.3);
-    ctx.fillText(label, t.x + t.size / 2, t.y + t.size * 0.3);
+    ctx.strokeText(label, t.x + tileWidth(t) / 2, t.y + t.size * 0.3);
+    ctx.fillText(label, t.x + tileWidth(t) / 2, t.y + t.size * 0.3);
   }
 }
 

@@ -100,6 +100,13 @@ ipcMain.handle('selftest:capture', async (_e, name: string) => {
   return p;
 });
 
+ipcMain.handle('selftest:write', async (_e, name: string, data: Uint8Array) => {
+  await mkdir(SELFTEST_OUT, { recursive: true });
+  const p = path.join(SELFTEST_OUT, path.basename(name));
+  await writeFile(p, data);
+  return p;
+});
+
 ipcMain.handle('selftest:done', async (_e, report: unknown) => {
   await mkdir(SELFTEST_OUT, { recursive: true });
   await writeFile(path.join(SELFTEST_OUT, 'report.json'), JSON.stringify(report, null, 2));

@@ -1,11 +1,12 @@
-// Runs layout calibration on a few moments of the open 360 file.
+// Runs layout calibration on a few moments of a 360 file (used by the self-test).
 
+import { TrackDecoder } from '@ace/engine';
 import { calibrateLayout, type CalibrationResult, type RGBAImage } from '@ace/media360';
-import type { Session } from './session';
+import type { Media } from './media';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function toRGBA(frame: VideoFrame): RGBAImage {
+export function toRGBA(frame: VideoFrame): RGBAImage {
   const c = new OffscreenCanvas(frame.displayWidth, frame.displayHeight);
   const ctx = c.getContext('2d', { willReadFrequently: true })!;
   ctx.drawImage(frame, 0, 0);
@@ -13,31 +14,30 @@ function toRGBA(frame: VideoFrame): RGBAImage {
   return { width: img.width, height: img.height, data: img.data };
 }
 
-/** Seeks to each time, waits for both streams to decode, and grabs RGBA copies. */
-async function grab(session: Session, us: number): Promise<[RGBAImage, RGBAImage]> {
-  const p = session.player;
-  const wasPlaying = p.playing;
-  p.pause();
-  p.seek(us);
-  const deadline = performance.now() + 10_000;
+/** Decodes the frame at `us` from every stream of the media. */
+export async function framesAt(media: Media, us: number): Promise<{ frames: VideoFrame[]; close: () => void }> {
+  const decs = media.tracks.map((t) => new TrackDecoder(media.reader, t));
+  decs.forEach((d) => d.seek(us));
+  const deadline = performance.now() + 15_000;
   for (;;) {
-    for (const d of p.decoders) void d.pump();
-    const frames = p.decoders.map((d) => d.frameAt(p.time));
-    if (frames.every((f) => f)) {
-      const out = frames.map((f) => toRGBA(f!)) as [RGBAImage, RGBAImage];
-      if (wasPlaying) p.play();
-      return out;
+    for (const d of decs) void d.pump();
+    const fr = decs.map((d) => d.frameAt(us));
+    if (fr.every(Boolean)) return { frames: fr as VideoFrame[], close: () => decs.forEach((d) => d.close()) };
+    if (performance.now() > deadline) {
+      decs.forEach((d) => d.close());
+      throw new Error('Timed out waiting for frames');
     }
-    if (performance.now() > deadline) throw new Error('Timed out waiting for frames');
-    await sleep(16);
+    await sleep(5);
   }
 }
 
-/** Samples `count` moments spread across the clip. */
-export async function calibrateSession(session: Session, count = 4): Promise<CalibrationResult> {
-  if (!session.layout) throw new Error('Not a 360 file');
-  const frames: [RGBAImage, RGBAImage][] = [];
-  const dur = session.player.durationUs;
-  for (let i = 0; i < count; i++) frames.push(await grab(session, (dur * (i + 0.5)) / count));
-  return calibrateLayout(session.layout, frames);
+export async function calibrateMedia(media: Media, count = 4): Promise<CalibrationResult> {
+  if (!media.layout) throw new Error('Not a 360 file');
+  const samples: [RGBAImage, RGBAImage][] = [];
+  for (let i = 0; i < count; i++) {
+    const { frames, close } = await framesAt(media, (media.durationUs * (i + 0.5)) / count);
+    samples.push(frames.map(toRGBA) as [RGBAImage, RGBAImage]);
+    close();
+  }
+  return calibrateLayout(media.layout, samples);
 }

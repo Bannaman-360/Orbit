@@ -11,7 +11,7 @@ struct Tile {
 
 struct Uniforms {
   m0 : vec4f, m1 : vec4f, m2 : vec4f,   // rows of the camera→footage matrix
-  params : vec4f,  // aspect, fov (radians), projection (0 rect, 1 stereo), mode (0 360, 1 flat, 2 raw debug)
+  params : vec4f,  // aspect, fov (radians), lens k (see projection.ts), mode (0 360, 1 flat, 2 raw debug)
   stream : vec4f,  // stream width, stream height, frame aspect (flat mode), show tile overlay
   tiles : array<Tile, 6>,
 };
@@ -34,23 +34,36 @@ struct VsOut { @builtin(position) pos : vec4f, @location(0) ndc : vec2f };
 
 const PI = 3.14159265358979;
 
-fn cameraRay(ndc : vec2f) -> vec3f {
+// Lens family r(θ): tan(kθ)/k (k>0), θ (k=0), sin(kθ)/k (k<0). See projection.ts.
+fn lensForward(k : f32, theta : f32) -> f32 {
+  if (abs(k) < 1e-4) { return theta; }
+  if (k > 0.0) { return tan(k * theta) / k; }
+  return sin(k * theta) / k;
+}
+
+// Returns θ, or -1 outside the lens's image circle.
+fn lensInverse(k : f32, r : f32) -> f32 {
+  if (abs(k) < 1e-4) { return r; }
+  if (k > 0.0) { return atan(k * r) / k; }
+  let s = -k * r;
+  if (s > 1.0) { return -1.0; }
+  return asin(s) / -k;
+}
+
+// Camera-space ray, w = 0 when the pixel is outside the image circle.
+fn cameraRay(ndc : vec2f) -> vec4f {
   let aspect = u.params.x;
   let fov = u.params.y;
-  let px = ndc.x * aspect;
-  let py = ndc.y;
-  if (u.params.z < 0.5) {
-    let k = tan(fov * 0.5) / aspect;
-    return normalize(vec3f(px * k, py * k, 1.0));
-  }
-  let k = 2.0 * tan(fov * 0.25) / aspect;
-  let x = px * k;
-  let y = py * k;
+  let k = u.params.z;
+  let R = lensForward(k, fov * 0.5);
+  let x = ndc.x * R;
+  let y = ndc.y * R / aspect;
   let r = length(vec2f(x, y));
-  if (r < 1e-6) { return vec3f(0.0, 0.0, 1.0); }
-  let theta = 2.0 * atan(r * 0.5);
+  if (r < 1e-7) { return vec4f(0.0, 0.0, 1.0, 1.0); }
+  let theta = lensInverse(k, r);
+  if (theta < 0.0 || theta > PI) { return vec4f(0.0, 0.0, 1.0, 0.0); }
   let s = sin(theta) / r;
-  return vec3f(x * s, y * s, cos(theta));
+  return vec4f(x * s, y * s, cos(theta), 1.0);
 }
 
 fn sampleStreams(stream : f32, uv : vec2f) -> vec4f {
@@ -129,11 +142,12 @@ fn rawDebug(ndc : vec2f) -> vec4f {
 }
 
 fn flat(ndc : vec2f) -> vec4f {
-  // Letterbox the first stream into the canvas.
+  // Fit (letterbox) or fill (crop) the first stream into the canvas.
   let canvasAspect = u.params.x;
   let frameAspect = u.stream.z;
   var uv = vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-  if (canvasAspect > frameAspect) {
+  let fill = u.stream.w > 0.5; // crop to fill instead of letterboxing
+  if ((canvasAspect > frameAspect) != fill) {
     uv.x = (uv.x - 0.5) * canvasAspect / frameAspect + 0.5;
   } else {
     uv.y = (uv.y - 0.5) * frameAspect / canvasAspect + 0.5;
@@ -147,8 +161,10 @@ fn flat(ndc : vec2f) -> vec4f {
   let mode = u.params.w;
   if (mode > 1.5) { return rawDebug(in.ndc); }
   if (mode > 0.5) { return flat(in.ndc); }
-  let ray = cameraRay(in.ndc);
+  let ray4 = cameraRay(in.ndc);
+  let ray = ray4.xyz;
   let dir = vec3f(dot(u.m0.xyz, ray), dot(u.m1.xyz, ray), dot(u.m2.xyz, ray));
-  return vec4f(sampleSphere(dir).rgb, 1.0);
+  let c = sampleSphere(dir).rgb;
+  return vec4f(c * ray4.w, 1.0);
 }
 `;

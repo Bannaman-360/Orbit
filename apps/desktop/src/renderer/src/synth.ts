@@ -97,5 +97,26 @@ export async function generateSynthetic360(opts: SynthOptions = {}, onProgress?:
   }
   await output.finalize();
   const buf = (output.target as BufferTarget).buffer!;
-  return ace.writeFixture(`synthetic-${W}x${H}-${codec}.360`, new Uint8Array(buf));
+  const { fixtures } = await ace.info();
+  return ace.writeFile(`${fixtures}/synthetic/synthetic-${W}x${H}-${codec}.360`, new Uint8Array(buf));
+}
+
+/** A short stereo WAV (chord with a beat) for testing the music track. */
+export async function generateTone(seconds = 20, sampleRate = 48000): Promise<string> {
+  const n = seconds * sampleRate;
+  const data = new DataView(new ArrayBuffer(44 + n * 4));
+  const str = (o: number, t: string) => [...t].forEach((c, i) => data.setUint8(o + i, c.charCodeAt(0)));
+  str(0, 'RIFF'); data.setUint32(4, 36 + n * 4, true); str(8, 'WAVE'); str(12, 'fmt ');
+  data.setUint32(16, 16, true); data.setUint16(20, 1, true); data.setUint16(22, 2, true);
+  data.setUint32(24, sampleRate, true); data.setUint32(28, sampleRate * 4, true); data.setUint16(32, 4, true); data.setUint16(34, 16, true);
+  str(36, 'data'); data.setUint32(40, n * 4, true);
+  for (let i = 0; i < n; i++) {
+    const t = i / sampleRate;
+    const beat = Math.exp(-((t * 2) % 1) * 6);
+    const v = 0.18 * beat * (Math.sin(2 * Math.PI * 220 * t) + Math.sin(2 * Math.PI * 277.2 * t) + Math.sin(2 * Math.PI * 329.6 * t));
+    data.setInt16(44 + i * 4, v * 32767, true);
+    data.setInt16(46 + i * 4, v * 32767, true);
+  }
+  const { fixtures } = await ace.info();
+  return ace.writeFile(`${fixtures}/synthetic/test-tone.wav`, new Uint8Array(data.buffer));
 }

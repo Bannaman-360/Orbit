@@ -29,6 +29,9 @@ importers:
       '@ace/media360':
         specifier: workspace:*
         version: link:../../packages/media360
+      '@ace/project':
+        specifier: workspace:*
+        version: link:../../packages/project
       '@ace/telemetry':
         specifier: workspace:*
         version: link:../../packages/telemetry

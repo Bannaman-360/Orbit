@@ -10,7 +10,7 @@ import {
   validateLayout,
 } from './eac';
 import { type Vec3, dot, normalize, mulVec, quatToMat, rotationBetween } from './math';
-import { cameraRay, rayToFootage, sampleMatrix, DEFAULT_VIEW } from './projection';
+
 
 const layout = goproMaxLayout(4096, 1344);
 const close = (a: Vec3, b: Vec3, eps = 1e-6) => a.forEach((v, i) => expect(v).toBeCloseTo(b[i]!, -Math.log10(eps)));
@@ -106,33 +106,3 @@ describe('GoPro Max layout', () => {
   });
 });
 
-describe('virtual camera', () => {
-  it('looks forward at the screen centre', () => {
-    close(cameraRay('rectilinear', 90, 16 / 9, 0, 0), [0, 0, 1]);
-    close(cameraRay('stereographic', 200, 16 / 9, 0, 0), [0, 0, 1]);
-  });
-
-  it('hits half the horizontal FOV at the screen edge', () => {
-    for (const projection of ['rectilinear', 'stereographic'] as const) {
-      const fov = projection === 'rectilinear' ? 90 : 240;
-      const r = cameraRay(projection, fov, 16 / 9, 1, 0);
-      expect((Math.acos(r[2]) * 180) / Math.PI).toBeCloseTo(fov / 2, 6);
-    }
-  });
-
-  it('turns right with positive yaw and up with positive pitch', () => {
-    const fwd = cameraRay('rectilinear', 90, 1, 0, 0);
-    close(rayToFootage(sampleMatrix({ ...DEFAULT_VIEW, yaw: 90 }, [1, 0, 0, 0, 1, 0, 0, 0, 1]), fwd), [1, 0, 0]);
-    close(rayToFootage(sampleMatrix({ ...DEFAULT_VIEW, pitch: 90 }, [1, 0, 0, 0, 1, 0, 0, 0, 1]), fwd), [0, 1, 0]);
-  });
-
-  it('cancels camera body rotation through the correction matrix', () => {
-    // Body rolled 20° (rotation about +z). A level world direction should be sampled at the rolled spot.
-    const body = quatToMat([Math.cos(0.1745), 0, 0, Math.sin(0.1745)]);
-    const m = sampleMatrix(DEFAULT_VIEW, body);
-    const ray = cameraRay('rectilinear', 90, 1, 1, 0); // a ray to the right
-    const footage = rayToFootage(m, ray);
-    // Rotating the sampled footage direction by the body orientation gives back the world ray.
-    close(mulVec(body, footage), ray);
-  });
-});

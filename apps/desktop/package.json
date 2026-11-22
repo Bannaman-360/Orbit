@@ -19,6 +19,7 @@
   "dependencies": {
     "@ace/engine": "workspace:*",
     "@ace/media360": "workspace:*",
+    "@ace/project": "workspace:*",
     "@ace/telemetry": "workspace:*",
     "gopro-telemetry": "^1.2.11",
     "mediabunny": "^1.66.2",

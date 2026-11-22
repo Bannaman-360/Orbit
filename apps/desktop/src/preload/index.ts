@@ -1,16 +1,36 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-const api = {
-  info: () => ipcRenderer.invoke('app:info'),
-  openDialog: () => ipcRenderer.invoke('media:open-dialog'),
-  stat: (path: string) => ipcRenderer.invoke('media:stat', path),
-  read: (path: string, offset: number, length: number) => ipcRenderer.invoke('media:read', path, offset, length),
-  listFixtures: () => ipcRenderer.invoke('media:list-fixtures'),
-  orientation: (path: string, req: unknown) => ipcRenderer.invoke('telemetry:orientation', path, req),
-  writeFixture: (name: string, data: Uint8Array) => ipcRenderer.invoke('fixtures:write', name, data),
-  capture: (name: string) => ipcRenderer.invoke('selftest:capture', name),
-  writeOut: (name: string, data: Uint8Array) => ipcRenderer.invoke('selftest:write', name, data),
-  selftestDone: (report: unknown) => ipcRenderer.invoke('selftest:done', report),
-};
+const inv = (ch: string) => (...args: unknown[]) => ipcRenderer.invoke(ch, ...args);
 
-contextBridge.exposeInMainWorld('ace', api);
+contextBridge.exposeInMainWorld('ace', {
+  info: inv('app:info'),
+  openMediaDialog: inv('dialog:open-media'),
+  openAudioDialog: inv('dialog:open-audio'),
+  openLutDialog: inv('dialog:open-lut'),
+  openProjectDialog: inv('dialog:open-project'),
+  openThemeDialog: inv('dialog:open-theme'),
+  setWindow: inv('ui:window'),
+  onCommand: (f: (cmd: string) => void) => { ipcRenderer.on('menu:command', (_e, cmd: string) => f(cmd)); },
+  onWindowFullscreen: (f: (on: boolean) => void) => { ipcRenderer.on('win:fullscreen', (_e, on: boolean) => f(on)); },
+  saveDialog: inv('dialog:save'),
+  stat: inv('file:stat'),
+  read: inv('file:read'),
+  readAll: inv('file:read-all'),
+  writeFile: inv('file:write'),
+  createFile: inv('file:create'),
+  writeAt: inv('file:write-at'),
+  closeFile: inv('file:close'),
+  proxyPath: inv('proxy:path'),
+  proxyFinish: inv('proxy:finish'),
+  proxyDiscard: inv('proxy:discard'),
+  listFixtures: inv('media:list-fixtures'),
+  orientation: inv('telemetry:orientation'),
+  autosaveLoad: inv('autosave:load'),
+  autosaveSave: inv('autosave:save'),
+  capture: inv('selftest:capture'),
+  selftestMetrics: inv('selftest:metrics'),
+  selftestInput: inv('selftest:input'),
+  selftestOut: inv('selftest:out'),
+  selftestGesture: inv('selftest:gesture'),
+  selftestDone: inv('selftest:done'),
+});

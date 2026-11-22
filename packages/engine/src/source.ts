@@ -45,7 +45,19 @@ export interface MediaInfo {
   videoTracks: VideoTrackInfo[];
   /** GoPro telemetry (GPMF, sample entry 'gpmd'). */
   gpmfTrack?: DataTrackInfo;
+  audioTracks: AudioTrackInfo[];
+  /** Kept for diagnostics. */
   audioTrackCount: number;
+}
+
+export interface AudioTrackInfo {
+  id: number;
+  codec: string;
+  sampleRate: number;
+  channels: number;
+  /** AudioSpecificConfig for AAC (WebCodecs `description`). */
+  description?: Uint8Array;
+  samples: SampleRef[];
 }
 
 const CHUNK = 4 * 1024 * 1024;
@@ -102,8 +114,32 @@ export async function openMedia(reader: ByteReader): Promise<MediaInfo> {
     created: movie.created,
     videoTracks,
     gpmfTrack: gp ? { id: gp.id, codec: gp.codec, name: gp.name, samples: refs(gp.id) } : undefined,
+    audioTracks: movie.audioTracks.map((t) => ({
+      id: t.id,
+      codec: t.codec,
+      sampleRate: t.audio?.sample_rate ?? 48000,
+      channels: t.audio?.channel_count ?? 2,
+      description: audioDescription(file, t.id),
+      samples: refs(t.id),
+    })),
     audioTrackCount: movie.audioTracks.length,
   };
+}
+
+/** AAC AudioSpecificConfig from the esds box (decoder-specific info). */
+function audioDescription(file: ReturnType<typeof createFile>, trackId: number): Uint8Array | undefined {
+  try {
+    const trak = file.getTrackById(trackId);
+    for (const entry of trak.mdia.minf.stbl.stsd.entries) {
+      // esds → ES_Descriptor → DecoderConfigDescriptor → DecoderSpecificInfo
+      const esd = (entry as unknown as { esds?: { esd?: { descs?: { descs?: { data?: Uint8Array }[] }[] } } }).esds?.esd;
+      const data = esd?.descs?.[0]?.descs?.[0]?.data;
+      if (data) return new Uint8Array(data);
+    }
+  } catch {
+    /* fall through */
+  }
+  return undefined;
 }
 
 /** Serialises the avcC / hvcC box payload that WebCodecs needs as `description`. */

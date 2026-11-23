@@ -68,6 +68,50 @@ export interface AudioTrackInfo {
 
 const CHUNK = 4 * 1024 * 1024;
 
+/**
+ * Hides tracks listed one tiny sample at a time (uncompressed sound: the GoPro Max's 4-channel
+ * spatial audio is 22 million 12-byte samples in a 7-minute file). The parser would build an
+ * object for each — gigabytes and seconds — and the app doesn't use them. The box is renamed
+ * `free`, which every reader skips. Changes `moov` in place and returns it.
+ */
+export function skipPerSampleTracks(moov: Uint8Array, limit = 1_000_000): Uint8Array {
+  const v = new DataView(moov.buffer, moov.byteOffset, moov.byteLength);
+  const type = (at: number) => String.fromCharCode(moov[at]!, moov[at + 1]!, moov[at + 2]!, moov[at + 3]!);
+  let pos = 8;
+  while (pos + 8 <= moov.byteLength) {
+    const size = v.getUint32(pos);
+    if (size < 8 || pos + size > moov.byteLength) break;
+    if (type(pos + 4) === 'trak') {
+      for (let k = pos + 8; k + 16 <= pos + size; k++) {
+        if (moov[k] !== 0x73 || type(k) !== 'stsz') continue; // 's'
+        const sampleSize = v.getUint32(k + 8), count = v.getUint32(k + 12);
+        if (sampleSize > 0 && count > limit) moov.set([0x66, 0x72, 0x65, 0x65], pos + 4); // 'free'
+        break;
+      }
+    }
+    pos += size;
+  }
+  return moov;
+}
+
+/** The file's top-level boxes (type, where, how big), read from their 8- or 16-byte headers. */
+export async function topLevelBoxes(reader: ByteReader): Promise<{ type: string; offset: number; size: number }[]> {
+  const out: { type: string; offset: number; size: number }[] = [];
+  let pos = 0;
+  while (pos + 8 <= reader.size && out.length < 1000) {
+    const h = await reader.read(pos, Math.min(16, reader.size - pos));
+    const v = new DataView(h.buffer, h.byteOffset, h.byteLength);
+    let size = v.getUint32(0);
+    const type = String.fromCharCode(h[4]!, h[5]!, h[6]!, h[7]!);
+    if (size === 1) { if (h.byteLength < 16) break; size = Number(v.getBigUint64(8)); }
+    else if (size === 0) size = reader.size - pos;
+    if (size < 8 || pos + size > reader.size) break; // cut off: the rest is unreadable
+    out.push({ type, offset: pos, size });
+    pos += size;
+  }
+  return out;
+}
+
 export async function openMedia(reader: ByteReader): Promise<MediaInfo> {
   const file = createFile();
   // Cameras with a GPS fix write their position under a name (©xyz) that isn't plain ASCII.
@@ -76,6 +120,21 @@ export async function openMedia(reader: ByteReader): Promise<MediaInfo> {
   let error: unknown = null;
   file.onReady = (m) => (info = m);
   file.onError = (_module: string, message: string) => (error = new Error(message));
+
+  const feed = (bytes: Uint8Array, at: number, last: boolean) =>
+    file.appendBuffer(MP4BoxBuffer.fromArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, at), last);
+  // Fast path: find the index (moov) from the top-level box headers and read only it. Cameras
+  // write it after the video, and reading through gigabytes to reach it took most of a minute.
+  const boxes = await topLevelBoxes(reader);
+  const moov = boxes.find((b) => b.type === 'moov');
+  if (moov && moov.size < 512 * 1024 * 1024) {
+    // Small boxes before it whole; big ones (the video) just their header, which the parser skips.
+    for (const b of boxes) {
+      if (b === moov) break;
+      feed(await reader.read(b.offset, b.size < 1024 * 1024 ? b.size : 16), b.offset, false);
+    }
+    feed(skipPerSampleTracks(await reader.read(moov.offset, moov.size)), moov.offset, true);
+  }
 
   let pos = 0;
   while (!info && !error && pos < reader.size) {

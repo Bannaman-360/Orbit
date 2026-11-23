@@ -2,7 +2,8 @@
 // transitions between them), audio track (music and detached clip audio), playhead.
 // Drag clip edges to trim, drag a clip to reorder, drag overlays/audio to move them.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { Icon } from './ui/Icon';
 import { usePrefs } from './ui/prefs';
 import {
   assignLanes, audioSpan, clipDuration, clipStarts, GAUGES, hasRamp, localAt, mediaAt, mediaToTimeline, speedRange, timelineDuration, trackExtent, trackRange, transitionUs, TRANSITIONS,
@@ -136,7 +137,7 @@ export function TimelineView(p: Props) {
         if (e.ctrlKey || e.metaKey) { e.preventDefault(); setPps((v) => Math.max(4, Math.min(400, v * Math.exp(-e.deltaY * 0.002)))); }
       }}>
         <div className="timeline-inner" style={{ width }}>
-          <div className="ruler" onPointerDown={(e) => {
+          <div className="ruler" style={{ '--minor': `${(rulerStep * pps) / (rulerStep === 0.25 || rulerStep >= 60 ? 5 : 4)}px` } as CSSProperties} onPointerDown={(e) => {
             seekFromEvent(e.clientX);
             const move = (ev: PointerEvent) => seekFromEvent(ev.clientX);
             const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
@@ -149,14 +150,14 @@ export function TimelineView(p: Props) {
           </div>
 
           <div className="track overlay-track" style={{ height: ovRows * OV_LANE }} onPointerDown={(e) => { if (e.target === e.currentTarget) p.onSelect(null); }}>
-            {tl.overlays.length === 0 && <div className="track-empty">Text &amp; gauges: use “T Text” or “Gauges” above</div>}
+            {tl.overlays.length === 0 && <div className="track-empty"><Icon name="text" size={12} />Titles and gauges you add appear here</div>}
             {tl.overlays.map((o) => (
               <OverlayBlock key={o.id} {...p} o={o} lane={ovLanes.get(o.id) ?? 0} left={x(o.startUs)} widthPx={Math.max(8, x(o.endUs - o.startUs))} pps={pps} duration={duration} />
             ))}
           </div>
 
           <div className="track video-track" ref={videoTrack} onPointerDown={(e) => { if (e.target === e.currentTarget) seekFromEvent(e.clientX); }}>
-            {tl.clips.length === 0 && <div className="track-empty">Drop clips here from the media bin (or double-click them)</div>}
+            {tl.clips.length === 0 && <div className="track-empty"><Icon name="media" size={14} />Drag clips here from Media, or double-click one</div>}
             {tl.clips.map((c, i) => (
               <ClipBlock key={c.id} {...p} index={i} left={x(starts[i]!)} widthPx={x(clipDuration(c))} pps={pps} startUs={starts[i]!} trackH={trackH} view={view} />
             ))}
@@ -195,14 +196,14 @@ export function TimelineView(p: Props) {
           </div>
 
           <div className="track audio-track" style={{ height: auRows * LANE + 4 }} onPointerDown={(e) => { if (e.target === e.currentTarget) p.onSelect(null); }}>
-            {tl.audio.length === 0 && <div className="track-empty">Audio: “Add music” above, or “Detach audio” on a clip</div>}
+            {tl.audio.length === 0 && <div className="track-empty"><Icon name="music" size={12} />Music and detached sound go here</div>}
             {tl.audio.map((a) => {
               const span = audioSpan(tl, a);
               return <AudioBlock key={a.id} {...p} id={a.id} lane={auLanes.get(a.id) ?? 0} left={x(span.start)} widthPx={Math.max(8, x(span.end - span.start))} pps={pps} />;
             })}
           </div>
 
-          <div className="playhead" style={{ left: x(p.time) }} />
+          <div className="playhead" style={{ left: x(p.time) }} data-time={fmtTime(p.time)} />
         </div>
       </div>
       {p.toolbarAt === 'bottom' && p.toolbar}
@@ -420,7 +421,7 @@ function OverlayBlock(p: Props & { o: Overlay; lane: number; left: number; width
       onPointerDown={(e) => { orig.current = o; p.onSelect({ kind: 'overlay', id: o.id }); move(e); }}
       title={`${name} · ${fmtTime(o.startUs)}–${fmtTime(o.endUs)}`}
     >
-      <span>{o.kind === 'text' ? 'T' : '◔'} {name}</span>
+      <Icon name={o.kind === 'text' ? 'text' : 'gauge'} size={11} /><span>{name}</span>
       <div className="trim left" onPointerDown={(e) => { orig.current = o; p.onSelect({ kind: 'overlay', id: o.id }); trimLeft(e); }} />
       <div className="trim right" onPointerDown={(e) => { orig.current = o; p.onSelect({ kind: 'overlay', id: o.id }); trimRight(e); }} />
     </div>
@@ -453,7 +454,7 @@ function AudioBlock(p: Props & { id: string; lane: number; left: number; widthPx
       style={{ left: p.left, width: p.widthPx, top: p.lane * LANE + 2, height: LANE - 3 }}
       onPointerDown={(e) => { orig.current = a; p.onSelect({ kind: 'audio', id: a.id }); move(e); }}
     >
-      <span>{a.linkedClipId ? '🎙' : '♪'} {baseName(a.path)}</span>
+      <Icon name={a.linkedClipId ? 'detach' : 'music'} size={12} /><span>{baseName(a.path)}</span>
       <div className="trim left" onPointerDown={(e) => { orig.current = a; p.onSelect({ kind: 'audio', id: a.id }); trimLeft(e); }} />
       <div className="trim right" onPointerDown={(e) => { orig.current = a; p.onSelect({ kind: 'audio', id: a.id }); trimRight(e); }} />
     </div>

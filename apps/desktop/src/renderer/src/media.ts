@@ -357,3 +357,25 @@ export async function loadMusic(path: string) {
   musicNow.set(path, m);
   return m;
 }
+
+/**
+ * Why a file can't be opened, in words a rider understands (the raw error is for the log).
+ * Looks at the file itself: empty, cut off while recording, sound only, or not a video at all.
+ */
+export async function whyCannotOpen(path: string, e: unknown): Promise<string> {
+  const raw = String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, '');
+  if (/no video track/.test(raw)) return 'This file has sound only. To use it, choose Add Music.';
+  const codec = raw.match(/cannot decode (\S+)/)?.[1];
+  if (codec) return `This computer can’t play this kind of video (${codec}).`;
+  try {
+    const { size } = await ace.stat(path);
+    if (!size) return 'The file is empty (0 bytes): the copy probably didn’t finish. Copy it from the card again.';
+    const head = await ace.read(path, 0, Math.min(size, 64));
+    const tag = new TextDecoder('latin1').decode(head.slice(4, 8));
+    if (tag === 'ftyp' && /moov|movie header/i.test(raw)) {
+      return 'This recording wasn’t finished: the camera stopped before saving it (a flat battery, or the card taken out while recording). Put the card back in the camera and switch it on — GoPro cameras repair such files by themselves — then import it again.';
+    }
+    if (!['ftyp', 'moov', 'mdat', 'free', 'wide', 'skip'].includes(tag)) return 'This isn’t a video the app can open.';
+  } catch { /* can't look inside: say what happened */ }
+  return `It can’t be opened: ${raw}`;
+}

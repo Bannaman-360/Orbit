@@ -6,7 +6,8 @@ import path from 'node:path';
 import { chaptersOf } from '@ace/engine/src/chapters';
 import { extractOrientation, type GpmfRequest } from '@ace/telemetry/node';
 import { setupImporter } from './importer';
-import { setupEncoder } from './encoder';
+import { deepEncoders, setupEncoder } from './encoder';
+import { log, setupDiagnostics } from './diagnostics';
 import { AUDIO_EXT, findImportable, hasExt, VIDEO_EXT } from './importPaths';
 
 const SELFTEST = process.argv.includes('--selftest');
@@ -34,6 +35,7 @@ else {
     try { cpSync(before, now, { recursive: true }); } catch { /* start fresh */ }
   }
 }
+setupDiagnostics({ dir: path.join(app.getPath('userData'), 'logs'), window: () => win, encoders: () => deepEncoders(), quiet: SELFTEST });
 if (HIDDEN) {
   if (process.platform === 'darwin') app.setActivationPolicy('prohibited');
   // A hidden window must keep drawing at full speed.
@@ -402,7 +404,7 @@ function buildMenu() {
     { label: 'Edit', submenu: [it('Undo', 'undo'), it('Redo', 'redo'), sep, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }, sep, it('Split', 'split'), it('Split and Delete Left', 'delLeft'), it('Split and Delete Right', 'delRight'), it('Duplicate Clip', 'duplicate'), it('Delete', 'delete'), sep, it('Add Keyframe', 'keyframe'), it('Add Text', 'text'), it('Track Subject…', 'track')] },
     { label: 'View', submenu: [it('Media', 'toggleMedia'), it('Inspector', 'toggleInspector'), it('Timeline', 'toggleTimeline'), sep, it('Customize…', 'customize'), it('Arrange Interface', 'arrange'), it('Undo Interface Change', 'undoUi'), sep, it('Show Before / After', 'compare'), it('Full-Screen Preview', 'fullscreen'), { role: 'togglefullscreen', label: 'Enter Full Screen Window' }, ...(app.isPackaged ? [] : [sep, { role: 'reload' }, { role: 'toggleDevTools' }] as MenuItemConstructorOptions[])] },
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, ...(MAC ? [sep, { role: 'front' }] as MenuItemConstructorOptions[] : [])] },
-    { label: 'Help', submenu: [it('Show Tour Again', 'tour'), it('Welcome Screen', 'welcome'), sep, it('Keyboard Shortcuts', 'shortcuts')] },
+    { label: 'Help', submenu: [it('Show Tour Again', 'tour'), it('Welcome Screen', 'welcome'), sep, it('Keyboard Shortcuts', 'shortcuts'), sep, it('Report a Problem…', 'report')] },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -441,6 +443,8 @@ function createWindow() {
   win.on('leave-full-screen', () => win?.webContents.send('win:fullscreen', false));
   win.webContents.on('console-message', (e) => {
     if (SELFTEST) console.log(`[renderer] ${e.message}`);
+    // Uncaught errors, failed promises and GPU errors in the window all arrive here.
+    if (e.level === 'error') log('error', 'window', e.message);
   });
   if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);
   else void win.loadFile(path.join(__dirname, '../renderer/index.html'));

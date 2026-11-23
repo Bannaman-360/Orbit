@@ -1,13 +1,13 @@
 {
   "name": "action-cam-editor",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.0-beta.1",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "selftest": "electron-vite build && electron . --selftest",
-    "dist:mac": "electron-vite build && electron-builder --mac --universal",
+    "dist:mac": "electron-vite build && electron-builder --mac --arm64 --x64",
     "dist:win": "electron-vite build && electron-builder --win --x64"
   },
   "devDependencies": {

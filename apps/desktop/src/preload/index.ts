@@ -4,6 +4,10 @@ const inv = (ch: string) => (...args: unknown[]) => ipcRenderer.invoke(ch, ...ar
 
 contextBridge.exposeInMainWorld('ace', {
   info: inv('app:info'),
+  logError: (source: string, message: string) => ipcRenderer.send('log:error', source, message),
+  reportText: inv('report:text'),
+  reportCopy: inv('report:copy'),
+  reportReveal: inv('report:reveal'),
   openMediaDialog: inv('dialog:open-media'),
   importPaths: inv('media:import-paths'),
   /** Where dropped files are on disk (files from the desktop only). */

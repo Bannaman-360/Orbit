@@ -15,6 +15,11 @@ export interface AceApi {
   openMediaDialog(): Promise<FoundMedia>;
   importPaths(paths: string[]): Promise<FoundMedia>;
   /** 10-bit HEVC / ProRes: which this computer can write (by encoder name). */
+  /** Notes a problem in the log (Help → Report a Problem). */
+  logError(source: string, message: string): void;
+  reportText(gpu: string): Promise<string>;
+  reportCopy(text: string): Promise<void>;
+  reportReveal(): Promise<void>;
   encoderAvailable(): Promise<{ hevc10?: string; prores?: string }>;
   encoderStart(o: { path: string; width: number; height: number; fps: number; kind: 'hevc10' | 'prores'; bitrate: number; layout: 'p010le' | 'p210le'; audio?: Uint8Array }): Promise<number>;
   encoderFrame(id: number, data: Uint8Array): Promise<void>;

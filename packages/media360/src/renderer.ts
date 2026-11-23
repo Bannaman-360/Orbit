@@ -85,7 +85,12 @@ export function sharedDevice(): Promise<GPUDevice> {
       const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
       if (!adapter) throw new Error('No WebGPU adapter');
       const device = await adapter.requestDevice();
-      void device.lost.then(() => (devicePromise = null));
+      void device.lost.then((info) => {
+        devicePromise = null;
+        if (info.reason !== 'destroyed') console.error(`GPU device lost: ${info.message || info.reason}`);
+      });
+      // Shader and validation mistakes would otherwise only be a warning nobody sees.
+      device.addEventListener('uncapturederror', (e) => console.error(`GPU error: ${(e as GPUUncapturedErrorEvent).error.message}`));
       return device;
     })();
     devicePromise.catch(() => (devicePromise = null));

@@ -22,7 +22,7 @@ import { angleBetween, directionAt, trackSubject } from './tracker';
 import { InspectorPanel, SelectionPanel, type InspectorProps } from './Inspector';
 import { MediaBin, type BinItem } from './MediaBin';
 import { AppMenu, ShortcutsDialog } from './Menu';
-import { getMedia, loadMusic, mediaNow, wholeRecordings } from './media';
+import { getMedia, loadMusic, mediaNow, whyCannotOpen, wholeRecordings } from './media';
 import { ensureProxies, onProxyChange, PREVIEW_LEVELS, setPreviewLevel, type PreviewLevel } from './proxy';
 import { drawOverlays, hitOverlay, layerCss } from './overlayRender';
 import { runSelftest, type EditorApi } from './selftest';
@@ -33,6 +33,7 @@ import { Bar, dragItem, type ToolItem } from './ui/Bars';
 import { comboLabel, comboOf, combosOf, COMMANDS, keyOf, KeyMatcher } from './ui/commands';
 import { ArrangeBar, Customize, reopenPanel, type CustomizePage } from './ui/Customize';
 import { Tour, Welcome } from './Tour';
+import { ReportProblem } from './ReportProblem';
 import { Dock, type PanelDef } from './ui/Dock';
 import { closePanel, openPanels } from './ui/dockModel';
 import { Icon } from './ui/Icon';
@@ -138,7 +139,9 @@ export function App() {
           setBin((b) => b.map((x) => (x.path === path ? { path, media } : x)));
           ensureProxies([media]);
         } catch (e) {
-          setBin((b) => b.map((x) => (x.path === path ? { path, error: String(e) } : x)));
+          ace.logError('import', `${baseName(path)}: ${String(e)}`);
+          const why = await whyCannotOpen(path, e);
+          setBin((b) => b.map((x) => (x.path === path ? { path, error: why } : x)));
         }
       }),
     );
@@ -182,7 +185,9 @@ export function App() {
   const [compare, setCompare] = useState(false);
   const compareRef = useRef(compare);
   compareRef.current = compare;
-  const [error, setError] = useState<string | null>(null);
+  const [error, showError] = useState<string | null>(null);
+  // Every problem the user is told about also goes in the log (Help → Report a Problem).
+  const setError = useCallback((e: string | null) => { if (e) ace.logError('shown', e); showError(e); }, []);
   const [busy, setBusy] = useState<string | null>(null);
   const [sel, setSel] = useState<Selection>(null);
   const selRef = useRef(sel);
@@ -1012,6 +1017,7 @@ export function App() {
 
   // --- Keyboard ----------------------------------------------------------------------------------
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
   const [customize, setCustomize] = useState<CustomizePage | null>(null);
   const arranging = useArranging();
   const shortcuts = usePrefs((p) => p.shortcuts);
@@ -1028,7 +1034,7 @@ export function App() {
     duplicate: () => { if (clip) commit(duplicateClip(tlRef.current, clip.id)); }, delete: deleteCurrent, undo, redo,
     import: () => void importDialog(), card: () => setCardOpen(true), music: () => void addMusic(), open: () => void openProject(), save: () => void saveProject(), export: () => { if (tlRef.current.clips.length) setExportOpen(true); }, grab: () => void frameGrab(),
     customize: () => setCustomize((v) => (v ? null : 'themes')), arrange: () => { setArranging(!isArranging()); setCustomize(null); }, undoUi: undoPrefs, toggleMedia: () => togglePanel(['media']),
-    toggleInspector: () => togglePanel(['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection']), toggleTimeline: () => togglePanel(['timeline']), compare: () => setCompare(true), sections: toggleAllSections, speedline: toggleSpeedLines, jumps: toggleJumpMarks, shortcuts: () => setShortcutsOpen(true), tour: () => { setWelcome(false); setTourOpen(true); }, welcome: () => setWelcome(true),
+    toggleInspector: () => togglePanel(['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection']), toggleTimeline: () => togglePanel(['timeline']), compare: () => setCompare(true), sections: toggleAllSections, speedline: toggleSpeedLines, jumps: toggleJumpMarks, shortcuts: () => setShortcutsOpen(true), report: () => setReportOpen(true), tour: () => { setWelcome(false); setTourOpen(true); }, welcome: () => setWelcome(true),
   };
   const runRef = useRef(run);
   runRef.current = run;
@@ -1577,6 +1583,7 @@ export function App() {
       {exportOpen && <ExportDialog timeline={tl} onClose={() => setExportOpen(false)} />}
       {cardOpen && <ImportWindow onClose={() => setCardOpen(false)} />}
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
+      {reportOpen && <ReportProblem onClose={() => setReportOpen(false)} />}
       {welcome && <Welcome name={appName} onClose={closeWelcome} onImport={run.import!} onCard={run.card!} onOpen={run.open!} onTour={() => setTourOpen(true)} />}
       {tourOpen && <Tour onClose={() => setTourOpen(false)} />}
     </div>

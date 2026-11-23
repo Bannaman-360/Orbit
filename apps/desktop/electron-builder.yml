@@ -1,4 +1,4 @@
-# Installers: a .dmg for Mac (Apple Silicon and Intel in one app), and for Windows an installer
+# Installers: a .dmg each for Apple Silicon and Intel Macs, and for Windows an installer
 # plus a portable .exe. Build with `pnpm dist:mac` (on a Mac) or `pnpm dist:win`.
 #
 # Signing is off for now. To turn it on later:
@@ -38,13 +38,11 @@ mac:
   icon: build/icon.icns
   target:
     - target: dmg
-      arch: universal
+      arch: [arm64, x64]
   # Ad-hoc signature: Apple Silicon Macs need one to run the app at all. A Developer ID replaces it.
   identity: "-"
   hardenedRuntime: false
   notarize: false
-  # Both halves of the universal app carry the same (universal) ffmpeg.
-  x64ArchFiles: "Contents/Resources/ffmpeg/ffmpeg"
   extendInfo:
     NSHighResolutionCapable: true
     LSMinimumSystemVersion: "12.0"
@@ -55,7 +53,7 @@ dmg:
   contents:
     - { x: 150, y: 180 }
     - { x: 410, y: 180, type: link, path: /Applications }
-  artifactName: Action-Cam-Editor-${version}-mac.${ext}
+  artifactName: Action-Cam-Editor-${version}-mac-${arch}.${ext}
 
 win:
   icon: build/icon.png

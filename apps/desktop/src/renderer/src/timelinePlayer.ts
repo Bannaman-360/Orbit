@@ -3,10 +3,11 @@
 // it is needed so cuts and transitions are seamless.
 
 import { TrackDecoder } from '@ace/engine';
-import { clipStarts, layersAt, timelineDuration, type Located, type Timeline, type TimelineClip, type Transition } from '@ace/project';
+import { clipStarts, layersAt, speedAt, timelineDuration, type Located, type Timeline, type TimelineClip, type Transition } from '@ace/project';
 import type { EacLayout } from '@ace/media360';
 import { mediaNow, type Media } from './media';
 import { previewSource, type PreviewSource } from './proxy';
+import { ReverseCache } from './reverseCache';
 
 interface Slot {
   clipId: string;
@@ -22,6 +23,17 @@ interface Slot {
   refineTo?: number;
   /** The previous target (to tell which way the pointer is moving). */
   lastTarget: number;
+  /** Share of recent refreshes its pictures weren't ready for. */
+  behind: number;
+  /** performance.now() of its last restart. */
+  since: number;
+  /** Pictures kept for dragging backward (made when first dragged backward). */
+  reverse?: ReverseCache;
+  /** When the kept pictures were first missed while dragging back. */
+  backSince?: number;
+  /** How fast the pointer goes back (media µs per ms), and where it was. */
+  backSpeed?: number;
+  backLast?: { t: number; us: number };
 }
 
 export interface LayerFrame {
@@ -50,12 +62,16 @@ export interface TickResult {
 }
 
 const PREROLL_US = 1_200_000;
+/** Speeds this computer turned out not to decode a source at. */
+const tooFast = new WeakMap<PreviewSource, number>();
 /** How long a scrub restart may take before a newer target replaces it. */
 const RESTART_WAIT_MS = 150;
 /** No new seek for this long = the user stopped dragging. */
 const DRAG_PAUSE_MS = 120;
 
 export class TimelinePlayer {
+  /** Keeps pictures for dragging backward (off: only keyframes, as before; for comparing). */
+  static keepBackward = true;
   time = 0;
   playing = false;
   stalls = 0;
@@ -63,6 +79,8 @@ export class TimelinePlayer {
   private stallStart: number | null = null;
   private slots = new Map<string, Slot>();
   private lastSeekAt = 0;
+  /** How long a screen refresh takes (ms). */
+  private refreshMs = 1000 / 60;
   /** Called when playback starts, stops, seeks or crosses a cut (audio follows). */
   onTransport?: (playing: boolean, time: number) => void;
 
@@ -109,11 +127,12 @@ export class TimelinePlayer {
       s = undefined;
     }
     if (!s) {
-      s = { clipId: clip.id, media, source, decoders: source.tracks.map((t) => new TrackDecoder(source.reader, t)), seekedTo: Number.NaN, shownTs: -1, lastTarget: Number.NaN };
+      s = { clipId: clip.id, media, source, decoders: source.tracks.map((t) => new TrackDecoder(source.reader, t)), seekedTo: Number.NaN, shownTs: -1, lastTarget: Number.NaN, behind: 0, since: 0 };
       this.slots.set(clip.id, s);
     }
     const dragging = !this.playing && performance.now() - this.lastSeekAt < DRAG_PAUSE_MS;
     if (Number.isNaN(s.seekedTo)) {
+      s.since = performance.now();
       // Scrubbing: while a restart hasn't shown its first frame yet, don't restart again on
       // every tiny pointer move (that would never show anything); retarget after it lands
       // or after RESTART_WAIT_MS.
@@ -150,6 +169,7 @@ export class TimelinePlayer {
   private drop(id: string) {
     const s = this.slots.get(id);
     if (s) for (const d of s.decoders) d.close();
+    s?.reverse?.close();
     this.slots.delete(id);
   }
 
@@ -177,17 +197,60 @@ export class TimelinePlayer {
     }
     for (const id of [...this.slots.keys()]) if (!keep.has(id)) this.drop(id);
 
+    let holding = false;
     const layers: (LayerFrame | null)[] = visible.map((v) => {
       const media = mediaNow(v.clip.mediaPath);
       if (!media) return null;
+      const speed = speedAt(v.clip, v.mediaUs);
+      // Playing too fast to decode everything (see below): keyframes only, until it slows down.
+      const known = this.slots.get(v.clip.id);
+      const skim = this.playing && !!known && speed > (tooFast.get(known.source) ?? Infinity);
+      if (known && known.decoders[0]!.skim !== skim) {
+        for (const d of known.decoders) if (skim) d.startSkim(); else if (this.playing) d.endSkim(v.mediaUs, speed * 150_000); else d.endSkim(v.mediaUs, Infinity);
+        if (!this.playing) known.seekedTo = Number.NaN;
+      }
       const slot = this.slotFor(v.clip, media, v.mediaUs);
-      for (const d of slot.decoders) void d.pump();
+      for (const d of slot.decoders) {
+        d.pace = this.playing ? speed * this.refreshMs * 1000 : 0;
+        void d.pump();
+      }
       // Paused (scrubbing / stepping): show the nearest decoded frame at or before the target
       // while decoding catches up. Playing: only the exact frame.
       // While dragging backward, stay on the keyframe (frames decoded after it would creep forward).
       const at = slot.refineTo !== undefined ? Math.min(v.mediaUs, slot.seekedTo) : v.mediaUs;
+      // Dragging backward through the original: the pictures kept for that, when they are there.
+      if (slot.refineTo !== undefined && slot.source.level === 1 && TimelinePlayer.keepBackward) {
+        slot.reverse ??= new ReverseCache(media);
+        const now = performance.now();
+        if (slot.backLast && now > slot.backLast.t) slot.backSpeed = (slot.backSpeed ?? 0) * 0.8 + (Math.max(0, slot.backLast.us - v.mediaUs) / (now - slot.backLast.t)) * 0.2;
+        slot.backLast = { t: now, us: v.mediaUs };
+        const kept = slot.reverse.frameAt(v.mediaUs);
+        // Never later than what is up (that would pull the picture the wrong way).
+        if (kept && (slot.shownTs < 0 || kept[0]!.timestamp <= slot.shownTs + 500)) {
+          slot.shownTs = kept[0]!.timestamp;
+          slot.backSince = 0;
+          return { clip: v.clip, index: v.index, media, mediaUs: v.mediaUs, frames: kept, layout: slot.reverse.layout, level: slot.reverse.level };
+        }
+        // Not made yet: keep what is up for a moment rather than jump to the keyframe.
+        slot.backSince ||= performance.now();
+        // (Unless the pointer goes back faster than stretches can be made: then keyframes, as before.)
+        const outrun = (slot.backSpeed ?? 0) * slot.reverse.buildMs * 1.2 > slot.reverse.stretchUs;
+        if (!outrun && performance.now() - slot.backSince < 180) { holding = true; return null; }
+      } else {
+        slot.backSince = 0;
+        slot.backLast = undefined;
+        slot.backSpeed = 0;
+        slot.reverse?.idle();
+      }
       const frames = slot.decoders.map((d) => (this.playing ? d.frameAt(at) : d.frameAtOrBefore(at)));
       if (frames[0]) slot.shownTs = frames[0].timestamp;
+      // Can't keep up? (Not counting the moment it takes to get going.)
+      if (this.playing && speed > 1.2 && performance.now() - slot.since > 350) {
+        slot.behind += ((frames.every(Boolean) ? 0 : 1) - slot.behind) * 0.1;
+        if (slot.behind > 0.22 && !slot.decoders[0]!.skim) { tooFast.set(slot.source, speed * 0.9); slot.behind = 0; }
+      } else slot.behind = 0;
+      // With pictures left out, the halves of a 360 picture can be a moment apart: hold the last one.
+      if (frames.length > 1 && frames.every(Boolean) && frames.some((f) => Math.abs(f!.timestamp - frames[0]!.timestamp) > 2000)) { holding = true; return null; }
       return frames.every((f): f is VideoFrame => f !== null)
         ? { clip: v.clip, index: v.index, media, mediaUs: v.mediaUs, frames, layout: slot.source.layout, level: slot.source.level }
         : null;
@@ -202,8 +265,9 @@ export class TimelinePlayer {
 
     if (this.playing) {
       const dt = this.lastTick === null ? 0 : (now - this.lastTick) * 1000;
+      if (dt > 3000 && dt < 40_000) this.refreshMs += (dt / 1000 - this.refreshMs) * 0.05;
       this.lastTick = now;
-      if (ready) {
+      if (ready || holding) {
         // After a decoder stall the video clock held still while audio kept going: resync audio.
         if (this.stallStart !== null && now - this.stallStart > 80) this.onTransport?.(true, this.time);
         this.stallStart = null;
@@ -227,6 +291,22 @@ export class TimelinePlayer {
       transition: L.transition,
       progress: L.progress,
     };
+  }
+
+  /** The clip at the playhead plays faster than this computer can decode: fewer pictures are shown. */
+  get skimming() {
+    return this.playing && [...this.slots.values()].some((s) => s.decoders[0]!.skim);
+  }
+
+  /** Memory used by pictures kept for dragging backward (bytes). */
+  get reverseBytes() {
+    let n = 0;
+    for (const s of this.slots.values()) n += s.reverse?.bytes ?? 0;
+    return n;
+  }
+  /** For checking. */
+  get reverseStats() {
+    return [...this.slots.values()].map((s) => s.reverse && { level: s.reverse.level, ...s.reverse.stats });
   }
 
   /** State of the decoders, for diagnostics. */

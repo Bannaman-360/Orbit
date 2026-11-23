@@ -1,5 +1,11 @@
 import type { ByteReader } from '@ace/engine';
 import type { OrientationData } from '@ace/telemetry';
+import type { CardRecording, ImportEvent } from '../../main/card';
+
+export interface Card { root: string; name: string }
+/** `copies`: where it was imported to, if those files are still there. */
+export type ListedRecording = CardRecording & { imported: boolean; copies: string[] | null };
+export type { ImportEvent };
 
 export interface AceApi {
   info(): Promise<{ selftest: boolean; selftestMode: string; fixtures: string; versions: Record<string, string> }>;
@@ -14,13 +20,27 @@ export interface AceApi {
   onWindowFullscreen(f: (on: boolean) => void): void;
   saveDialog(kind: 'project' | 'video' | 'image' | 'theme', defaultName: string): Promise<string | null>;
   stat(path: string): Promise<{ path: string; size: number }>;
+  /** Files of the same chaptered recording, in order. */
+  chapters(path: string): Promise<{ path: string; part: number }[]>;
   read(path: string, offset: number, length: number): Promise<Uint8Array>;
   readAll(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: Uint8Array | string): Promise<string>;
   createFile(path: string): Promise<void>;
   writeAt(path: string, position: number, data: Uint8Array): Promise<void>;
   closeFile(path: string): Promise<void>;
-  proxyPath(src: string, level: number): Promise<{ path: string; exists: boolean }>;
+  /** Stops keeping a file open. */
+  release(path: string): Promise<void>;
+  cards(): Promise<Card[]>;
+  scanCard(root: string): Promise<ListedRecording[]>;
+  cardThumb(id: string): Promise<Uint8Array | null>;
+  importDest(): Promise<{ path: string; free: number | null }>;
+  chooseImportDest(): Promise<{ path: string; free: number | null }>;
+  importCard(ids: string[]): Promise<void>;
+  importControl(what: 'pause' | 'resume' | 'stop'): Promise<void>;
+  onCards(f: (cards: Card[]) => void): void;
+  onImport(f: (e: ImportEvent) => void): void;
+  selftestFiles(what: string, a?: string, b?: string | number | Uint8Array): Promise<unknown>;
+  proxyPath(src: string, level: number, tag?: string): Promise<{ path: string; exists: boolean }>;
   proxyFinish(file: string): Promise<void>;
   proxyDiscard(file: string): Promise<void>;
   listFixtures(): Promise<string[]>;

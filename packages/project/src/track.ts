@@ -53,9 +53,12 @@ export type ShareOf = (size: number, fov: number, fisheye: number) => number;
 const linearShare: ShareOf = (size, fov) => size / fov;
 
 const ramp = (x: number) => { const u = Math.max(0, Math.min(1, x)); return u * u * (3 - 2 * u); };
+/** The clip's own fisheye: one value, or one for each field of view (a lens look kept while zooming). */
+export type OwnLens = number | ((fov: number) => number);
+const ownAt = (own: OwnLens, fov: number) => (typeof own === 'number' ? own : own(fov));
 /** The fisheye a track uses at a field of view: none when zoomed in, more the wider it gets. */
-export const trackFisheye = (tr: ClipTrack, fov: number, own: number): number =>
-  Math.max(own, (tr.lens ?? DEFAULT_TRACK_LENS) * ramp((fov - 60) / 60));
+export const trackFisheye = (tr: ClipTrack, fov: number, own: OwnLens): number =>
+  Math.max(ownAt(own, fov), (tr.lens ?? DEFAULT_TRACK_LENS) * ramp((fov - 60) / 60));
 
 export const DEFAULT_TRACK_EASE_S = 0.8;
 /** Shortest stretch a track can be trimmed to (µs). */
@@ -187,7 +190,7 @@ export function trackWeight(tr: ClipTrack, t: number): number {
 }
 
 /** The field of view at which a subject `size`° across fills `frac` of the frame, lens included. */
-export function fovForShare(tr: ClipTrack, size: number, frac: number, ownFisheye: number, share: ShareOf): number {
+export function fovForShare(tr: ClipTrack, size: number, frac: number, ownFisheye: OwnLens, share: ShareOf): number {
   const max = Math.max(MIN_ZOOM_FOV, Math.min(MAX_ZOOM_FOV, tr.maxFov ?? DEFAULT_TRACK_MAX_FOV));
   let lo = MIN_ZOOM_FOV, hi = max;
   const at = (fov: number) => share(size, fov, trackFisheye(tr, fov, ownFisheye));
@@ -204,14 +207,14 @@ export function fovForShare(tr: ClipTrack, size: number, frac: number, ownFishey
  * The look with pan/tilt (and auto zoom) following the subject. Eases onto the subject at the
  * start; after the end it either settles on the last view or eases back to the clip's own.
  */
-export function applyTrack(look: Look, tr: ClipTrack | undefined, t: number, toView?: ToView, share: ShareOf = linearShare): Look {
+export function applyTrack(look: Look, tr: ClipTrack | undefined, t: number, toView?: ToView, share: ShareOf = linearShare, ownLens: OwnLens = look.fisheye): Look {
   if (!tr) return look;
   const r = trackRange(tr), ext = trackExtent(tr);
   if (!r || !ext) return look;
   const weight = trackWeight(tr, t);
   if (weight <= 0) return look;
   const zoom = tr.autoZoom ?? 0;
-  const lensAt = (fov: number) => (zoom > 0 ? trackFisheye(tr, fov, look.fisheye) : look.fisheye);
+  const lensAt = (fov: number) => (zoom > 0 ? trackFisheye(tr, fov, ownLens) : ownAt(ownLens, fov));
   const own: ViewAim = { yaw: look.yaw, pitch: look.pitch, fov: look.fov, fisheye: look.fisheye };
   /** The tracked view at time tt (the path beyond a trimmed end still exists: use it while easing). */
   const viewAt = (tt: number): ViewAim | null => {
@@ -222,7 +225,7 @@ export function applyTrack(look: Look, tr: ClipTrack | undefined, t: number, toV
     // Auto zoom: field of view that keeps the subject at `subjectFrac` of the frame width.
     let fov = look.fov;
     if (zoom > 0 && raw.size && tr.subjectFrac) {
-      const target = fovForShare(tr, raw.size, tr.subjectFrac, look.fisheye, share);
+      const target = fovForShare(tr, raw.size, tr.subjectFrac, ownLens, share);
       fov = Math.exp(Math.log(look.fov) + (Math.log(target) - Math.log(look.fov)) * zoom);
     }
     return { yaw: wrap(v.yaw + tr.offsetYaw), pitch: Math.max(-90, Math.min(90, v.pitch + tr.offsetPitch)), fov, fisheye: lensAt(fov) };
@@ -254,7 +257,7 @@ export function applyTrack(look: Look, tr: ClipTrack | undefined, t: number, toV
 }
 
 /** The subject share that makes the tracked view `fov` wide at time t (for zooming by hand). */
-export function fracForFov(tr: ClipTrack, t: number, fov: number, ownFisheye: number, share: ShareOf = linearShare): number | null {
+export function fracForFov(tr: ClipTrack, t: number, fov: number, ownFisheye: OwnLens, share: ShareOf = linearShare): number | null {
   const size = trackAt(tr, t)?.size;
   return size ? Math.max(0.03, Math.min(0.9, share(size, fov, trackFisheye(tr, fov, ownFisheye)))) : null;
 }
@@ -271,8 +274,8 @@ export const COMFORT_FOV = 105;
  * enough that its closest moment still fits a normal lens (holding a distant, tiny subject's
  * size through a close pass would need an absurdly wide, stretched view).
  */
-export function fitSubjectFrac(tr: ClipTrack, framed: number, ownFisheye = 0, share: ShareOf = linearShare): number {
+export function fitSubjectFrac(tr: ClipTrack, framed: number, ownFisheye = 0, share: ShareOf = linearShare, comfort = COMFORT_FOV): number {
   let max = 0;
   for (const p of smoothTrack(tr.points, 0.25)) if (p.size !== undefined && p.size > max) max = p.size;
-  return Math.max(0.03, Math.min(0.9, Math.max(framed, max ? share(max, COMFORT_FOV, trackFisheye(tr, COMFORT_FOV, ownFisheye)) : 0)));
+  return Math.max(0.03, Math.min(0.9, Math.max(framed, max ? share(max, comfort, trackFisheye(tr, comfort, ownFisheye)) : 0)));
 }

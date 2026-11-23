@@ -30,6 +30,10 @@ export interface VideoTrackInfo {
   description?: Uint8Array;
   samples: SampleRef[];
   fps: number;
+  /** Quarter turns clockwise to show the picture upright (from the file's display matrix). */
+  turns: number;
+  /** What the container says about its colours (numbers as in H.273). */
+  colr?: { primaries: number; transfer: number; matrix: number; full: boolean };
 }
 
 export interface DataTrackInfo {
@@ -58,12 +62,16 @@ export interface AudioTrackInfo {
   /** AudioSpecificConfig for AAC (WebCodecs `description`). */
   description?: Uint8Array;
   samples: SampleRef[];
+  /** Samples at which another file of a chaptered recording starts. */
+  joins?: number[];
 }
 
 const CHUNK = 4 * 1024 * 1024;
 
 export async function openMedia(reader: ByteReader): Promise<MediaInfo> {
   const file = createFile();
+  // Cameras with a GPS fix write their position under a name (©xyz) that isn't plain ASCII.
+  file.allowInvalidBoxTypes = true;
   let info: Movie | null = null;
   let error: unknown = null;
   file.onReady = (m) => (info = m);
@@ -84,18 +92,25 @@ export async function openMedia(reader: ByteReader): Promise<MediaInfo> {
   const movie = info as Movie;
 
   const toUs = (v: number, timescale: number) => Math.round((v * 1e6) / timescale);
-  const refs = (id: number): SampleRef[] =>
+  // Reordered frames start a little into their track's own clock; the edit list says by how much.
+  const editStart = (id: number): number => {
+    const list = (file.getTrackById(id) as unknown as { edts?: { elst?: { entries?: { media_time: number }[] } } }).edts?.elst?.entries;
+    const t = list?.find((e) => e.media_time >= 0)?.media_time ?? 0;
+    return list?.length === 1 ? t : 0;
+  };
+  const refs = (id: number, start = 0): SampleRef[] =>
     file.getTrackSamplesInfo(id).map((s: Sample) => ({
       offset: s.offset,
       size: s.size,
-      timestamp: toUs(s.cts, s.timescale),
+      // (More than a second would be a trim, not reordering: left as it is.)
+      timestamp: toUs(s.cts - (start < s.timescale ? start : 0), s.timescale),
       duration: toUs(s.duration, s.timescale),
-      dts: toUs(s.dts, s.timescale),
+      dts: toUs(s.dts - (start < s.timescale ? start : 0), s.timescale),
       isSync: s.is_sync,
     }));
 
   const videoTracks: VideoTrackInfo[] = movie.videoTracks.map((t) => {
-    const samples = refs(t.id);
+    const samples = refs(t.id, editStart(t.id));
     const avgDur = samples.length ? samples.reduce((a, s) => a + s.duration, 0) / samples.length : 33366;
     return {
       id: t.id,
@@ -105,6 +120,8 @@ export async function openMedia(reader: ByteReader): Promise<MediaInfo> {
       description: codecDescription(file, t.id),
       samples,
       fps: 1e6 / avgDur,
+      turns: quarterTurns((t as unknown as { matrix?: ArrayLike<number> }).matrix),
+      colr: containerColour(file, t.id),
     };
   });
 
@@ -124,6 +141,63 @@ export async function openMedia(reader: ByteReader): Promise<MediaInfo> {
     })),
     audioTrackCount: movie.audioTracks.length,
   };
+}
+
+function containerColour(file: ReturnType<typeof createFile>, trackId: number): VideoTrackInfo['colr'] {
+  for (const entry of file.getTrackById(trackId).mdia.minf.stbl.stsd.entries) {
+    const e = entry as unknown as { colr?: unknown; boxes?: { type?: string; colour_type?: string; colour_primaries?: number; transfer_characteristics?: number; matrix_coefficients?: number; full_range_flag?: number }[] };
+    const c = e.boxes?.find((b) => b.type === 'colr' && b.colour_type?.startsWith('ncl'));
+    if (c) return { primaries: c.colour_primaries ?? 2, transfer: c.transfer_characteristics ?? 2, matrix: c.matrix_coefficients ?? 2, full: !!c.full_range_flag };
+  }
+  return undefined;
+}
+
+/**
+ * Whether an H.264 stream says itself if its values use the full range: undefined when it
+ * doesn't (then decoders assume video range, whatever the container says). From the avcC box.
+ */
+export function avcFullRange(avcC: Uint8Array): boolean | undefined {
+  if (avcC.length < 9 || !(avcC[5]! & 31)) return undefined;
+  const len = (avcC[6]! << 8) | avcC[7]!, nal = avcC.subarray(8, 8 + len);
+  // Without the bytes inserted to avoid start codes.
+  const rb: number[] = [];
+  for (let i = 1; i < nal.length; i++) { if (i > 2 && nal[i] === 3 && nal[i - 1] === 0 && nal[i - 2] === 0) continue; rb.push(nal[i]!); }
+  let pos = 0;
+  const bit = () => { const v = ((rb[pos >> 3] ?? 0) >> (7 - (pos & 7))) & 1; pos++; return v; };
+  const bits = (n: number) => { let v = 0; for (let i = 0; i < n; i++) v = v * 2 + bit(); return v; };
+  const ue = () => { let z = 0; while (!bit() && z < 32) z++; return 2 ** z - 1 + bits(z); };
+  const se = () => { const v = ue(); return v & 1 ? (v + 1) / 2 : -v / 2; };
+  const profile = bits(8);
+  bits(16);
+  ue();
+  if ([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135].includes(profile)) {
+    const chroma = ue();
+    if (chroma === 3) bit();
+    ue(); ue(); bit();
+    if (bit()) for (let i = 0; i < (chroma === 3 ? 12 : 8); i++) if (bit()) { let last = 8, next = 8; for (let j = 0; j < (i < 6 ? 16 : 64); j++) { if (next) next = (last + se() + 256) % 256; last = next || last; } }
+  }
+  ue();
+  const poc = ue();
+  if (poc === 0) ue();
+  else if (poc === 1) { bit(); se(); se(); for (let n = ue(); n > 0; n--) se(); }
+  ue(); bit(); ue(); ue();
+  if (!bit()) bit();
+  bit();
+  if (bit()) { ue(); ue(); ue(); ue(); }
+  if (!bit()) return undefined;
+  if (bit() && bits(8) === 255) bits(32);
+  if (bit()) bit();
+  if (!bit()) return undefined;
+  bits(3);
+  return !!bit();
+}
+
+/** Rotation in a track's display matrix (16.16 fixed point), as clockwise quarter turns. */
+export function quarterTurns(m: ArrayLike<number> | undefined): number {
+  if (!m || m.length < 5) return 0;
+  const a = m[0]!, b = m[1]!;
+  if (!a && !b) return 0;
+  return ((Math.round(Math.atan2(b, a) / (Math.PI / 2)) % 4) + 4) % 4;
 }
 
 /** AAC AudioSpecificConfig from the esds box (decoder-specific info). */

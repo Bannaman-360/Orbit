@@ -10,9 +10,8 @@ export interface PcmAudio {
   startUs: number;
 }
 
-/** Decodes the whole track. Audio tracks are small (a minute of AAC ≈ 1 MB). */
-export async function decodeAudioTrack(reader: ByteReader, track: AudioTrackInfo): Promise<PcmAudio | null> {
-  if (typeof AudioDecoder === 'undefined' || !track.samples.length) return null;
+/** Decodes a run of packets of one file. */
+async function decodeRun(reader: ByteReader, track: AudioTrackInfo, from: number, to: number): Promise<PcmAudio | null> {
   const config: AudioDecoderConfig = {
     codec: track.codec.startsWith('mp4a') ? (track.codec === 'mp4a' ? 'mp4a.40.2' : track.codec) : track.codec,
     sampleRate: track.sampleRate,
@@ -43,17 +42,24 @@ export async function decodeAudioTrack(reader: ByteReader, track: AudioTrackInfo
   });
   dec.configure(config);
 
-  // Read in batches of contiguous samples to keep IPC calls few.
+  // Contiguous packets in one read, a few reads at a time.
   const s = track.samples;
-  for (let i = 0; i < s.length; ) {
+  const reads: { a: number; b: number }[] = [];
+  for (let i = from; i < to; ) {
     let j = i;
-    while (j + 1 < s.length && s[j + 1]!.offset === s[j]!.offset + s[j]!.size && s[j + 1]!.offset + s[j + 1]!.size - s[i]!.offset < 2_000_000) j++;
-    const bytes = await reader.read(s[i]!.offset, s[j]!.offset + s[j]!.size - s[i]!.offset);
-    for (let k = i; k <= j; k++) {
-      const o = s[k]!.offset - s[i]!.offset;
-      dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: s[k]!.timestamp, duration: s[k]!.duration, data: bytes.subarray(o, o + s[k]!.size) }));
-    }
+    while (j + 1 < to && s[j + 1]!.offset === s[j]!.offset + s[j]!.size && s[j + 1]!.offset + s[j + 1]!.size - s[i]!.offset < 2_000_000) j++;
+    reads.push({ a: i, b: j });
     i = j + 1;
+  }
+  for (let k = 0; k < reads.length; k += 24) {
+    const part = reads.slice(k, k + 24);
+    const data = await Promise.all(part.map(({ a, b }) => reader.read(s[a]!.offset, s[b]!.offset + s[b]!.size - s[a]!.offset)));
+    part.forEach(({ a, b }, n) => {
+      for (let p = a; p <= b; p++) {
+        const o = s[p]!.offset - s[a]!.offset;
+        dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: s[p]!.timestamp, duration: s[p]!.duration, data: data[n]!.subarray(o, o + s[p]!.size) }));
+      }
+    });
   }
   await dec.flush();
   dec.close();
@@ -67,6 +73,37 @@ export async function decodeAudioTrack(reader: ByteReader, track: AudioTrackInfo
     off += planes[0]!.length;
   }
   return { sampleRate: track.sampleRate, channels, startUs: firstTs ?? 0 };
+}
+
+/** End of a track's sound, µs. */
+export const audioEnd = (track: AudioTrackInfo): number => { const l = track.samples[track.samples.length - 1]; return l ? l.timestamp + l.duration : 0; };
+
+/**
+ * The sound between two media times, placed by its timestamps (silence where there is none), so
+ * it stays in step with the picture across the files of a chaptered recording.
+ */
+export async function decodeAudioRange(reader: ByteReader, track: AudioTrackInfo, fromUs: number, toUs: number): Promise<PcmAudio | null> {
+  if (typeof AudioDecoder === 'undefined' || !track.samples.length) return null;
+  const s = track.samples, rate = track.sampleRate;
+  const length = Math.max(0, Math.round(((toUs - fromUs) / 1e6) * rate));
+  let channels: Float32Array[] | null = null;
+  const edges = [0, ...(track.joins ?? []), s.length];
+  for (let e = 0; e + 1 < edges.length; e++) {
+    const a = edges[e]!, b = edges[e + 1]!;
+    if (a >= b || s[b - 1]!.timestamp + s[b - 1]!.duration <= fromUs || s[a]!.timestamp >= toUs) continue;
+    let lo = a, hi = b;
+    while (lo < b && s[lo]!.timestamp + s[lo]!.duration <= fromUs) lo++;
+    while (hi > lo && s[hi - 1]!.timestamp >= toUs) hi--;
+    // Packets build on the one before: start a little early, and drop what that gives.
+    const pcm = await decodeRun(reader, track, Math.max(a, lo - 3), hi);
+    if (!pcm) return null;
+    channels ??= pcm.channels.map(() => new Float32Array(length));
+    const at = Math.round(((pcm.startUs - fromUs) / 1e6) * rate);
+    const skip = Math.max(0, -at), n = Math.min(pcm.channels[0]!.length - skip, length - Math.max(0, at));
+    // The next file's sound takes over where it starts.
+    if (n > 0) channels.forEach((c, k) => c.set((pcm.channels[k] ?? pcm.channels[0]!).subarray(skip, skip + n), Math.max(0, at)));
+  }
+  return channels && { sampleRate: rate, channels, startUs: fromUs };
 }
 
 /**

@@ -2,15 +2,16 @@
 // (two during a transition) plus overlays; every source frame is reframed so motion blur
 // matches the preview; encoded in hardware, with the mixed audio.
 
-import { AudioBufferSource, CanvasSource, canEncodeAudio, canEncodeVideo, Mp4OutputFormat, Output, QUALITY_HIGH, QUALITY_MEDIUM, QUALITY_VERY_HIGH, StreamTarget, type StreamTargetChunk } from 'mediabunny';
+import { AudioBufferSource, canEncodeAudio, canEncodeVideo, Mp4OutputFormat, Output, QUALITY_HIGH, QUALITY_MEDIUM, QUALITY_VERY_HIGH, StreamTarget, VideoSample, VideoSampleSource, type StreamTargetChunk } from 'mediabunny';
 import { TrackDecoder } from '@ace/engine';
-import { parseCube, ReframeRenderer } from '@ace/media360';
-import { framingAspect, layersAt, timelineDuration, type Timeline, type TransitionLook } from '@ace/project';
+import { parseCube, ReframeRenderer, sharedDevice } from '@ace/media360';
+import { framingAspect, layersAt, overlayState, timelineDuration, type Timeline, type TransitionLook } from '@ace/project';
 import { ace } from './api';
 import { mixTimeline } from './audioEngine';
+import { ordinaryGamma } from './color';
 import { framesAt } from './calib';
 import { getMedia } from './media';
-import { clipLookAt, presentLook, pushClipFrame } from './frameRender';
+import { clipLookAt, cropReady, presentLook, pushClipFrame } from './frameRender';
 import { compositeLayers, drawOverlays, transitionLook } from './overlayRender';
 import type { LayerFrame } from './timelinePlayer';
 
@@ -46,6 +47,9 @@ export async function loadLut(r: ReframeRenderer, path: string | null) {
   r.setLut(parseCube(text));
 }
 
+/** Time spent handing finished pictures to the encoder (ms), for measuring. */
+export const exportCost = { readMs: 0, encodeMs: 0, frames: 0 };
+
 /** One clip being decoded for export: its decoders and which source frames were pushed. */
 interface ExportSlot {
   clipId: string;
@@ -68,10 +72,17 @@ class Compositor {
     this.out = new OffscreenCanvas(width, height);
     this.ctx = this.out.getContext('2d')!;
   }
-  static async create(width: number, height: number, lutPath: string | null) {
+  /** Exporting a video: the pictures hold the values a video file is read as (not as shown on screen). */
+  private toFile: FileValues | null = null;
+  static async create(width: number, height: number, lutPath: string | null, forVideo = false) {
     const rs = await Promise.all([0, 1].map(() => ReframeRenderer.create(new OffscreenCanvas(width, height))));
     for (const r of rs) await loadLut(r, lutPath);
-    return new Compositor(rs as [ReframeRenderer, ReframeRenderer], width, height);
+    const c = new Compositor(rs as [ReframeRenderer, ReframeRenderer], width, height);
+    if (forVideo && ordinaryGamma()) {
+      for (const r of rs) r.fileGamma = ordinaryGamma();
+      c.toFile = await FileValues.create(width, height, ordinaryGamma());
+    }
+    return c;
   }
   rendererFor(clipIndex: number) {
     return this.renderers[clipIndex % 2]!;
@@ -80,10 +91,106 @@ class Compositor {
     const a = this.rendererFor(aIndex).canvas as OffscreenCanvas;
     const b = bIndex === null ? null : (this.rendererFor(bIndex).canvas as OffscreenCanvas);
     compositeLayers(this.ctx, this.width, this.height, a, b, look);
-    drawOverlays(this.ctx, this.width, this.height, tl, T);
+    if (!this.toFile) { drawOverlays(this.ctx, this.width, this.height, tl, T); return; }
+    // Text and gauges are drawn as they should look on screen, then turned into file values too.
+    if (!tl.overlays.some((o) => overlayState(o, T))) return;
+    this.toFile.ctx.clearRect(0, 0, this.width, this.height);
+    drawOverlays(this.toFile.ctx, this.width, this.height, tl, T);
+    this.ctx.drawImage(this.toFile.convert(), 0, 0);
+  }
+  private readers: PixelReader[] = [];
+  private turn = 0;
+  /**
+   * Starts reading the finished picture back; the result is the picture, ready for the encoder
+   * (values and label of an ordinary video). Up to three are under way at once, so the GPU
+   * carries on drawing the next ones meanwhile.
+   */
+  async sample(t: number, d: number): Promise<() => Promise<VideoSample>> {
+    if (this.readers.length < 3) this.readers.push(await PixelReader.create(this.width, this.height));
+    const reader = this.readers[this.turn++ % this.readers.length]!;
+    const pending = reader.read(this.out);
+    return async () => new VideoSample(await pending, { format: 'RGBX', codedWidth: this.width, codedHeight: this.height, timestamp: t, duration: d, colorSpace: { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false } });
   }
   destroy() {
     for (const r of this.renderers) r.destroy();
+    this.toFile?.destroy();
+    this.readers.forEach((x) => x.destroy());
+  }
+}
+
+/** Reads a canvas's pixels through the GPU (much faster than getImageData for big pictures). */
+class PixelReader {
+  private constructor(private device: GPUDevice, private tex: GPUTexture, private buf: GPUBuffer, private w: number, private h: number, private bpr: number) {}
+  static async create(w: number, h: number) {
+    const device = await sharedDevice();
+    const tex = device.createTexture({ size: [w, h], format: 'rgba8unorm', usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT });
+    const bpr = Math.ceil((w * 4) / 256) * 256;
+    return new PixelReader(device, tex, device.createBuffer({ size: bpr * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }), w, h, bpr);
+  }
+  private busy: Promise<unknown> = Promise.resolve();
+  async read(src: OffscreenCanvas): Promise<Uint8Array> {
+    // (This one's last read must have been handed over first.)
+    await this.busy;
+    this.device.queue.copyExternalImageToTexture({ source: src }, { texture: this.tex }, [this.w, this.h]);
+    const enc = this.device.createCommandEncoder();
+    enc.copyTextureToBuffer({ texture: this.tex }, { buffer: this.buf, bytesPerRow: this.bpr }, [this.w, this.h]);
+    this.device.queue.submit([enc.finish()]);
+    const mapped = this.buf.mapAsync(GPUMapMode.READ);
+    this.busy = mapped.catch(() => {});
+    await mapped;
+    const m = new Uint8Array(this.buf.getMappedRange());
+    let px: Uint8Array;
+    if (this.bpr === this.w * 4) px = m.slice();
+    else { px = new Uint8Array(this.w * this.h * 4); for (let y = 0; y < this.h; y++) px.set(m.subarray(y * this.bpr, y * this.bpr + this.w * 4), y * this.w * 4); }
+    this.buf.unmap();
+    return px;
+  }
+  destroy() {
+    this.tex.destroy();
+    this.buf.destroy();
+  }
+}
+
+/** Turns a picture drawn for the screen (sRGB, with transparency) into the values a video file holds. */
+class FileValues {
+  readonly ctx: OffscreenCanvasRenderingContext2D;
+  private constructor(private device: GPUDevice, private src: OffscreenCanvas, private out: OffscreenCanvas, private gpu: GPUCanvasContext, private pipe: GPURenderPipeline, private tex: GPUTexture, private bind: GPUBindGroup) {
+    this.ctx = src.getContext('2d')!;
+  }
+  static async create(w: number, h: number, gamma: number) {
+    const device = await sharedDevice();
+    const src = new OffscreenCanvas(w, h), out = new OffscreenCanvas(w, h);
+    const gpu = out.getContext('webgpu') as GPUCanvasContext;
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    gpu.configure({ device, format, alphaMode: 'premultiplied' });
+    const m = device.createShaderModule({ code: `
+      @group(0) @binding(0) var t : texture_2d<f32>;
+      @vertex fn vs(@builtin(vertex_index) i : u32) -> @builtin(position) vec4f { var p = array<vec2f,3>(vec2f(-1.,-1.),vec2f(3.,-1.),vec2f(-1.,3.)); return vec4f(p[i],0.,1.); }
+      @fragment fn fs(@builtin(position) p : vec4f) -> @location(0) vec4f {
+        let c = textureLoad(t, vec2u(p.xy), 0);
+        let a = abs(c.rgb);
+        let lin = select(pow((a + 0.055) / 1.055, vec3f(2.4)), a / 12.92, a <= vec3f(0.04045));
+        return vec4f(pow(lin, vec3f(1.0 / ${gamma.toFixed(5)})) * c.a, c.a);
+      }` });
+    const pipe = device.createRenderPipeline({ layout: 'auto', vertex: { module: m, entryPoint: 'vs' }, fragment: { module: m, entryPoint: 'fs', targets: [{ format }] } });
+    const tex = device.createTexture({ size: [w, h], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+    const bind = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: tex.createView() }] });
+    return new FileValues(device, src, out, gpu, pipe, tex, bind);
+  }
+  convert(): OffscreenCanvas {
+    this.device.queue.copyExternalImageToTexture({ source: this.src }, { texture: this.tex, premultipliedAlpha: false }, [this.src.width, this.src.height]);
+    const enc = this.device.createCommandEncoder();
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view: this.gpu.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }] });
+    pass.setPipeline(this.pipe);
+    pass.setBindGroup(0, this.bind);
+    pass.draw(3);
+    pass.end();
+    this.device.queue.submit([enc.finish()]);
+    return this.out;
+  }
+  destroy() {
+    this.tex.destroy();
+    this.gpu.unconfigure();
   }
 }
 
@@ -96,7 +203,10 @@ export async function exportTimeline(tl: Timeline, opts: ExportOptions, onProgre
   if (!(await canEncodeVideo(codec, { width, height }))) codec = 'avc';
   if (!(await canEncodeVideo(codec, { width, height }))) throw new Error(`This computer cannot encode ${width}×${height} video`);
 
-  const comp = await Compositor.create(width, height, tl.lutPath);
+  const comp = await Compositor.create(width, height, tl.lutPath, true);
+
+  onProgress({ fraction: 0, stage: 'Analysing stabilization' });
+  for (const c of tl.clips) await cropReady(c, await getMedia(c.mediaPath), width / height);
 
   onProgress({ fraction: 0, stage: 'Mixing audio' });
   const mix = await mixTimeline(tl, total);
@@ -107,7 +217,10 @@ export async function exportTimeline(tl: Timeline, opts: ExportOptions, onProgre
   });
   const output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target: new StreamTarget(writable) });
   const bitrate = opts.quality === 'max' ? QUALITY_VERY_HIGH : opts.quality === 'high' ? QUALITY_HIGH : QUALITY_MEDIUM;
-  const video = new CanvasSource(comp.out, { codec, bitrate, keyFrameInterval: 2 });
+  // (Fed with the pictures' values and their label, so players that ignore colour labels show them right too.)
+  const video = new VideoSampleSource({ codec, bitrate, keyFrameInterval: 2 });
+  const inFlight: (() => Promise<VideoSample>)[] = [];
+  const handOver = async () => { const s0 = await inFlight.shift()!(); await video.add(s0); s0.close(); };
   output.addVideoTrack(video, { frameRate: opts.fps });
   let audio: AudioBufferSource | null = null;
   if (mix) {
@@ -137,6 +250,8 @@ export async function exportTimeline(tl: Timeline, opts: ExportOptions, onProgre
     const r = comp.rendererFor(index);
     r.setLayout(media.layout);
     let look = null;
+    // Times are whole microseconds: a picture due right now may be stamped a hair later.
+    upTo += Math.min(1000, 250_000 / media.fps);
     // Always push at least one frame; then every source frame that has started by `upTo`.
     while (slot.next < slot.times.length && (!slot.pushedAny || slot.times[slot.next]! <= upTo)) {
       const mt = slot.times[slot.next]!;
@@ -158,7 +273,8 @@ export async function exportTimeline(tl: Timeline, opts: ExportOptions, onProgre
   };
 
   try {
-    for (let T = 0; T < total; T += step) {
+    for (let n = 0; n * step < total - step * 0.01; n++) {
+      const T = n * step;
       if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
       const L = layersAt(tl, T)!;
       const visible = L.b ? [L.a, L.b] : [L.a];
@@ -174,10 +290,15 @@ export async function exportTimeline(tl: Timeline, opts: ExportOptions, onProgre
         }
       }
       comp.compose(tl, T, L.a.index, L.b ? L.b.index : null, L.b && L.transition ? transitionLook(L.transition.kind, L.progress) : null);
-      await video.add(T / 1e6, step / 1e6);
+      const r0 = performance.now();
+      inFlight.push(await comp.sample(T / 1e6, step / 1e6));
+      if (inFlight.length > 2) await handOver();
+      exportCost.readMs += performance.now() - r0;
+      exportCost.frames++;
       written++;
       onProgress({ fraction: Math.min(0.99, T / total), stage: `Rendering clip ${L.a.index + 1} of ${tl.clips.length}`, fps: written / ((performance.now() - t0) / 1000) });
     }
+    while (inFlight.length) await handOver();
     if (mix && audio) {
       onProgress({ fraction: 0.99, stage: 'Encoding audio' });
       await audio.add(mix);
@@ -210,6 +331,7 @@ export async function grabFrame(tl: Timeline, T: number, layers: LayerFrame[], p
     for (const [i, l] of layers.entries()) {
       const r = comp.rendererFor(l.index);
       const ts = times[i]!;
+      await cropReady(l.clip, l.media, width / height);
       // The preview may be showing a low-res proxy: grab from the original file.
       const own = held[i];
       const orig = own ? { frames: own, close: () => {} } : await framesAt(l.media, ts);

@@ -12,7 +12,9 @@ struct Finish {
   g2 : vec4f,       // tint, vignette, sharpen, lutMix
   size : vec4f,     // output width, height, 1/width, 1/height
   fx0 : vec4f,      // grain, glow, chroma (colour fringing), zoom blur
-  fx1 : vec4f,      // light leak, bars, time (s), unused
+  fx1 : vec4f,      // light leak, bars, time (s), log / HLG clip (values reach above white)
+  lens : vec4f,     // sharpness front, back; clarity front, back (see lensMatch.ts)
+  mark : vec4f,     // which lens to point out (1 front, 2 back); y: exporting, the display curve to undo (0 = none)
 };
 
 @group(0) @binding(0) var samp : sampler;
@@ -75,7 +77,15 @@ fn hash(p : vec3f) -> f32 {
   return fract((q.x + q.y) * q.z);
 }
 
+fn srgbToLight(v : vec3f) -> vec3f {
+  let a = abs(v);
+  return sign(v) * select(pow((a + 0.055) / 1.055, vec3f(2.4)), a / 12.92, a <= vec3f(0.04045));
+}
+
 fn luma(c : vec3f) -> f32 { return dot(c, vec3f(0.2126, 0.7152, 0.0722)); }
+
+// Eases what is brighter than white into the top of the range (see shoulder in inputColor.ts).
+fn shoulder(c : vec3f) -> vec3f { return select(0.8 + 0.2 * (1.0 - exp(-(c - 0.8) / 0.2)), c, c <= vec3f(0.8)); }
 
 fn grade(cIn : vec3f) -> vec3f {
   let exposure = f.g0.x; let contrast = f.g0.y; let highlights = f.g0.z; let shadows = f.g0.w;
@@ -90,6 +100,7 @@ fn grade(cIn : vec3f) -> vec3f {
   wb.b *= 1.0 + 0.08 * tint;
   lin *= wb / luma(wb);
   var c = pow(max(lin, vec3f(0.0)), vec3f(1.0 / 2.2));
+  if (f.fx1.w > 0.5) { c = shoulder(c); }
 
   // Tone: shadows/highlights recovery, then an S-ish contrast curve around mid grey.
   let l0 = luma(c);
@@ -118,11 +129,25 @@ fn applyLut(c : vec3f) -> vec3f {
 }
 
 @fragment fn fs(in : VsOut) -> @location(0) vec4f {
-  if (f.blend.y > 0.5) { return vec4f(blended(in.uv), 1.0); }
+  if (f.blend.y > 0.5) { return vec4f(clamp(blended(in.uv), vec3f(0.0), vec3f(1.0)), 1.0); }
   var c = source(in.uv);
 
+  // How much of this pixel is the back lens's (kept in the history's alpha by 360 clips).
+  let backShare = textureSampleLevel(history, samp, in.uv, layerFor(0u), 0.0).a;
+  let clarity = mix(f.lens.z, f.lens.w, backShare);
+  if (clarity > 0.001) {
+    // Local contrast: against the average of a wide ring.
+    var wide = vec3f(0.0);
+    let cr = vec2f(0.014 * f.size.y / f.size.x, 0.014);
+    for (var i = 0; i < 8; i++) {
+      let a = f32(i) * 0.7853982;
+      wide += blended(in.uv + vec2f(cos(a), sin(a)) * cr) + blended(in.uv + vec2f(cos(a + 0.39), sin(a + 0.39)) * cr * 2.2);
+    }
+    c = max(vec3f(0.0), c + vec3f(luma(c) - luma(wide / 16.0)) * clarity * 0.9);
+  }
+
   // Unsharp mask against the 4 neighbours.
-  let sharpen = f.g2.z;
+  let sharpen = f.g2.z + mix(f.lens.x, f.lens.y, backShare);
   if (sharpen > 0.001) {
     let d = f.size.zw;
     let nb = (blended(in.uv + vec2f(d.x, 0.0)) + blended(in.uv - vec2f(d.x, 0.0)) +
@@ -136,7 +161,7 @@ fn applyLut(c : vec3f) -> vec3f {
                  blended(in.uv + vec2f(0.0, d2.y)) + blended(in.uv - vec2f(0.0, d2.y))) * 0.25;
       detail += (c - nb2) * (sharpen - 1.0) * 0.8;
     }
-    c = clamp(c + detail, vec3f(0.0), vec3f(1.0));
+    c = clamp(c + detail, vec3f(0.0), vec3f(select(1.0, 8.0, f.fx1.w > 0.5)));
   }
 
   c = grade(c);
@@ -152,7 +177,7 @@ fn applyLut(c : vec3f) -> vec3f {
     for (var i = 0; i < 12; i++) {
       let a = f32(i) * 0.5235988;
       for (var j = 1; j <= 2; j++) {
-        let s = blended(in.uv + vec2f(cos(a), sin(a)) * r * f32(j) * 1.6);
+        let s = min(blended(in.uv + vec2f(cos(a), sin(a)) * r * f32(j) * 1.6), vec3f(1.0));
         bloom += max(s - vec3f(0.55), vec3f(0.0)) / (0.45 * f32(j));
       }
     }
@@ -186,9 +211,20 @@ fn applyLut(c : vec3f) -> vec3f {
     c += vec3f(n * grain * 0.22 * (1.0 - abs(l - 0.5) * 1.2));
   }
 
+  // Half a step of noise, so smooth skies stretched out of a log recording don't band.
+  if (f.fx1.w > 0.5) { c += vec3f(hash(vec3f(in.pos.xy, f.fx1.z * 61.0)) + hash(vec3f(in.pos.yx + 31.0, f.fx1.z * 61.0 + 5.0)) - 1.0) / 255.0; }
+
+  if (f.mark.x > 0.5) {
+    let on = select(1.0 - backShare, backShare, f.mark.x > 1.5);
+    c = mix(c, vec3f(0.2, 0.75, 1.0), on * 0.28);
+  }
+
   // Cinematic bars.
   let bars = f.fx1.y * 0.125;
   if (in.uv.y < bars || in.uv.y > 1.0 - bars) { c = vec3f(0.0); }
-  return vec4f(clamp(c, vec3f(0.0), vec3f(1.0)), 1.0);
+  c = clamp(c, vec3f(0.0), vec3f(1.0));
+  // Exporting: the values a video file holds (what the browser shows them as, undone).
+  if (f.mark.y > 0.01) { c = pow(srgbToLight(c), vec3f(1.0 / f.mark.y)); }
+  return vec4f(c, 1.0);
 }
 `;

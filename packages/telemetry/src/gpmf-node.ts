@@ -17,6 +17,8 @@ export interface GpmfRequest {
   samples: GpmfSampleRef[];
   durationUs: number;
   created?: string;
+  /** Also return the gyroscope at full rate. */
+  gyro?: boolean;
 }
 
 type Readfn = (offset: number, length: number) => Promise<Buffer>;
@@ -42,7 +44,7 @@ export async function extractOrientation(read: Readfn, req: GpmfRequest): Promis
 
   const out = (await goproTelemetry(
     { rawData, timing },
-    { stream: ['GRAV', 'CORI', 'IORI', 'GPS5', 'GPS9', 'ACCL'], timeOut: 'cts', tolerant: true },
+    { stream: ['GRAV', 'CORI', 'IORI', 'GPS5', 'GPS9', 'ACCL', ...(req.gyro ? (['GYRO'] as unknown as 'ACCL'[]) : [])], timeOut: 'cts', tolerant: true },
   )) as unknown as TelemetryOut;
 
   const grav: TimedVec3[] = [];
@@ -50,6 +52,7 @@ export async function extractOrientation(read: Readfn, req: GpmfRequest): Promis
   const iori: TimedQuat[] = [];
   const gps: GpsSample[] = [];
   const accl: TimedVec3[] = [];
+  const gyro: TimedVec3[] = [];
   for (const dev of Object.values(out)) {
     // GPS9 (Max 2 and newer): lat, lon, alt, 2D speed, 3D speed, days, secs, DOP, fix.
     for (const s of dev.streams?.GPS9?.samples ?? []) {
@@ -77,6 +80,9 @@ export async function extractOrientation(read: Readfn, req: GpmfRequest): Promis
       }
       accl.push({ t: acc[i + Math.floor(n / 2)]!.cts * 1000, v: m });
     }
+    for (const s of dev.streams?.GYRO?.samples ?? []) {
+      if (Array.isArray(s.value) && s.value.length >= 3) gyro.push({ t: s.cts * 1000, v: [s.value[0]!, s.value[1]!, s.value[2]!] });
+    }
     for (const s of dev.streams?.IORI?.samples ?? []) {
       if (Array.isArray(s.value) && s.value.length >= 4)
         iori.push({ t: s.cts * 1000, q: [s.value[0]!, s.value[1]!, s.value[2]!, s.value[3]!] });
@@ -94,5 +100,6 @@ export async function extractOrientation(read: Readfn, req: GpmfRequest): Promis
   iori.sort((a, b) => a.t - b.t);
   gps.sort((a, b) => a.t - b.t);
   accl.sort((a, b) => a.t - b.t);
-  return { grav, cori, iori, gps, accl, streams: [...streams].sort() };
+  gyro.sort((a, b) => a.t - b.t);
+  return { grav, cori, iori, gps, accl, ...(req.gyro ? { gyro } : {}), streams: [...streams].sort() };
 }

@@ -12,8 +12,8 @@ export const COMMANDS: Command[] = [
   c('split', 'Split at the playhead', 'Editing', 'S'), c('delLeft', 'Split and delete left', 'Editing', 'Q'), c('delRight', 'Split and delete right', 'Editing', 'W'),
   c('keyframe', 'Add or update keyframe', 'Editing', 'K'), c('delKey', 'Delete keyframe', 'Editing', 'Shift+K'), c('prevKey', 'Previous keyframe', 'Editing'), c('nextKey', 'Next keyframe', 'Editing'),
   c('text', 'Add text', 'Editing', 'T'), c('track', 'Track subject', 'Editing'), c('detach', 'Detach / reattach audio', 'Editing'), c('duplicate', 'Duplicate clip', 'Editing', 'Mod+D'),
-  c('delete', 'Delete selected item', 'Editing', 'Backspace'), c('undo', 'Undo', 'Editing', 'Mod+Z'), c('redo', 'Redo', 'Editing', 'Mod+Shift+Z'),
-  c('import', 'Import media', 'Files', 'Mod+I'), c('music', 'Add music', 'Files'), c('open', 'Open project', 'Files', 'Mod+O'), c('save', 'Save project', 'Files', 'Mod+S'), c('export', 'Export video', 'Files', 'Mod+E'), c('grab', 'Frame grab', 'Files'),
+  c('speedline', 'Show speed lines on the timeline', 'Editing', 'R'), c('delete', 'Delete selected item', 'Editing', 'Backspace'), c('undo', 'Undo', 'Editing', 'Mod+Z'), c('redo', 'Redo', 'Editing', 'Mod+Shift+Z'),
+  c('import', 'Import media', 'Files', 'Mod+I'), c('card', 'Import from memory card', 'Files', 'Mod+Shift+I'), c('music', 'Add music', 'Files'), c('open', 'Open project', 'Files', 'Mod+O'), c('save', 'Save project', 'Files', 'Mod+S'), c('export', 'Export video', 'Files', 'Mod+E'), c('grab', 'Frame grab', 'Files'),
   c('customize', 'Customize…', 'Interface', 'Mod+,'), c('arrange', 'Arrange interface', 'Interface', 'Mod+Shift+L'), c('undoUi', 'Undo interface change', 'Interface', 'Mod+Alt+Z'), c('toggleMedia', 'Show / hide Media', 'Interface', 'Mod+1'),
   c('toggleInspector', 'Show / hide Inspector', 'Interface', 'Mod+2'), c('toggleTimeline', 'Show / hide Timeline', 'Interface', 'Mod+3'), c('sections', 'Open / close all sections', 'Interface'), c('shortcuts', 'Keyboard shortcuts', 'Interface', '?'),
 ];

@@ -1,23 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { frameShare, MIN_FISHEYE, parseCube, ReframeRenderer } from '@ace/media360';
+import { MIN_FISHEYE, parseCube, ReframeRenderer } from '@ace/media360';
 import {
-  addClip, clipStarts, deleteSideAt, detachAudio, duplicateClip, emptyTimeline, FRAMINGS, framingAspect, GAUGES, keyframeNear, loadTimeline, locate,
+  addClip, clipDuration, clipStarts, deleteSideAt, detachAudio, duplicateClip, emptyTimeline, FRAMINGS, framingAspect, GAUGES, keyframeNear, loadTimeline, locate,
   mediaToTimeline, moveClip, newAudioClip, newClip, newGaugeOverlay, newTextOverlay, nextKeyTime, prevKeyTime, reattachAudio, removeAudio,
   removeClip, removeKeyframe, removeOverlay, setEasing, setKeyframe, splitAt, timelineDuration, transitionLook, trimClip, updateAudio,
   updateClip, updateOverlay,
-  fitSubjectFrac, fracForFov, moveKeyframe, trackWeight, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, setTrackRange, trackActive, trackExtent, trackHeld, trackRange,
+  hasRamp, mediaAt, moveSpeedKey, rippleItems, DEFAULT_LENS_LOOK, fisheyeForLook, lookAt, removeSpeedKey, setClipSpeed, setSpeedEase, setSpeedKey, speedAt, speedKeyNear,
+  COMFORT_FOV, fitSubjectFrac, fracForFov, moveKeyframe, trackWeight, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, setTrackRange, trackActive, trackExtent, trackHeld, trackRange,
   type ClipTrack, type Easing, type GaugeKind, type Grade, type Look, type Overlay, type Timeline, type TimelineClip, type Transition,
 } from '@ace/project';
 import { ace, baseName } from './api';
 import { AudioPlayer } from './audioEngine';
+import { hasTwoLenses, lensUi, matchClipLenses, setLensUi } from './lensMatching';
+import { cardOf, running, startCards, useCards } from './cardImport';
 import { ExportDialog } from './ExportDialog';
+import { pauseFilmstrip } from './filmstrip';
+import { ImportWindow } from './ImportWindow';
 import { grabFrame, loadLut } from './exporter';
-import { clipLookAt, ownLookAt, withoutEffects, presentLook, pushClipFrame, reframeSignature } from './frameRender';
+import { adoptReframe, canReframe, lensLookOf, clipLens, clipLookAt, flatDirection, flatShot, FOLLOW_ROOM, ownLookAt, roomFov, shareOf, shownFov, withoutEffects, presentLook, pushClipFrame, reframeSignature } from './frameRender';
 import { angleBetween, directionAt, trackSubject } from './tracker';
 import { InspectorPanel, SelectionPanel, type InspectorProps } from './Inspector';
 import { MediaBin, type BinItem } from './MediaBin';
 import { AppMenu, ShortcutsDialog } from './Menu';
-import { getMedia, loadMusic, mediaNow } from './media';
+import { getMedia, loadMusic, mediaNow, wholeRecordings } from './media';
 import { ensureProxies, onProxyChange, PREVIEW_LEVELS, setPreviewLevel, type PreviewLevel } from './proxy';
 import { drawOverlays, hitOverlay, layerCss } from './overlayRender';
 import { runSelftest, type EditorApi } from './selftest';
@@ -46,12 +51,13 @@ function isTextEntry(el: HTMLElement | null): boolean {
   return !['range', 'checkbox', 'radio', 'button', 'color', 'submit'].includes(t);
 }
 
+const speedId = (c: { speed?: number; speedKeys?: { t: number; speed: number; ease?: string }[] }) => c.speedKeys?.map((k) => `${k.t}@${k.speed}${k.ease ?? ''}`).join() ?? c.speed;
 /** Clips' media paths, in/out, order, speed and transitions: changes that need the player to re-seek. */
 const structureKey = (tl: Timeline) =>
-  tl.clips.map((c) => `${c.id}:${c.mediaPath}:${c.inUs}:${c.outUs}:${c.speed}:${c.transitionIn?.durationUs ?? 0}`).join('|');
+  tl.clips.map((c) => `${c.id}:${c.mediaPath}:${c.inUs}:${c.outUs}:${speedId(c)}:${c.transitionIn?.durationUs ?? 0}`).join('|');
 const audioKey = (tl: Timeline) =>
-  `${structureKey(tl)}#${tl.clips.map((c) => `${c.volume}${c.audioDetached ? 'd' : ''}`).join(',')}#${tl.audio
-    .map((a) => `${a.path}:${a.startUs}:${a.inUs}:${a.outUs}:${a.volume}:${a.fadeInUs}:${a.fadeOutUs}:${a.speed}`)
+  `${structureKey(tl)}#${tl.clips.map((c) => `${c.volume}${c.audioDetached ? 'd' : ''}${c.muteBelow ?? ''}${c.keepPitch === false ? 'p' : ''}`).join(',')}#${tl.audio
+    .map((a) => `${a.path}:${a.startUs}:${a.inUs}:${a.outUs}:${a.volume}:${a.fadeInUs}:${a.fadeOutUs}:${speedId(a)}:${a.muteBelow ?? ''}:${a.keepPitch === false ? 'p' : ''}`)
     .join('|')}`;
 
 export function App() {
@@ -119,7 +125,8 @@ export function App() {
   binRef.current = bin;
   const [, bump] = useState(0);
 
-  const importPaths = useCallback(async (paths: string[]) => {
+  const importPaths = useCallback(async (picked: string[]) => {
+    const paths = await wholeRecordings(picked);
     const fresh = paths.filter((p) => !binRef.current.some((b) => b.path === p));
     if (!fresh.length) return;
     setBin((b) => [...b, ...fresh.map((path) => ({ path }))]);
@@ -140,7 +147,15 @@ export function App() {
     const m = mediaNow(path);
     if (!m) return;
     const t = tlRef.current;
-    commit(addClip(t, newClip(path, m.durationUs, m.is360), index ?? t.clips.length));
+    const made0 = newClip(path, m.durationUs, m.is360);
+    // 360 clips keep their lens look while zooming.
+    const made = m.is360 ? { ...made0, lensLook: DEFAULT_LENS_LOOK } : made0;
+    // Without motion data there is nothing to stabilize with (stitched videos have it built in).
+    const c = m.layout?.equirect && !m.stabilizer.hasOrientation ? { ...made, stabilize: { ...made.stabilize, smoothing: 'off' as const, horizon: false } } : made;
+    // Regular clips start as recorded, ready to be reframed; steadied when the camera's motion data
+    // allows it and the camera didn't steady them itself.
+    const steady = m.lens && m.stabilizer.hasOrientation && !m.camera.stabilizedInCamera;
+    commit(addClip(t, m.lens ? { ...c, lensMode: 'source', look: { ...c.look, fov: m.lens.hfov }, ...(steady ? { stabilize: { ...c.stabilize, smoothing: 'medium' as const, crop: 'auto' as const } } : {}) } : c, index ?? t.clips.length));
   }, [commit]);
 
   // --- Playback & rendering --------------------------------------------------------------------
@@ -304,7 +319,9 @@ export function App() {
             const ts = l.frames[0]!.timestamp;
             const raw = showRawRef.current && li === 0;
             const look = clipLookAt(l.clip, ts);
-            const sig = reframeSignature(l.clip, look, `${raw}|${r.canvas.width}x${r.canvas.height}`);
+            // (Before / after also leaves out what is done to each lens.)
+            const shownClip = compareRef.current && l.clip.lenses ? { ...l.clip, lenses: undefined } : l.clip;
+            const sig = reframeSignature(shownClip, look, `${raw}|${r.canvas.width}x${r.canvas.height}`);
             let push = false;
             if (ts !== st.lastTs) {
               if (!player.playing || ts < st.lastTs || sig !== st.lastSig) r.resetHistory();
@@ -314,10 +331,12 @@ export function App() {
               push = true;
             }
             if (push) {
-              pushClipFrame(r, l.clip, l.media, ts, l.frames, { raw, showTiles: true });
+              pushClipFrame(r, shownClip, l.media, ts, l.frames, { raw, showTiles: true });
               st.lastTs = ts;
               st.lastSig = sig;
             }
+            const mark = lensUi();
+            r.highlight = mark.highlight && !raw && hasTwoLenses(l.media) ? mark.lens : null;
             presentLook(r, compareRef.current ? withoutEffects(look) : look, { raw: raw && l.media.is360, time: ts });
           });
           styleLayersRef.current(res);
@@ -331,6 +350,7 @@ export function App() {
           uiT = now;
           setTime(player.time);
           setPlaying(player.playing);
+          pauseFilmstrip(player.playing);
         }
         if (now - fpsT > 1000) {
           setRate({ video: (pictures * 1000) / (now - fpsT), screen: (frames * 1000) / (now - fpsT) });
@@ -345,6 +365,13 @@ export function App() {
     return () => { stop = true; cancelAnimationFrame(raf); };
   }, [player]);
 
+  // Have the sound at the playhead ready before play is pressed.
+  useEffect(() => {
+    if (playing) return;
+    const id = setTimeout(() => audio.prime(tlRef.current, time), 120);
+    return () => clearTimeout(id);
+  }, [time, playing, tl, audio]);
+
   // --- Current clip & edits --------------------------------------------------------------------
   const at = locate(tl, time);
   const clip = at?.clip ?? null;
@@ -358,17 +385,30 @@ export function App() {
 
   const editClip = (patch: Partial<TimelineClip>, key: string) => clip && commit(updateClip(tlRef.current, clip.id, patch), `${key}:${clip.id}`);
 
-  const editLook = (patch: Partial<Look>, key: string) => {
+  const editLook = (patchIn: Partial<Look>, key: string) => {
+    let patch = patchIn;
     const cur = locate(tlRef.current, player.time);
     if (!cur) return;
-    const c = cur.clip;
+    // A regular clip from before reframing existed starts from its picture as recorded.
+    const c = adoptReframe(cur.clip);
+    const adopted: Partial<TimelineClip> = c === cur.clip ? {} : { lensMode: c.lensMode, look: c.look, keyframes: c.keyframes };
+    // With a lens look kept while zooming, setting the fisheye sets the look (at this field of view).
+    const look = lensLookOf(c);
+    if (look && patch.fisheye !== undefined) {
+      const { fisheye, ...restPatch } = patch;
+      commit(updateClip(tlRef.current, c.id, { ...adopted, lensLook: { fov: patch.fov ?? ownLookAt(c, cur.mediaUs).fov, fisheye } }), `${key}:${c.id}`);
+      if (!Object.keys(restPatch).length) return;
+      patch = restPatch;
+    }
     const own = ownLookAt(c, cur.mediaUs), now = clipLookAt(c, cur.mediaUs);
     /** Stores settings on the clip itself (or its keyframe here): never what tracking shows. */
     const store = (p: Partial<Look>): Partial<TimelineClip> => {
       const next = { ...own, ...p };
+      // (A fisheye that follows the field of view isn't stored: the clip keeps its own.)
+      if (look) next.fisheye = lookAt(c.keyframes, c.look, cur.mediaUs).fisheye;
       return c.keyframes.length ? { keyframes: setKeyframe(c.keyframes, cur.mediaUs, next, snapUs) } : { look: next };
     };
-    const put = (p: Partial<TimelineClip>) => commit(updateClip(tlRef.current, c.id, p), `${key}:${c.id}`);
+    const put = (p: Partial<TimelineClip>) => commit(updateClip(tlRef.current, c.id, { ...adopted, ...p }), `${key}:${c.id}`);
     const { yaw, pitch, fov, ...rest } = patch;
     const aimed = yaw !== undefined || pitch !== undefined || fov !== undefined;
     const w = c.track ? trackWeight(c.track, cur.mediaUs) : 0;
@@ -398,7 +438,7 @@ export function App() {
     if (fov !== undefined) {
       if ((track.autoZoom ?? 0) > 0 && track.subjectFrac) {
         const target = Math.exp((Math.log(fov) - (1 - w) * Math.log(own.fov)) / w);
-        track.subjectFrac = fracForFov(c.track, cur.mediaUs, target, own.fisheye, frameShare) ?? track.subjectFrac;
+        track.subjectFrac = fracForFov(c.track, cur.mediaUs, target, look ? (f: number) => fisheyeForLook(look, f) : own.fisheye, shareOf(mediaNow(c.mediaPath), c)) ?? track.subjectFrac;
         // Zooming out past the limit moves the limit.
         if (target > (track.maxFov ?? DEFAULT_TRACK_MAX_FOV)) track.maxFov = Math.min(MAX_ZOOM_FOV, target);
       } else Object.assign(others, store({ ...rest, fov }));
@@ -438,6 +478,7 @@ export function App() {
   };
   const pickKeyframe = (clipId: string, id: string) => {
     setSel(null);
+    setSpeedSel(null);
     setKfSel({ clipId, id });
     player.pause();
     const T = kfTime(clipId, id);
@@ -466,11 +507,71 @@ export function App() {
     if (t !== undefined) seek(mediaToTimeline(at.startUs, clip, Math.max(clip.inUs, Math.min(clip.outUs - 1, t))));
   };
 
+  // --- Speed ---------------------------------------------------------------------------------------
+  /** Changes a clip's speed, staying on the picture that is showing. */
+  const changeSpeed = (clipId: string, patch: Parameters<typeof setClipSpeed>[2], key: string) => {
+    const before = locate(tlRef.current, player.time);
+    const next = rippleItems(tlRef.current, setClipSpeed(tlRef.current, clipId, patch), clipId);
+    commit(next, `${key}:${clipId}`);
+    if (!before || player.playing) return;
+    const i = next.clips.findIndex((c) => c.id === before.clip.id), c = next.clips[i];
+    // (The length of this clip or one before it changed.)
+    if (c) player.seek(mediaToTimeline(clipStarts(next)[i]!, c, before.mediaUs));
+  };
+  const [speedLines, setSpeedLines] = useState(() => { try { return localStorage.getItem('ace.speedLines') === 'true'; } catch { return false; } });
+  const toggleSpeedLines = () => setSpeedLines((v) => { try { localStorage.setItem('ace.speedLines', String(!v)); } catch { /* private mode */ } return !v; });
+  const [speedSel, setSpeedSel] = useState<{ clipId: string; id: string } | null>(null);
+  const [speedMenu, setSpeedMenu] = useState<{ clipId: string; id: string; x: number; y: number } | null>(null);
+  const clipById = (id: string) => tlRef.current.clips.find((c) => c.id === id);
+  const pickSpeedPoint = (clipId: string, id: string) => { setSel(null); setKfSel(null); setSpeedSel({ clipId, id }); };
+  const moveSpeedPoint = (clipId: string, id: string, t: number, speed: number) => {
+    const c = clipById(clipId);
+    if (c?.speedKeys) changeSpeed(clipId, { speedKeys: moveSpeedKey(c.speedKeys, id, t, speed, c.inUs, c.outUs) }, `speedpt-${id}`);
+  };
+  const addSpeedPoint = (clipId: string, t: number) => {
+    const c = clipById(clipId);
+    if (!c) return;
+    const keys = setSpeedKey(c, t);
+    // A point added to a clip at normal speed: slow sound is only kept down to half speed.
+    changeSpeed(clipId, { speedKeys: keys, ...(hasRamp(c) || c.muteBelow !== undefined ? {} : { muteBelow: 0.5 }) }, 'speedadd');
+    const k = speedKeyNear({ ...c, speedKeys: keys }, t);
+    if (k) pickSpeedPoint(clipId, k.id);
+  };
+  const deleteSpeedPoint = (clipId: string, id: string) => {
+    const c = clipById(clipId);
+    if (c?.speedKeys) changeSpeed(clipId, removeSpeedKey(c, id), 'speeddel');
+    setSpeedSel(null);
+  };
+  const pickedSpeed = speedSel && tl.clips.find((c) => c.id === speedSel.clipId)?.speedKeys?.some((k) => k.id === speedSel.id) ? speedSel : null;
+
+  // --- Lens match ----------------------------------------------------------------------------------
+  const [lensBusy, setLensBusy] = useState(false);
+  const matchLensesNow = async (which?: 'front' | 'back') => {
+    const cur = locate(tlRef.current, player.time), m = cur && mediaNow(cur.clip.mediaPath);
+    if (!cur || !m || !hasTwoLenses(m) || lensBusy) return;
+    setLensBusy(true);
+    try {
+      const r = await matchClipLenses(m, cur.clip, cur.mediaUs, which);
+      if (!r) { setNotice('The lenses couldn’t be compared here: too little of the strip both of them see is lit and in view.'); return; }
+      const now = tlRef.current.clips.find((c) => c.id === cur.clip.id);
+      if (!now) return;
+      if (!Object.keys(r.adjust).length || r.before - r.after < 0.5) { setNotice(`The lenses already match about as well as they can (they differ by ${r.before.toFixed(1)} of 255), so nothing was changed.`); return; }
+      commit(updateClip(tlRef.current, now.id, { lenses: { [r.lens]: r.adjust as Record<string, number> } }));
+      setLensUi({ lens: r.lens });
+      setNotice(`Corrected the ${r.lens} lens: where both lenses see the same thing, the difference went from ${r.before.toFixed(1)} to ${r.after.toFixed(1)} of 255.`);
+    } catch (e) {
+      setError(`Lens match: ${e}`);
+    } finally {
+      setLensBusy(false);
+    }
+  };
+
   const split = () => splitHere();
   const deleteCurrent = () => {
     const t = tlRef.current;
     const s = selRef.current;
     const kf = pickedKf();
+    if (!s && pickedSpeed) { deleteSpeedPoint(pickedSpeed.clipId, pickedSpeed.id); return; }
     if (!s && kf) { deleteKeyframeById(kf.clipId, kf.id); return; }
     if (s?.kind === 'audio') commit(removeAudio(t, s.id));
     else if (s?.kind === 'overlay') commit(removeOverlay(t, s.id));
@@ -482,6 +583,7 @@ export function App() {
   const selectClip = (id: string) => {
     setSel(null);
     setKfSel(null);
+    setSpeedSel(null);
     const t = tlRef.current;
     const i = t.clips.findIndex((c) => c.id === id);
     const cur = locate(t, player.time);
@@ -570,7 +672,7 @@ export function App() {
   const [trackJob, setTrackJob] = useState<{ progress: number; abort: AbortController } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const startTrackPick = () => {
-    if (!clip || !media?.is360) return setError('Subject tracking works on 360 clips.');
+    if (!clip || !media || !canReframe(media)) return setError('This clip can’t be reframed, so a subject can’t be followed.');
     player.pause();
     setSel(null);
     setTrackPick(true);
@@ -583,31 +685,37 @@ export function App() {
     const res = lastResult.current;
     const frame = frameRef.current!;
     const W = frame.clientWidth, H = frame.clientHeight;
-    if (!res?.layers || !res.media.is360) return;
+    if (!res?.layers || !canReframe(res.media)) return;
     const l = res.layers[0]!;
-    const c = tlRef.current.clips.find((x) => x.id === l.clip.id);
-    if (!c) return;
+    const found = tlRef.current.clips.find((x) => x.id === l.clip.id);
+    if (!found) return;
+    const c = adoptReframe(found);
+    const flat = clipLens(l.media, c);
     const startUs = l.frames[0]!.timestamp;
     const look = clipLookAt(c, startUs);
     const nx = (x: number) => (x / W) * 2 - 1, ny = (y: number) => 1 - (y / H) * 2;
     const cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2;
-    const dir = directionAt(look, W / H, nx(cx), ny(cy));
+    const spot = (x: number, y: number) => flatDirection(c, l.media, look, startUs, W / H, nx(x), ny(y));
+    const apart = (x0: number, y0: number, x1: number, y1: number) => {
+      if (!flat) return angleBetween(look, W / H, [nx(x0), ny(y0)], [nx(x1), ny(y1)]);
+      const a = spot(x0, y0)?.camera, b = spot(x1, y1)?.camera;
+      return a && b ? (Math.acos(Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))) * 180) / Math.PI : 20;
+    };
+    const dir = flat ? spot(cx, cy)?.world : directionAt(look, W / H, nx(cx), ny(cy));
     if (!dir) return;
-    const size = Math.max(
-      angleBetween(look, W / H, [nx(box.x0), ny(cy)], [nx(box.x1), ny(cy)]),
-      angleBetween(look, W / H, [nx(cx), ny(box.y0)], [nx(cx), ny(box.y1)]),
-    );
+    const size = Math.max(apart(box.x0, cy, box.x1, cy), apart(cx, box.y0, cx, box.y1));
     const abort = new AbortController();
     setTrackJob({ progress: 0, abort });
     try {
-      const out = await trackSubject({ clip: c, media: l.media, startUs, yaw: dir.yaw, pitch: dir.pitch, sizeDeg: Math.max(3, size) }, (f) => setTrackJob({ progress: f, abort }), abort.signal);
+      const out = await trackSubject({ clip: c, media: l.media, startUs, yaw: dir.yaw, pitch: dir.pitch, sizeDeg: Math.max(3, size), world: !!flat }, (f) => setTrackJob({ progress: f, abort }), abort.signal);
       if (out.points.length < 3) {
         setError('Couldn’t lock on to that subject — try a box that fits it more tightly.');
         return;
       }
       const t = tlRef.current;
-      const cur = t.clips.find((x) => x.id === c.id);
-      if (!cur) return;
+      const now = t.clips.find((x) => x.id === c.id);
+      if (!now) return;
+      const cur = adoptReframe(now);
       // Keep any earlier tracking before this point (re-track from where it was lost).
       const kept = cur.track?.space === 'world' ? cur.track.points.filter((p) => p.t < startUs) : [];
       const track: ClipTrack = {
@@ -626,11 +734,16 @@ export function App() {
         maxFov: cur.track?.maxFov,
       };
       // How big it was framed: the box, as a share of the picture.
-      track.subjectFrac = fitSubjectFrac(track, cur.track?.subjectFrac ?? Math.max(box.x1 - box.x0, box.y1 - box.y0) / W, ownLookAt(cur, startUs).fisheye, frameShare);
-      commit(updateClip(t, c.id, { track }));
+      const share = shareOf(l.media, cur), bend = ownLookAt(cur, startUs).fisheye;
+      let framed = flat ? share(Math.max(3, size), flatShot(c, l.media, look, startUs, W / H)!.fov, bend) : Math.max(box.x1 - box.x0, box.y1 - box.y0) / W;
+      // A regular clip showing its whole picture has nowhere to move: zoom in enough to follow.
+      if (flat && !cur.track?.subjectFrac) framed = Math.max(framed, share(Math.max(3, size), FOLLOW_ROOM * roomFov(cur, l.media), bend));
+      track.subjectFrac = fitSubjectFrac(track, cur.track?.subjectFrac ?? framed, bend, share, flat ? Math.min(COMFORT_FOV, 0.8 * roomFov(cur, l.media)) : undefined);
+      commit(updateClip(t, c.id, { track, ...(cur === now ? {} : { lensMode: cur.lensMode, look: cur.look, keyframes: cur.keyframes }) }));
       openSection('Subject tracking');
       const end = out.points.at(-1)!.t;
       if (out.cancelled) setNotice(`Tracking stopped at ${fmtTime(end)}. The path so far is kept.`);
+      else if (out.lostAt !== undefined && out.left) setNotice(`The subject left the picture at ${fmtTime(out.lostAt)} (clip time). When it comes back, use Track subject again to continue.`);
       else if (out.lostAt !== undefined) setNotice(`Lost the subject at ${fmtTime(out.lostAt)} (clip time). Go there and use Track subject again to continue.`);
       else setNotice(`Tracked the subject to the end of the clip.`);
     } catch (e) {
@@ -669,6 +782,8 @@ export function App() {
     binRef.current = [];
     hist.current = { past: [], future: [], lastKey: '', lastAt: 0 };
     await importPaths(library);
+    // (A clip may use one chapter of a recording the bin now shows as a whole.)
+    await Promise.all([...new Set(timeline.clips.map((c) => c.mediaPath))].map((p) => getMedia(p).catch(() => {})));
     await Promise.all(timeline.audio.map((a) => loadMusic(a.path).catch(() => {})));
     // Only keep clips whose media opened.
     const ok = timeline.clips.filter((c) => mediaNow(c.mediaPath));
@@ -727,7 +842,29 @@ export function App() {
     const path = await ace.saveDialog('project', 'My edit.acproj');
     if (path) await ace.writeFile(path, saveText());
   };
-  const importDialog = async () => importPaths(await ace.openMediaDialog());
+  const importDialog = async () => {
+    const paths = await ace.openMediaDialog();
+    if (paths.some(cardOf)) setNotice('These files are on a memory card, so they stop working when it’s taken out. “Import from memory card” copies them to the computer.');
+    await importPaths(paths);
+  };
+  // --- Memory cards ------------------------------------------------------------------------------
+  const [cardOpen, setCardOpen] = useState(false);
+  const [cardFound, setCardFound] = useState<string | null>(null);
+  const cardRun = useCards((s) => s.run), cards = useCards((s) => s.cards);
+  useEffect(() => startCards((c) => setCardFound(c.root), (paths) => void importPaths(paths)), [importPaths]);
+  useEffect(() => { if (cardOpen) { setCardFound(null); setNotice(null); } }, [cardOpen]);
+  const foundCard = cards.find((c) => c.root === cardFound);
+  const importing = running(cardRun);
+  // An import that ends while its window is closed says so.
+  const wasImporting = useRef(false);
+  useEffect(() => {
+    if (wasImporting.current && cardRun?.ended && !cardOpen) {
+      const done = [...cardRun.states.values()].filter((x) => x.state === 'done').length, bad = cardRun.ids.length - done;
+      if (cardRun.ended.error || (bad && !cardRun.ended.stopped)) setError(`Import: ${cardRun.ended.error ?? `${bad} recording${bad === 1 ? '' : 's'} couldn’t be copied.`} ${done} of ${cardRun.ids.length} imported.`);
+      else if (!cardRun.ended.stopped) setNotice(`${done} recording${done === 1 ? '' : 's'} imported. The card can be taken out.`);
+    }
+    wasImporting.current = importing;
+  }, [cardRun, importing, cardOpen]);
   const addMusic = async () => {
     const paths = await ace.openAudioDialog();
     for (const p of paths) {
@@ -801,9 +938,9 @@ export function App() {
     play: togglePlay, prevFrame: () => step(-1), nextFrame: () => step(1), back10: () => step(-10), fwd10: () => step(10), start: () => seek(0), end: () => seek(timelineDuration(tlRef.current)), fullscreen: () => { if (tlRef.current.clips.length) toggleFullscreen(); },
     split, delLeft: () => deleteSide('left'), delRight: () => deleteSide('right'), keyframe: addKeyframe, delKey: deleteKeyframe, prevKey: () => jumpKey(-1), nextKey: () => jumpKey(1), text: addText, track: startTrackPick, detach: toggleDetach,
     duplicate: () => { if (clip) commit(duplicateClip(tlRef.current, clip.id)); }, delete: deleteCurrent, undo, redo,
-    import: () => void importDialog(), music: () => void addMusic(), open: () => void openProject(), save: () => void saveProject(), export: () => { if (tlRef.current.clips.length) setExportOpen(true); }, grab: () => void frameGrab(),
+    import: () => void importDialog(), card: () => setCardOpen(true), music: () => void addMusic(), open: () => void openProject(), save: () => void saveProject(), export: () => { if (tlRef.current.clips.length) setExportOpen(true); }, grab: () => void frameGrab(),
     customize: () => setCustomize((v) => (v ? null : 'themes')), arrange: () => { setArranging(!isArranging()); setCustomize(null); }, undoUi: undoPrefs, toggleMedia: () => togglePanel(['media']),
-    toggleInspector: () => togglePanel(['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection']), toggleTimeline: () => togglePanel(['timeline']), compare: () => setCompare(true), sections: toggleAllSections, shortcuts: () => setShortcutsOpen(true),
+    toggleInspector: () => togglePanel(['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection']), toggleTimeline: () => togglePanel(['timeline']), compare: () => setCompare(true), sections: toggleAllSections, speedline: toggleSpeedLines, shortcuts: () => setShortcutsOpen(true),
   };
   const runRef = useRef(run);
   runRef.current = run;
@@ -825,7 +962,7 @@ export function App() {
     const typing = isTextEntry(el);
     // Space is always play/pause unless you are typing. Handled before anything else so a
     // focused button, checkbox or slider never receives it.
-    if (e.code === 'Space' && !typing) {
+    if (e.code === 'Space' && !typing && !cardOpen) {
       e.preventDefault();
       e.stopPropagation();
       if (e.type === 'keydown' && !e.repeat) togglePlay();
@@ -833,6 +970,8 @@ export function App() {
     }
     if (e.type === 'keyup') { matcher.current.release(e).forEach((c) => c !== 'compare' && run[c]?.()); setCompare(false); return; }
     if (typing) return;
+    // Behind the import window, keys must not edit the timeline.
+    if (cardOpen) { if (e.key === 'Escape') setCardOpen(false); return; }
     if (e.key === 'Escape') {
       if (isArranging()) { setArranging(false); return; }
       if (customize) { setCustomize(null); return; }
@@ -885,7 +1024,7 @@ export function App() {
       return;
     }
     if (sel?.kind === 'overlay') setSel(null);
-    if (look && media?.is360) drag.current = { kind: 'look', x: e.clientX, y: e.clientY, look };
+    if (look && media && canReframe(media)) drag.current = { kind: 'look', x: e.clientX, y: e.clientY, look };
   };
   const onPointerMove = (e: React.PointerEvent) => {
     if (trackPick && boxStart.current) {
@@ -903,18 +1042,26 @@ export function App() {
       commit(updateOverlay(tlRef.current, d.o.id, { x, y }), `ov-move:${d.o.id}`);
       return;
     }
-    const degPerPx = Math.min(d.look.fov, 120) / r.width;
+    const flat = clip && media ? clipLens(media, clip) : null;
+    // Regular clips: the field of view spans the picture, of which the output may show a part.
+    const across = flat ? Math.min(1, aspect / (media!.width / media!.height)) : 1;
+    const degPerPx = (Math.min(d.look.fov, 120) * across) / r.width;
     let yaw = d.look.yaw - (e.clientX - d.x) * degPerPx;
     yaw = ((yaw + 540) % 360) - 180;
-    editLook({ yaw, pitch: Math.max(-90, Math.min(90, d.look.pitch + (e.clientY - d.y) * degPerPx)) }, 'drag');
+    const pitch = Math.max(-90, Math.min(90, d.look.pitch + (e.clientY - d.y) * degPerPx));
+    // Past the edge of a regular clip's picture the view zooms in; stop before that gets silly.
+    if (flat && clip && media && clip.fit === 'fill' && !(clip.track && at && trackWeight(clip.track, at.mediaUs) > 0) && shownFov(adoptReframe(clip), media, { ...d.look, yaw, pitch }, aspect) < d.look.fov * 0.4) return;
+    editLook({ yaw, pitch }, 'drag');
   };
   const onWheel = (e: React.WheelEvent) => {
     if (selectedOverlay) {
       editOverlay({ size: Math.max(0.02, Math.min(1, selectedOverlay.size * Math.exp(-e.deltaY * 0.0015))) }, 'ov-size');
       return;
     }
-    if (!look || !media?.is360) return;
-    editLook({ fov: Math.max(1, Math.min(360, look.fov * Math.exp(e.deltaY * 0.0015))) }, 'wheel');
+    if (!look || !media || !clip || !canReframe(media)) return;
+    const flat = clipLens(media, clip);
+    const max = !flat ? 360 : clip.lensMode === 'custom' ? 170 : flat.hfov;
+    editLook({ fov: Math.max(flat ? 3 : 1, Math.min(max, look.fov * Math.exp(e.deltaY * 0.0015))) }, 'wheel');
   };
 
   // --- Toolbar items -------------------------------------------------------------------------------
@@ -934,13 +1081,27 @@ export function App() {
           <button className="link" onClick={() => trackJob.abort.abort()}>Stop</button>
         </span>
       )}
+      {importing && !cardOpen && (
+        <span className="busy track-status">
+          <Icon name="card" size={15} /> {cardRun.paused ? 'Import paused' : 'Importing'} {Math.round(cardRun.fraction * 100)}%
+          <span className="mini-bar"><span style={{ width: `${cardRun.fraction * 100}%` }} /></span>
+          <button className="link" onClick={() => setCardOpen(true)}>Show</button>
+        </span>
+      )}
+      {foundCard && !importing && !cardOpen && (
+        <span className="notice track-status">
+          <Icon name="card" size={15} /> {foundCard.name} connected
+          <button className="link" onClick={() => setCardOpen(true)}>Import…</button>
+          <button className="link" aria-label="Dismiss" onClick={() => setCardFound(null)}>✕</button>
+        </span>
+      )}
       {notice && !trackJob && <span className="notice" onClick={() => setNotice(null)} title={`${notice} (click to dismiss)`}>{notice} ✕</span>}
       {busy && <span className="busy">{busy}</span>}
       {error && <span className="error" title={error} onClick={() => setError(null)}>{error} ✕</span>}
     </span>
   );
   // The clip's own rate; while playing, what is really being shown if that is less.
-  const clipFps = media ? Math.min(media.fps * (clip?.speed ?? 1), rate.screen > 20 ? Math.max(rate.screen, 59) : 60) : 0;
+  const clipFps = media ? Math.min(media.fps * (clip && at ? speedAt(clip, at.mediaUs) : 1), rate.screen > 20 ? Math.max(rate.screen, 59) : 60) : 0;
   const behind = playing && clipFps > 0 && rate.video > 0 && rate.video < clipFps * 0.9;
   const fpsLabel = !media ? '' : behind ? `${rate.video.toFixed(0)} of ${Math.round(clipFps)} fps` : `${Math.round(clipFps)} fps`;
   const noClips = has ? undefined : 'Add a clip to the timeline first.';
@@ -949,6 +1110,7 @@ export function App() {
       label: 'Menu', icon: 'menu',
       menu: [
         { label: 'Import media…', hint: comboLabel(comboOf('import', shortcuts)), onClick: run.import! },
+        { label: 'Import from memory card…', hint: comboLabel(comboOf('card', shortcuts)), onClick: run.card! },
         { label: 'Add music…', onClick: run.music! },
         { label: 'Open project…', hint: comboLabel(comboOf('open', shortcuts)), onClick: run.open! },
         { label: 'Save project…', hint: comboLabel(comboOf('save', shortcuts)), onClick: run.save! },
@@ -966,6 +1128,7 @@ export function App() {
       ],
     },
     import: cmdItem('import', 'Import', 'import'),
+    card: cmdItem('card', 'Card', 'card', { on: cardOpen || importing }),
     music: cmdItem('music', 'Music', 'music'),
     open: cmdItem('open', 'Open', 'open'),
     save: cmdItem('save', 'Save', 'save'),
@@ -973,7 +1136,7 @@ export function App() {
     redo: cmdItem('redo', 'Redo', 'redo', { disabled: !hist.current.future.length }),
     text: cmdItem('text', 'Text', 'text', { locked: noClips }),
     gauges: { label: 'Gauges', icon: 'gauge', title: 'Add a telemetry gauge', locked: noClips, menu: GAUGES.map(([k, label]) => ({ label, onClick: () => addGauge(k) })) },
-    track: cmdItem('track', 'Track', 'track', { locked: noClips ?? (media && !media.is360 ? 'Subject tracking needs a 360 clip: it works by turning the view to follow the subject.' : trackJob ? 'A subject is being tracked. Wait for it to finish, or press Stop.' : undefined), on: trackPick }),
+    track: cmdItem('track', 'Track', 'track', { locked: noClips ?? (trackJob ? 'A subject is being tracked. Wait for it to finish, or press Stop.' : undefined), on: trackPick }),
     status: { label: 'Messages', control: status, wide: true },
     frame: {
       label: 'Frame shape', title: 'Output shape',
@@ -1005,7 +1168,7 @@ export function App() {
     },
     fps: {
       label: 'Frames per second',
-      title: media ? `This clip is ${+media.fps.toFixed(2)} fps${clip && clip.speed !== 1 ? `, played at ${clip.speed}×` : ''}.${playing ? ` Showing ${rate.video.toFixed(0)} new pictures a second; the screen redraws ${rate.screen.toFixed(0)} times a second.` : ''}${player.stalls ? ` Playback has waited for the video ${player.stalls} times.` : ''}` : 'Frame rate of the clip under the playhead',
+      title: media ? `This clip is ${+media.fps.toFixed(2)} fps${clip && at && speedAt(clip, at.mediaUs) !== 1 ? `, played at ${+speedAt(clip, at.mediaUs).toFixed(2)}×` : ''}.${playing ? ` Showing ${rate.video.toFixed(0)} new pictures a second; the screen redraws ${rate.screen.toFixed(0)} times a second.` : ''}${player.skimming ? ' This is faster than this computer can decode, so the preview shows fewer pictures; a lower preview quality shows more. Exports have them all.' : ''}${player.stalls ? ` Playback has waited for the video ${player.stalls} times.` : ''}` : 'Frame rate of the clip under the playhead',
       control: <span className="muted small fps">{fpsLabel}</span>,
     },
     compare: cmdItem('compare', 'Before / after', 'compare', { title: `Hold to see the picture without color, LUT, effects and motion blur${key('compare')}`, disabled: !has, on: compare, hold: setCompare }),
@@ -1023,12 +1186,13 @@ export function App() {
     sections: cmdItem('sections', 'Sections', 'collapse'),
     arrange: cmdItem('arrange', 'Arrange', 'workspaces', { on: arranging }),
     shortcuts: cmdItem('shortcuts', 'Shortcuts', 'keyboard'),
+    speedline: cmdItem('speedline', 'Speed line', 'speedline', { on: speedLines, locked: noClips }),
     tlinfo: { label: 'Clip count', control: <span className="muted">{tl.clips.length} clip{tl.clips.length === 1 ? '' : 's'} · {fmtTime(duration)}</span> },
     tlzoom: { label: 'Timeline zoom', title: 'Timeline zoom', control: <label className="inline zoom"><Icon name="zoom" /><Range label="Timeline zoom" min={Math.log(4)} max={Math.log(400)} step={0.01} value={Math.log(pps)} onChange={(v) => setPps(Math.exp(v))} /></label> },
   };
   // A message must never be lost because its toolbar item was removed.
   const statusShown = (['main', 'transport', 'timeline'] as const).some((b) => !bars[b].hidden && bars[b].items.includes('status') && (b === 'main' || openPanels(getPrefs().layout).includes(b === 'transport' ? 'viewer' : 'timeline')));
-  const anyStatus = trackJob || notice || busy || error;
+  const anyStatus = trackJob || notice || busy || error || ((importing || foundCard) && !cardOpen);
 
   // --- Panels ------------------------------------------------------------------------------------------
   const inspector: InspectorProps = {
@@ -1059,6 +1223,16 @@ export function App() {
     onPrevKey: () => jumpKey(-1),
     onNextKey: () => jumpKey(1),
     onClip: editClip,
+    lensBusy,
+    onMatchLenses: (which) => void matchLensesNow(which),
+    onLensesToAll: () => {
+      if (!clip) return;
+      const t = tlRef.current;
+      commit({ ...t, clips: t.clips.map((c) => (hasTwoLenses(mediaNow(c.mediaPath)) ? { ...c, lenses: clip.lenses } : c)) });
+    },
+    onSpeed: (patch, key) => clip && changeSpeed(clip.id, patch, key),
+    speedLines,
+    onSpeedLines: toggleSpeedLines,
     onGradeToAll: () => {
           if (!look) return;
           const t = tlRef.current;
@@ -1097,7 +1271,7 @@ export function App() {
       <div className="stage" ref={stageRef}>
           <div
             style={{ visibility: tl.clips.length ? 'visible' : 'hidden' }}
-            className={`frame${trackPick ? ' picking' : media?.is360 ? ' grab' : ''}`}
+            className={`frame${trackPick ? ' picking' : media && canReframe(media) ? ' grab' : ''}`}
             ref={frameRef}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
@@ -1126,7 +1300,7 @@ export function App() {
             {compare && has && <span className="compare-tag">Before</span>}
             {trackBox && <div className="track-box" style={{ left: trackBox.x0, top: trackBox.y0, width: trackBox.x1 - trackBox.x0, height: trackBox.y1 - trackBox.y0 }} />}
           </div>
-        {!has && <div className="empty"><div><Icon name="media" size={42} /><p>Import media, then double-click a clip<br />or drag it onto the timeline.</p><button className="primary" onClick={run.import}>Import media…</button></div></div>}
+        {!has && <div className="empty"><div><Icon name="media" size={42} /><p>Import media, then double-click a clip<br />or drag it onto the timeline.</p><button className="primary" onClick={run.import}>Import media…</button> <button onClick={run.card}>From memory card…</button></div></div>}
       </div>
       {bars.transport.position === 'bottom' && transport}
     </main>
@@ -1156,7 +1330,7 @@ export function App() {
           const frac = (e.clientX - scroller.getBoundingClientRect().left + scroller.scrollLeft) / inner.clientWidth;
           const T = frac * Math.max(duration, 1);
           const hit = duration > 0 ? locate(tlRef.current, T) : null;
-          addToTimeline(path, hit ? hit.index + (T > hit.startUs + (hit.clip.outUs - hit.clip.inUs) / hit.clip.speed / 2 ? 1 : 0) : undefined);
+          addToTimeline(path, hit ? hit.index + (T > hit.startUs + clipDuration(hit.clip) / 2 ? 1 : 0) : undefined);
         }}
       >
         <TimelineView
@@ -1172,13 +1346,20 @@ export function App() {
           onTrimClip={(id, i, o) => {
             const c = tlRef.current.clips.find((x) => x.id === id);
             const m = c && mediaNow(c.mediaPath);
-            if (m) commit(trimClip(tlRef.current, id, i, o, m.durationUs), `trim:${id}`);
+            if (m) commit(rippleItems(tlRef.current, trimClip(tlRef.current, id, i, o, m.durationUs), id), `trim:${id}`);
           }}
           onTrackRange={setClipTrackRange}
           keyframe={pickedKf()}
           onKeyframe={pickKeyframe}
           onMoveKeyframe={dragKeyframe}
           onKeyframeMenu={(clipId, id, x, y) => { pickKeyframe(clipId, id); setKfMenu({ clipId, id, x, y }); }}
+          speedLines={speedLines}
+          speedPoint={pickedSpeed}
+          onSpeedPoint={pickSpeedPoint}
+          onMoveSpeedPoint={moveSpeedPoint}
+          onAddSpeedPoint={addSpeedPoint}
+          onSpeed={(id, speed) => changeSpeed(id, { speed }, 'speed')}
+          onSpeedMenu={(clipId, id, x, y) => { pickSpeedPoint(clipId, id); setSpeedMenu({ clipId, id, x, y }); }}
           onReorderClip={(id, to) => commit(moveClip(tlRef.current, id, to))}
           onMoveAudio={(id, startUs, inUs, outUs) => commit(updateAudio(tlRef.current, id, { startUs, inUs, outUs }), `music:${id}`)}
           onMoveOverlay={(id, startUs, endUs) => commit(updateOverlay(tlRef.current, id, { startUs, endUs }), `ov-time:${id}`)}
@@ -1225,11 +1406,11 @@ export function App() {
                   ctxClip.audioDetached
                     ? { label: 'Reattach audio', onClick: () => commit(reattachAudio(tlRef.current, ctxClip.id)) }
                     : { label: 'Detach audio', disabled: !ctxHasSound, onClick: () => detach(ctxClip.id) },
-                  { label: 'Track subject from here…', disabled: !mediaNow(ctxClip.mediaPath)?.is360, onClick: () => { seek(ctxMenu.T); setTimeout(startTrackPick, 150); } },
+                  { label: 'Track subject from here…', disabled: !mediaNow(ctxClip.mediaPath), onClick: () => { seek(ctxMenu.T); setTimeout(startTrackPick, 150); } },
                   ...(() => {
                     const tr = ctxClip.track, r = tr && trackRange(tr), e = tr && trackExtent(tr);
                     if (!tr || !r || !e) return [];
-                    const mUs = ctxClip.inUs + (ctxMenu.T - clipStarts(tl)[ctxIndex]!) * ctxClip.speed;
+                    const mUs = mediaAt(ctxClip, ctxMenu.T - clipStarts(tl)[ctxIndex]!);
                     return [
                       { label: 'Start following here', disabled: mUs < e[0] || mUs >= r[1], onClick: () => setClipTrackRange(ctxClip.id, mUs, r[1], 'from') },
                       { label: 'Stop following here', disabled: mUs > e[1] || mUs <= r[0], onClick: () => setClipTrackRange(ctxClip.id, r[0], mUs, 'to') },
@@ -1264,10 +1445,32 @@ export function App() {
           ];
         })()}
       />
+      <AppMenu
+        open={!!speedMenu}
+        at={speedMenu ?? undefined}
+        title="Speed point"
+        onClose={() => setSpeedMenu(null)}
+        items={(() => {
+          const c = speedMenu && tl.clips.find((x) => x.id === speedMenu.clipId), k = c?.speedKeys?.find((x) => x.id === speedMenu!.id);
+          if (!speedMenu || !c?.speedKeys || !k) return [];
+          const keys = c.speedKeys, set = (patch: Parameters<typeof setClipSpeed>[2]) => () => changeSpeed(c.id, patch, 'speedmenu');
+          return [
+            { label: 'Delete point', icon: 'trash', hint: '⌫', onClick: () => deleteSpeedPoint(c.id, k.id) },
+            { label: 'Normal speed here', onClick: set({ speedKeys: keys.map((x) => (x.id === k.id ? { ...x, speed: 1 } : x)) }) },
+            'sep',
+            { label: 'Ease to the next point', checked: (k.ease ?? 'smooth') === 'smooth', onClick: set({ speedKeys: setSpeedEase(keys, k.id, 'smooth') }) },
+            { label: 'Change evenly', checked: k.ease === 'linear', onClick: set({ speedKeys: setSpeedEase(keys, k.id, 'linear') }) },
+            { label: 'Jump', checked: k.ease === 'jump', onClick: set({ speedKeys: setSpeedEase(keys, k.id, 'jump') }) },
+            'sep',
+            { label: 'Remove the whole ramp', onClick: set({ speedKeys: undefined, speed: 1 }) },
+          ];
+        })()}
+      />
       {anyStatus && !statusShown && <div className="toast">{status}</div>}
       {arranging && <ArrangeBar items={items} drag={(e, id, label) => dragItem(e, id, label, null)} onCustomize={() => setCustomize('layout')} onDone={() => setArranging(false)} />}
       {customize && <Customize page={customize} onPage={setCustomize} onClose={() => setCustomize(null)} items={items} />}
       {exportOpen && <ExportDialog timeline={tl} onClose={() => setExportOpen(false)} />}
+      {cardOpen && <ImportWindow onClose={() => setCardOpen(false)} />}
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
     </div>
   );

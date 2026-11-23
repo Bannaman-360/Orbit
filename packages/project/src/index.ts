@@ -3,3 +3,5 @@ export * from './keyframes';
 export * from './timeline';
 export * from './overlays';
 export * from './track';
+export * from './speed';
+export * from './lensLook';

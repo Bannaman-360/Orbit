@@ -40,8 +40,9 @@ describe('GoPro Max layout', () => {
   it('places each half of a split face beside its overlap strip', () => {
     const left = layout.tiles[0]!;
     // Just back of the midline (back lens) lands left of the strip, just front of it lands right.
-    expect(tilePixel(left, -1e-12, 0)[0]).toBeCloseTo(672, 6);
-    expect(tilePixel(left, 1e-12, 0)[0]).toBeCloseTo(704, 6);
+    expect(tilePixel(left, -1e-12, 0)[0]).toBeCloseTo(656.5, 6);
+    expect(tilePixel(left, 1e-12, 0)[0]).toBeCloseTo(719.5, 6);
+    expect(tilePixel(left, -1, 0)[0]).toBeCloseTo(0, 6);
     expect(tilePixel(left, 1, 0)[0]).toBeCloseTo(1376, 6);
   });
 
@@ -54,7 +55,7 @@ describe('GoPro Max layout', () => {
       expect(s.face).toBe(t.face);
       expect(s.stream).toBe(t.stream);
       // Split faces have their centre on the strip; es = 0 is drawn from the right-hand half.
-      expect(s.x).toBeCloseTo(t.x + t.size / 2 + (t.gap ?? 0), 6);
+      expect(s.x).toBeCloseTo(t.x + t.size / 2 + ((t.gap ?? 0) * 95) / 64, 6);
       expect(s.y).toBeCloseTo(t.y + t.size / 2, 6);
     }
   });
@@ -90,12 +91,22 @@ describe('GoPro Max layout', () => {
 
   it('maps overlap-strip pixels to directions just past the lens midline', () => {
     // Left face, centre row: the strip shows directions a few degrees either side of straight left.
-    for (const x of [673, 687, 689, 703]) {
+    for (const x of [657, 687, 689, 719]) {
       const d = streamToDirection(layout, 0, x, 672)!;
       const deg = (Math.atan2(d[2], -d[0]) * 180) / Math.PI; // 0 = straight left, + = towards front
-      expect(Math.abs(deg)).toBeLessThan(1.5);
+      expect(Math.abs(deg)).toBeLessThan(2.3);
       expect(Math.sign(deg)).toBe(x < 688 ? 1 : -1); // each half overshoots into the other's side
     }
+  });
+
+  it('the two halves share 63 pixels of picture (as measured all round real footage)', () => {
+    const left = layout.tiles[0]!;
+    // The last columns before the cut show what is 63 pixels on, after it.
+    for (const x of [660, 672, 686]) {
+      const a = streamToDirection(layout, 0, x, 500)!, b = streamToDirection(layout, 0, x + 63, 500)!;
+      expect(dot(a, b)).toBeGreaterThan(1 - 1e-9);
+    }
+    expect(tilePixel(left, 0.2, 0, 'left')[0]).toBeCloseTo(tilePixel(left, 0.2, 0, 'right')[0] - 63, 6);
   });
 
   it('scales to other stream sizes (e.g. 3K mode)', () => {

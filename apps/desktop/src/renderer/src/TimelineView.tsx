@@ -5,12 +5,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { usePrefs } from './ui/prefs';
 import {
-  assignLanes, audioSpan, clipDuration, clipStarts, GAUGES, mediaToTimeline, timelineDuration, trackExtent, trackRange, transitionUs, TRANSITIONS,
+  assignLanes, audioSpan, clipDuration, clipStarts, GAUGES, hasRamp, localAt, mediaAt, mediaToTimeline, speedRange, timelineDuration, trackExtent, trackRange, transitionUs, TRANSITIONS,
   type Overlay, type Timeline,
 } from '@ace/project';
 import type { Selection } from './App';
 import { baseName } from './api';
 import { mediaNow, musicNow } from './media';
+import { fmtSpeed, SpeedLine } from './SpeedLine';
+import { STRIP_H, STRIP_W, stripPicture, useFilmstrip } from './filmstrip';
 import { fmtTime, useDrag } from './ui';
 
 interface Props {
@@ -34,6 +36,15 @@ interface Props {
   /** Dragged to a media time. */
   onMoveKeyframe: (clipId: string, id: string, t: number) => void;
   onKeyframeMenu: (clipId: string, id: string, x: number, y: number) => void;
+  /** Show the speed line on every clip (it always shows on clips with a ramp). */
+  speedLines: boolean;
+  /** The speed point picked on the timeline. */
+  speedPoint: { clipId: string; id: string } | null;
+  onSpeedPoint: (clipId: string, id: string) => void;
+  onMoveSpeedPoint: (clipId: string, id: string, t: number, speed: number) => void;
+  onAddSpeedPoint: (clipId: string, t: number) => void;
+  onSpeed: (clipId: string, speed: number) => void;
+  onSpeedMenu: (clipId: string, id: string, x: number, y: number) => void;
   onReorderClip: (id: string, toIndex: number) => void;
   onMoveAudio: (id: string, startUs: number, inUs: number, outUs: number) => void;
   onMoveOverlay: (id: string, startUs: number, endUs: number) => void;
@@ -58,6 +69,25 @@ export function TimelineView(p: Props) {
   const { pps, onPps: setPps } = p;
   usePrefs((x) => x.theme.trackHeight); // redraw when the clip height changes
   const scroller = useRef<HTMLDivElement>(null);
+  const videoTrack = useRef<HTMLDivElement>(null);
+  const [trackH, setTrackH] = useState(60);
+  // The part of the timeline in view (film strips are made only there).
+  const [view, setView] = useState({ from: 0, to: 2000 });
+  useEffect(() => {
+    const el = scroller.current!;
+    let raf = 0;
+    const look = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => setView({ from: el.scrollLeft, to: el.scrollLeft + el.clientWidth })); };
+    look();
+    el.addEventListener('scroll', look);
+    const ro = new ResizeObserver(look);
+    ro.observe(el);
+    return () => { el.removeEventListener('scroll', look); ro.disconnect(); cancelAnimationFrame(raf); };
+  }, []);
+  useEffect(() => {
+    const ro = new ResizeObserver(() => setTrackH(videoTrack.current!.clientHeight));
+    ro.observe(videoTrack.current!);
+    return () => ro.disconnect();
+  }, []);
   const duration = timelineDuration(tl);
   const starts = clipStarts(tl);
   const width = Math.max(800, (duration / 1e6) * pps + 300);
@@ -122,10 +152,10 @@ export function TimelineView(p: Props) {
             ))}
           </div>
 
-          <div className="track video-track" onPointerDown={(e) => { if (e.target === e.currentTarget) seekFromEvent(e.clientX); }}>
+          <div className="track video-track" ref={videoTrack} onPointerDown={(e) => { if (e.target === e.currentTarget) seekFromEvent(e.clientX); }}>
             {tl.clips.length === 0 && <div className="track-empty">Drop clips here from the media bin (or double-click them)</div>}
             {tl.clips.map((c, i) => (
-              <ClipBlock key={c.id} {...p} index={i} left={x(starts[i]!)} widthPx={x(clipDuration(c))} pps={pps} startUs={starts[i]!} />
+              <ClipBlock key={c.id} {...p} index={i} left={x(starts[i]!)} widthPx={x(clipDuration(c))} pps={pps} startUs={starts[i]!} trackH={trackH} view={view} />
             ))}
             {tl.clips.map((c, i) => {
               if (i === 0) return null;
@@ -177,7 +207,31 @@ export function TimelineView(p: Props) {
   );
 }
 
-function ClipBlock(p: Props & { index: number; left: number; widthPx: number; pps: number; startUs: number }) {
+/** "0.5×", or "0.25–4×" for a ramp ('' at normal speed). */
+function speedText(c: Timeline['clips'][number]): string {
+  if (!hasRamp(c)) return c.speed === 1 ? '' : fmtSpeed(c.speed);
+  const r = speedRange(c);
+  return r.max - r.min < 0.005 ? fmtSpeed(r.min) : `${fmtSpeed(r.min).slice(0, -1)}–${fmtSpeed(r.max)}`;
+}
+
+/** Pictures along a clip, for the part of it in view. */
+function Strip(p: { clip: Timeline['clips'][number]; left: number; widthPx: number; pps: number; height: number; view: { from: number; to: number }; playhead: number }) {
+  useFilmstrip();
+  const media = mediaNow(p.clip.mediaPath);
+  if (!media || p.widthPx < 4) return null;
+  const h = Math.max(20, p.height), w = (h * STRIP_W) / STRIP_H;
+  const first = Math.max(0, Math.floor((p.view.from - p.left) / w) - 1), last = Math.min(Math.ceil(p.widthPx / w) - 1, Math.ceil((p.view.to - p.left) / w) + 1);
+  const tiles = [];
+  for (let i = first; i <= last; i++) {
+    const local = ((i + 0.5) * w * 1e6) / p.pps, at = Math.min(p.clip.outUs - 1, mediaAt(p.clip, Math.min(local, clipDuration(p.clip) - 1)));
+    const x = p.left + (i + 0.5) * w;
+    const { url, key } = stripPicture(p.clip, media, at, Math.abs(x - (p.view.from + p.view.to) / 2) + Math.abs(x - p.playhead) * 0.5);
+    tiles.push(<i key={i} className="strip-tile" data-key={key} style={{ left: i * w, width: w, backgroundImage: url ? `url(${url})` : undefined }} />);
+  }
+  return <div className="clip-strip" style={{ height: h }}>{tiles}</div>;
+}
+
+function ClipBlock(p: Props & { index: number; left: number; widthPx: number; pps: number; startUs: number; trackH: number; view: { from: number; to: number } }) {
   const c = p.timeline.clips[p.index]!;
   const media = mediaNow(c.mediaPath);
   const orig = useRef(c);
@@ -187,11 +241,11 @@ function ClipBlock(p: Props & { index: number; left: number; widthPx: number; pp
 
   const trimLeft = useDrag((dx) => {
     const o = orig.current;
-    p.onTrimClip(o.id, o.inUs + dx * usPerPx * o.speed, o.outUs);
+    p.onTrimClip(o.id, mediaAt(o, dx * usPerPx), o.outUs);
   }, p.onDragEnd);
   const trimRight = useDrag((dx) => {
     const o = orig.current;
-    p.onTrimClip(o.id, o.inUs, o.outUs + dx * usPerPx * o.speed);
+    p.onTrimClip(o.id, o.inUs, mediaAt(o, clipDuration(o) + dx * usPerPx));
   }, p.onDragEnd);
   const move = useDrag((dx) => { dragRef.current = dx; setDragX(dx); }, () => {
     const dx = dragRef.current;
@@ -219,7 +273,7 @@ function ClipBlock(p: Props & { index: number; left: number; widthPx: number; pp
     const d = kfDrag.current;
     if (!d || (!d.moved && Math.abs(dx) < 4)) return; // a click, so far
     d.moved = true;
-    p.onMoveKeyframe(c.id, d.id, d.t + dx * usPerPx * c.speed);
+    p.onMoveKeyframe(c.id, d.id, mediaAt(c, localAt(c, d.t) + dx * usPerPx));
   }, p.onDragEnd);
 
   return (
@@ -238,15 +292,32 @@ function ClipBlock(p: Props & { index: number; left: number; widthPx: number; pp
         const T = p.startUs + ((e.clientX - r.left) / p.pps) * 1e6;
         p.onClipMenu(c.id, Math.max(p.startUs, Math.min(p.startUs + clipDuration(c) - 1, T)), e.clientX, e.clientY);
       }}
-      title={`${baseName(c.mediaPath)} · ${fmtTime(c.inUs)}–${fmtTime(c.outUs)}${c.speed !== 1 ? ` · ${c.speed}×` : ''}`}
+      title={`${baseName(c.mediaPath)} · ${fmtTime(c.inUs)}–${fmtTime(c.outUs)}${speedText(c) ? ` · ${speedText(c)}` : ''}`}
     >
+      <Strip clip={c} left={p.left} widthPx={p.widthPx} pps={p.pps} height={p.trackH} view={p.view} playhead={(p.time / 1e6) * p.pps} />
       <div className="clip-label">
         {media?.is360 && <b className="badge">360</b>}
-        {c.speed !== 1 && <b className="badge">{c.speed}×</b>}
+        {speedText(c) && <b className="badge">{speedText(c)}</b>}
         {c.audioDetached && <b className="badge" title="Sound detached to the audio track">♪̸</b>}
         <span>{baseName(c.mediaPath)}</span>
       </div>
       <TrackBand {...p} />
+      {(p.speedLines || hasRamp(c)) && (
+        <SpeedLine
+          clip={c}
+          pps={p.pps}
+          width={Math.max(6, p.widthPx)}
+          height={Math.max(30, p.trackH)}
+          selected={p.speedPoint?.clipId === c.id ? p.speedPoint.id : null}
+          onSelect={(id) => p.onSpeedPoint(c.id, id)}
+          onMenu={(id, x, y) => p.onSpeedMenu(c.id, id, x, y)}
+          onPoint={(id, t, s) => p.onMoveSpeedPoint(c.id, id, t, s)}
+          onAdd={(t) => p.onAddSpeedPoint(c.id, t)}
+          onSpeed={(s) => p.onSpeed(c.id, s)}
+          onGrab={() => p.onSelectClip(c.id)}
+          onEnd={p.onDragEnd}
+        />
+      )}
       {kfs.map(({ k, x }) => (
         <button
           key={k.id}
@@ -269,11 +340,11 @@ function TrackBand(p: Props & { index: number; pps: number }) {
   const c = p.timeline.clips[p.index]!;
   const r = c.track && trackRange(c.track), e = c.track && trackExtent(c.track);
   const orig = useRef<[number, number]>([0, 0]);
-  const usPerPx = (1e6 / p.pps) * c.speed;
-  const left = useDrag((dx) => p.onTrackRange(c.id, Math.min(orig.current[0] + dx * usPerPx, orig.current[1] - 100_000), orig.current[1], 'from'), p.onDragEnd);
-  const right = useDrag((dx) => p.onTrackRange(c.id, orig.current[0], Math.max(orig.current[1] + dx * usPerPx, orig.current[0] + 100_000), 'to'), p.onDragEnd);
+  const by = (t: number, dx: number) => mediaAt(c, localAt(c, t) + (dx * 1e6) / p.pps);
+  const left = useDrag((dx) => p.onTrackRange(c.id, Math.min(by(orig.current[0], dx), orig.current[1] - 100_000), orig.current[1], 'from'), p.onDragEnd);
+  const right = useDrag((dx) => p.onTrackRange(c.id, orig.current[0], Math.max(by(orig.current[1], dx), orig.current[0] + 100_000), 'to'), p.onDragEnd);
   if (!r || !e) return null;
-  const px = (t: number) => ((t - c.inUs) / c.speed / 1e6) * p.pps;
+  const px = (t: number) => (localAt(c, t) / 1e6) * p.pps;
   const span = (a: number, b: number) => {
     const x0 = px(Math.max(c.inUs, a)), x1 = px(Math.min(c.outUs, b));
     return x1 > x0 ? { left: x0, width: Math.max(2, x1 - x0) } : null;
@@ -334,7 +405,6 @@ function AudioBlock(p: Props & { id: string; lane: number; left: number; widthPx
   const music = musicNow.get(a.path);
   const orig = useRef(a);
   const usPerPx = 1e6 / p.pps;
-  const rate = a.speed ?? 1;
   const max = music?.durationUs ?? a.outUs;
   const move = useDrag((dx) => {
     const o = orig.current;
@@ -342,12 +412,12 @@ function AudioBlock(p: Props & { id: string; lane: number; left: number; widthPx
   }, p.onDragEnd);
   const trimLeft = useDrag((dx) => {
     const o = orig.current;
-    const d = Math.max(-o.inUs / rate, Math.min(dx * usPerPx, (o.outUs - o.inUs) / rate - 500_000));
-    p.onMoveAudio(o.id, Math.max(0, o.startUs + d), o.inUs + d * rate, o.outUs);
+    const d = Math.max(localAt(o, 0), Math.min(dx * usPerPx, localAt(o, o.outUs) - 500_000));
+    p.onMoveAudio(o.id, Math.max(0, o.startUs + d), Math.max(0, mediaAt(o, d)), o.outUs);
   }, p.onDragEnd);
   const trimRight = useDrag((dx) => {
     const o = orig.current;
-    p.onMoveAudio(o.id, o.startUs, o.inUs, Math.max(o.inUs + 500_000, Math.min(max, o.outUs + dx * usPerPx * rate)));
+    p.onMoveAudio(o.id, o.startUs, o.inUs, Math.max(o.inUs + 500_000, Math.min(max, mediaAt(o, localAt(o, o.outUs) + dx * usPerPx))));
   }, p.onDragEnd);
   const selected = p.selection?.kind === 'audio' && p.selection.id === a.id;
   return (

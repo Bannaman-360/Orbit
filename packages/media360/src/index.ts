@@ -7,3 +7,6 @@ export * from './calibrate';
 export * from './finish';
 export * from './lut';
 export * from './mosse';
+export * from './sourceLens';
+export * from './inputColor';
+export * from './lensMatch';

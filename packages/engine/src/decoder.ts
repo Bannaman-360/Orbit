@@ -41,6 +41,9 @@ export interface DecoderStats {
   errors: string[];
 }
 
+/** How close to its end a frame counts as possibly over (µs). */
+const EDGE_US = 500;
+
 export class TrackDecoder {
   private decoder: VideoDecoder;
   private frames: VideoFrame[] = [];
@@ -61,10 +64,55 @@ export class TrackDecoder {
   /** Decoded frames held ahead of the playhead. Hardware decoders have small frame pools, keep this low. */
   maxAhead = 5;
 
+  /**
+   * Media time one screen refresh covers while playing (µs; 0 = not playing). When that is more
+   * than a frame, the ones in between are decoded but not kept, and decoding isn't paced by the screen.
+   */
+  pace = 0;
+  private get fast() { return this.pace > this.frameUs * 1.15; }
+  private readonly frameUs: number;
+  private get stride() { return 2 ** Math.max(0, Math.floor(Math.log2((this.pace * 0.6) / this.frameUs))); }
+
+  /**
+   * Only decode keyframes: for playing faster than this computer can decode. Shows the nearest
+   * one, so the picture keeps up with the clock.
+   */
+  get skim() { return this.skimming; }
+  startSkim() { this.skimming = true; }
+  /**
+   * Back to every frame, from the next keyframe that can be ready in time (`lead` µs of media
+   * ahead); until then the picture that is up stays.
+   */
+  endSkim(us: number, lead: number) {
+    if (!this.skimming) return;
+    this.skimming = false;
+    const s = this.track.samples;
+    let k = this.keyframeBefore(us) + 1;
+    while (k < s.length && !(s[k]!.isSync && s[k]!.timestamp >= us + lead)) k++;
+    // Frames were left out, so carrying on from here is not possible.
+    if (k >= s.length || this.decoder.state !== 'configured') { this.runKey = -1; this.seek(us); return; }
+    this.generation++;
+    this.decoder.reset();
+    this.decoder.configure(decoderConfig(this.track));
+    while (this.frames.length > 1 && this.frames[1]!.timestamp <= us) this.frames.shift()!.close();
+    for (const f of this.frames.splice(1)) f.close();
+    this.next = k;
+    this.runKey = k;
+    this.discardBefore = s[k]!.timestamp;
+    this.bridge = s[k]!.timestamp;
+    this.restartAt = performance.now();
+    this.sinceRestart = 0;
+    void this.pump();
+  }
+  private skimming = false;
+  /** Until this media time, the picture that is up stays. */
+  private bridge = -Infinity;
+
   constructor(
     private readonly reader: ByteReader,
     readonly track: VideoTrackInfo,
   ) {
+    this.frameUs = 1e6 / (track.fps || 30);
     this.decoder = this.createDecoder();
   }
 
@@ -86,10 +134,21 @@ export class TrackDecoder {
     }
     this.stats.decoded++;
     this.sinceRestart++;
+    // Playing fast: this picture would be gone before the screen's next refresh. (Which ones are
+    // kept depends on their place alone, so both halves of a 360 picture keep the same ones.)
+    if (this.fast && !this.skimming && this.frames.length && frame.timestamp > this.target && Math.round(frame.timestamp / this.frameUs) % this.stride) {
+      frame.close();
+      this.stats.dropped++;
+      void this.pump();
+      return;
+    }
     this.frames.push(frame);
     this.frames.sort((a, b) => a.timestamp - b.timestamp);
+    // Still on the way to the target: only the newest frame before it matters, so don't fill up
+    // with the ones on the way (that would pace decoding by the screen's refreshes).
+    while (this.frames.length > 1 && this.frames[1]!.timestamp <= this.target) this.frames.shift()!.close();
     // Keep the decoder busy between screen refreshes while catching up after a restart.
-    if (this.catchingUp) void this.pump();
+    if (this.catchingUp || this.fast) void this.pump();
   }
 
   /** Presentation time of the keyframe at or before `us`. */
@@ -103,7 +162,8 @@ export class TrackDecoder {
     let k = 0;
     for (let i = 0; i < s.length; i++) {
       if (s[i]!.dts > us) break;
-      if (s[i]!.isSync) k = i;
+      // (A keyframe can be shown later than it is decoded: frames before it belong to the previous run.)
+      if (s[i]!.isSync && s[i]!.timestamp <= us) k = i;
     }
     return k;
   }
@@ -116,6 +176,7 @@ export class TrackDecoder {
    * Returns true if it had to restart.
    */
   seek(us: number, progressive = false): boolean {
+    this.bridge = -Infinity;
     this.target = us;
     const k = this.keyframeBefore(us);
     const head = this.frames[0]?.timestamp ?? this.discardBefore;
@@ -163,6 +224,10 @@ export class TrackDecoder {
     return this.sinceRestart === 0 && this.runKey >= 0 ? performance.now() - this.restartAt : 0;
   }
 
+  private get room() {
+    // (A few more underway when most of them won't be kept.)
+    return this.skimming ? 3 : this.fast ? this.maxAhead + 8 : this.maxAhead;
+  }
   /** Keeps the decoder fed until enough frames are queued. Safe to call often. */
   async pump(): Promise<void> {
     if (this.pumping) return;
@@ -173,14 +238,24 @@ export class TrackDecoder {
       while (
         gen === this.generation &&
         this.next < samples.length &&
-        this.frames.length + this.decoder.decodeQueueSize < this.maxAhead &&
+        this.frames.length + this.decoder.decodeQueueSize < this.room &&
         this.decoder.state === 'configured'
       ) {
         // Read several upcoming samples in one go (they sit close together in the file):
         // far fewer round trips than one read per frame.
-        const room = Math.max(1, this.maxAhead - this.frames.length - this.decoder.decodeQueueSize);
+        const room = Math.max(1, this.room - this.frames.length - this.decoder.decodeQueueSize);
         const batch: SampleRef[] = [];
         let lo = Infinity, hi = 0;
+        if (this.skimming) {
+          while (this.next < samples.length && !samples[this.next]!.isSync) this.next++;
+          const s = samples[this.next];
+          if (!s) break;
+          const data = await this.reader.read(s.offset, s.size);
+          if (gen !== this.generation || this.decoder.state !== 'configured') break;
+          this.next++;
+          this.decoder.decode(new EncodedVideoChunk({ type: 'key', timestamp: s.timestamp, duration: s.duration, data }));
+          continue;
+        }
         for (let i = this.next; i < samples.length && batch.length < Math.min(TrackDecoder.readBatch, room); i++) {
           const s = samples[i]!;
           const nlo = Math.min(lo, s.offset), nhi = Math.max(hi, s.offset + s.size);
@@ -213,12 +288,17 @@ export class TrackDecoder {
    * Frames entirely before `us` are released.
    */
   frameAt(us: number): VideoFrame | null {
+    this.target = us;
     while (this.frames.length > 1 && this.frames[1]!.timestamp <= us) this.frames.shift()!.close();
     const f = this.frames[0];
     if (!f) return null;
+    if (this.skimming || us < this.bridge) return f;
     const end = f.timestamp + (f.duration ?? 0);
-    if (f.timestamp <= us + 1000 && (end > us || this.isLastFrame(f))) return f;
-    return null;
+    // Times are rounded to whole microseconds, so a frame can seem to last into the next one.
+    // Right at that edge, wait for the next frame to be decoded before deciding (otherwise the
+    // previous picture is taken for this moment, with the wrong stabilisation).
+    const sure = this.frames.length > 1 || end - EDGE_US > us || this.isLastFrame(f);
+    return f.timestamp <= us + 1000 && sure ? f : null;
   }
 
   private isLastFrame(f: VideoFrame) {
@@ -237,7 +317,7 @@ export class TrackDecoder {
   }
 
   debug() {
-    return { state: this.decoder.state, next: this.next, runKey: this.runKey, frames: this.frames.map((f) => f.timestamp), discardBefore: this.discardBefore, queue: this.decoder.decodeQueueSize, errors: this.stats.errors.slice(-2), pumping: this.pumping };
+    return { skim: this.skimming, state: this.decoder.state, next: this.next, runKey: this.runKey, frames: this.frames.map((f) => f.timestamp), discardBefore: this.discardBefore, queue: this.decoder.decodeQueueSize, errors: this.stats.errors.slice(-2), pumping: this.pumping };
   }
 
   /** Releases frames and closes the decoder. */

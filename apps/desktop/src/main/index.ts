@@ -1,8 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, type MenuItemConstructorOptions } from 'electron';
 import { createHash } from 'node:crypto';
-import { open, mkdir, readdir, readFile, rename, stat, unlink, writeFile, type FileHandle } from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
+import { copyFile, constants as fsFlags, open, mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
+import { chaptersOf } from '@ace/engine/src/chapters';
 import { extractOrientation, type GpmfRequest } from '@ace/telemetry/node';
+import { setupImporter } from './importer';
 
 const SELFTEST = process.argv.includes('--selftest');
 const SELFTEST_MODE = process.argv.find((a) => a.startsWith('--selftest-mode='))?.split('=')[1] ?? 'full';
@@ -10,8 +13,10 @@ const SELFTEST_MODE = process.argv.find((a) => a.startsWith('--selftest-mode='))
 const REPO_ROOT = path.resolve(app.getAppPath(), '..', '..');
 const FIXTURES = path.join(REPO_ROOT, 'fixtures');
 const SELFTEST_OUT = path.join(REPO_ROOT, 'selftest-out');
-const VIDEO_EXT = ['360', 'mp4', 'MP4', 'mov', 'MOV', 'lrv', 'LRV'];
-const AUDIO_EXT = ['mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg', 'MP3', 'M4A', 'WAV'];
+const VIDEO_EXT = ['360', 'mp4', 'mov', 'lrv', 'm4v'];
+const AUDIO_EXT = ['mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg'];
+/** Whether a file has one of these extensions, however it is capitalised (cameras write .MP4). */
+const hasExt = (p: string, list: string[]) => list.includes(path.extname(p).slice(1).toLowerCase());
 
 // Self-tests run in the background: no Dock icon, no visible window, no sound, never in front of
 // what the user is doing, and with their own app data (layout, autosave, proxies).
@@ -69,7 +74,7 @@ async function listMedia(dir: string): Promise<string[]> {
   for (const e of entries) {
     const p = path.join(dir, e.name);
     if (e.isDirectory()) out.push(...(await listMedia(p)));
-    else if (VIDEO_EXT.includes(path.extname(e.name).slice(1))) out.push(p);
+    else if (hasExt(e.name, VIDEO_EXT)) out.push(p);
   }
   return out.sort();
 }
@@ -80,18 +85,35 @@ ipcMain.handle('app:info', () => ({ selftest: SELFTEST, selftestMode: SELFTEST_M
 
 // --- Dialogs -----------------------------------------------------------------
 
-ipcMain.handle('dialog:open-media', async () => {
-  const r = await dialog.showOpenDialog(win!, { properties: ['openFile', 'multiSelections'], filters: [{ name: 'Video', extensions: VIDEO_EXT }] });
+/**
+ * Lets the user choose files. macOS decides what to grey out from its own idea of file types,
+ * which can wrongly rule out a camera's files, so there every file can be picked and the
+ * extension is checked afterwards.
+ */
+async function pickFiles(name: string, extensions: string[]): Promise<string[]> {
+  const upper = extensions.map((e) => e.toUpperCase());
+  const filters = process.platform === 'darwin' ? undefined : [{ name, extensions: [...new Set([...extensions, ...upper])] }];
+  const r = await dialog.showOpenDialog(win!, { properties: ['openFile', 'multiSelections'], filters });
   if (r.canceled) return [];
-  allowRead(r.filePaths);
-  return r.filePaths;
+  const good = r.filePaths.filter((p) => hasExt(p, extensions));
+  const bad = r.filePaths.filter((p) => !good.includes(p));
+  if (bad.length) {
+    await dialog.showMessageBox(win!, {
+      type: 'info',
+      message: bad.length === 1 ? `“${path.basename(bad[0]!)}” can’t be imported here.` : `${bad.length} of the files can’t be imported here.`,
+      detail: `These work: ${extensions.map((e) => `.${e}`).join(', ')}.`,
+    });
+  }
+  allowRead(good);
+  return good;
+}
+
+ipcMain.handle('dialog:open-media', async () => {
+  return pickFiles('Video', VIDEO_EXT);
 });
 
 ipcMain.handle('dialog:open-audio', async () => {
-  const r = await dialog.showOpenDialog(win!, { properties: ['openFile', 'multiSelections'], filters: [{ name: 'Audio', extensions: AUDIO_EXT }] });
-  if (r.canceled) return [];
-  allowRead(r.filePaths);
-  return r.filePaths;
+  return pickFiles('Audio', AUDIO_EXT);
 });
 
 ipcMain.handle('dialog:open-lut', async () => {
@@ -151,6 +173,16 @@ ipcMain.handle('file:stat', async (_e, p: string) => {
   return { path: p, size: (await stat(p)).size };
 });
 
+/** The chapters of the recording a file belongs to, in order (files next to it, which may then be read too). */
+ipcMain.handle('media:chapters', async (_e, p: string) => {
+  if (!canRead(p)) throw new Error('File access denied');
+  const dir = path.dirname(p);
+  const names = await readdir(dir).catch(() => [] as string[]);
+  const found = chaptersOf(path.basename(p), names).map((c) => ({ path: path.join(dir, c.name), part: c.part }));
+  allowRead(found.map((c) => c.path));
+  return found;
+});
+
 ipcMain.handle('file:read', async (_e, p: string, offset: number, length: number) => asBytes(await readRange(p, offset, length)));
 
 ipcMain.handle('file:read-all', async (_e, p: string) => {
@@ -187,16 +219,35 @@ ipcMain.handle('file:close', async (_e, p: string) => {
   readable.add(path.resolve(p));
 });
 
+/** Lets go of a file opened for reading (a file kept open would stop its card from being ejected). */
+ipcMain.handle('file:release', async (_e, p: string) => {
+  const h = handles.get(p);
+  handles.delete(p);
+  await h?.close();
+});
+
+// --- Memory cards -----------------------------------------------------------------
+// Self-tests never look at the computer's real drives: a folder of theirs stands in.
+const TEST_DRIVES = path.join(SELFTEST_OUT, 'drives');
+if (SELFTEST) mkdirSync(TEST_DRIVES, { recursive: true });
+const importer = setupImporter({
+  window: () => win,
+  allowRead,
+  record: path.join(app.getPath('userData'), 'imported.json'),
+  dest: SELFTEST ? path.join(SELFTEST_OUT, 'imported') : path.join(app.getPath('videos'), 'Action Cam'),
+  drives: SELFTEST ? TEST_DRIVES : undefined,
+});
+
 // --- Preview proxies ------------------------------------------------------------
 // Low-resolution copies of media for smooth preview on slower machines. Stored in the app's
 // data folder, named from the source file's path, size and modification time (so an edited
 // source gets a fresh proxy).
 const proxyDir = () => path.join(app.getPath('userData'), 'proxies');
 const inProxyDir = (p: string) => inside(p, proxyDir());
-ipcMain.handle('proxy:path', async (_e, src: string, level: number) => {
+ipcMain.handle('proxy:path', async (_e, src: string, level: number, tag = '') => {
   if (!canRead(src)) throw new Error('File access denied');
   const st = await stat(src);
-  const key = createHash('sha1').update(`${path.resolve(src)}|${st.size}|${st.mtimeMs}`).digest('hex').slice(0, 20);
+  const key = createHash('sha1').update(`${path.resolve(src)}|${st.size}|${st.mtimeMs}${tag}`).digest('hex').slice(0, 20);
   const file = path.join(proxyDir(), `${key}-${Math.round(level)}.mp4`);
   const exists = await stat(file).then(() => true, () => false);
   readable.add(file);
@@ -257,6 +308,31 @@ ipcMain.handle('selftest:metrics', async () => {
 // Real mouse and key presses (proper hit-testing and pointer capture), for interface tests.
 ipcMain.handle('selftest:input', (_e, ev: Electron.MouseInputEvent | Electron.KeyboardInputEvent) => { if (SELFTEST) win!.webContents.sendInputEvent(ev); });
 ipcMain.handle('selftest:out', (_e, name: string) => path.join(SELFTEST_OUT, path.basename(name)));
+// Self-test only: pretend memory cards, and a look at what was copied. Stays inside selftest-out.
+ipcMain.handle('selftest:files', async (_e, what: string, a: string, b: string | number | Uint8Array) => {
+  if (!SELFTEST) throw new Error('Only in self-tests');
+  const here = (p: string) => { const f = path.resolve(SELFTEST_OUT, p); if (!inside(f, SELFTEST_OUT)) throw new Error('Outside selftest-out'); return f; };
+  if (what === 'copy') { const to = here(b as string); await mkdir(path.dirname(to), { recursive: true }); await copyFile(path.isAbsolute(a) && canRead(a) ? a : here(a), to, fsFlags.COPYFILE_FICLONE); }
+  if (what === 'write') { const to = here(a); await mkdir(path.dirname(to), { recursive: true }); await writeFile(to, b as string | Uint8Array); }
+  if (what === 'move') { await mkdir(path.dirname(here(b as string)), { recursive: true }); await rename(here(a), here(b as string)); }
+  if (what === 'remove' && /^(drives|imported|away)/.test(a)) await rm(here(a), { recursive: true, force: true });
+  if (what === 'mkdir') await mkdir(here(a), { recursive: true });
+  if (what === 'hash') return createHash('sha256').update(await readFile(path.isAbsolute(a) ? a : here(a))).digest('hex');
+  if (what === 'open') return handles.size;
+  if (what === 'dest') await importer.setDest(a ? here(a) : undefined);
+  if (what === 'forget') await importer.forget();
+  if (what === 'slow') importer.setSlow(b as number);
+  if (what === 'list') {
+    const walk = async (d: string): Promise<string[]> => (await Promise.all((await readdir(d, { withFileTypes: true }).catch(() => [])).map(async (e) => {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) return walk(p);
+      const s = await stat(p);
+      return [`${path.relative(here(a), p)}|${s.size}|${Math.round(s.mtimeMs / 1000)}`];
+    }))).flat();
+    return (await walk(here(a))).sort();
+  }
+  return null;
+});
 ipcMain.handle('selftest:done', async (_e, report: unknown) => {
   await mkdir(SELFTEST_OUT, { recursive: true });
   await writeFile(path.join(SELFTEST_OUT, 'report.json'), JSON.stringify(report, null, 2));
@@ -279,7 +355,7 @@ function buildMenu() {
   const sep: MenuItemConstructorOptions = { type: 'separator' };
   const template: MenuItemConstructorOptions[] = [
     ...(MAC ? [{ label: app.name, submenu: [{ role: 'about' }, sep, it('Customize…', 'customize'), sep, { role: 'services' }, sep, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, sep, { role: 'quit' }] as MenuItemConstructorOptions[] }] : []),
-    { label: 'File', submenu: [it('Import Media…', 'import'), it('Add Music…', 'music'), sep, it('Open Project…', 'open'), it('Save Project…', 'save'), sep, it('Export Video…', 'export'), it('Save Frame…', 'grab'), sep, MAC ? { role: 'close' } : { role: 'quit' }] },
+    { label: 'File', submenu: [it('Import Media…', 'import'), it('Import from Memory Card…', 'card'), it('Add Music…', 'music'), sep, it('Open Project…', 'open'), it('Save Project…', 'save'), sep, it('Export Video…', 'export'), it('Save Frame…', 'grab'), sep, MAC ? { role: 'close' } : { role: 'quit' }] },
     { label: 'Edit', submenu: [it('Undo', 'undo'), it('Redo', 'redo'), sep, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }, sep, it('Split', 'split'), it('Split and Delete Left', 'delLeft'), it('Split and Delete Right', 'delRight'), it('Duplicate Clip', 'duplicate'), it('Delete', 'delete'), sep, it('Add Keyframe', 'keyframe'), it('Add Text', 'text'), it('Track Subject…', 'track')] },
     { label: 'View', submenu: [it('Media', 'toggleMedia'), it('Inspector', 'toggleInspector'), it('Timeline', 'toggleTimeline'), sep, it('Customize…', 'customize'), it('Arrange Interface', 'arrange'), it('Undo Interface Change', 'undoUi'), sep, it('Show Before / After', 'compare'), it('Full-Screen Preview', 'fullscreen'), { role: 'togglefullscreen', label: 'Enter Full Screen Window' }, ...(app.isPackaged ? [] : [sep, { role: 'reload' }, { role: 'toggleDevTools' }] as MenuItemConstructorOptions[])] },
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, ...(MAC ? [sep, { role: 'front' }] as MenuItemConstructorOptions[] : [])] },
@@ -313,6 +389,11 @@ function createWindow() {
     },
   });
   if (HIDDEN) win.webContents.setAudioMuted(true);
+  win.on('close', (e) => {
+    if (!importer.busy() || SELFTEST) return;
+    const go = dialog.showMessageBoxSync(win!, { type: 'warning', message: 'Recordings are still being copied from the card.', detail: 'Closing now stops the import. What was copied completely is kept, and nothing on the card changes.', buttons: ['Keep Importing', 'Stop and Close'], defaultId: 0, cancelId: 0 });
+    if (go === 0) e.preventDefault();
+  });
   win.on('enter-full-screen', () => win?.webContents.send('win:fullscreen', true));
   win.on('leave-full-screen', () => win?.webContents.send('win:fullscreen', false));
   win.webContents.on('console-message', (e) => {
@@ -324,7 +405,9 @@ function createWindow() {
 
 app.whenReady().then(createWindow);
 app.on('window-all-closed', () => app.quit());
-app.on('will-quit', () => {
+let closing = false;
+app.on('will-quit', (e) => {
+  if (importer.busy() && !closing) { closing = true; e.preventDefault(); void importer.close().then(() => app.quit()); return; }
   for (const h of handles.values()) void h.close();
   for (const h of writeHandles.values()) void h.close();
 });

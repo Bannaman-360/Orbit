@@ -96,3 +96,17 @@ export function quatToMat([w, x, y, z]: [number, number, number, number]): Mat3 
     2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y),
   ];
 }
+
+/** A rotation applied only partly (0 = not at all, 1 = fully). */
+export function matPower(m: Mat3, k: number): Mat3 {
+  if (k >= 1) return m;
+  if (k <= 0) return IDENTITY;
+  const c = Math.max(-1, Math.min(1, (m[0] + m[4] + m[8] - 1) / 2));
+  const angle = Math.acos(c);
+  if (angle < 1e-7) return m;
+  const axis: Vec3 = [m[7] - m[5], m[2] - m[6], m[3] - m[1]];
+  if (Math.hypot(...axis) > 1e-5) return axisAngle(axis, angle * k);
+  // Half a turn: the axis is the direction the rotation leaves alone.
+  const x = Math.sqrt(Math.max(0, (m[0] + 1) / 2)), y = Math.sqrt(Math.max(0, (m[4] + 1) / 2)), z = Math.sqrt(Math.max(0, (m[8] + 1) / 2));
+  return axisAngle([x, m[1] + m[3] < 0 ? -y : y, m[2] + m[6] < 0 ? -z : z], angle * k);
+}

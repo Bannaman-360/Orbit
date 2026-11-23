@@ -2,12 +2,14 @@
 //
 // Times: "media time" is a position inside a source file; "timeline time" is a
 // position in the finished edit. Both are microseconds. A clip shows media
-// [inUs, outUs) and lasts (outUs − inUs) / speed on the timeline.
+// [inUs, outUs) and lasts (outUs − inUs) / speed on the timeline (see speed.ts for ramps).
 
 import type { Keyframe } from './keyframes';
 import { DEFAULT_LOOK, NEUTRAL_GRADE, NO_EFFECTS, type Look } from './look';
 import { fixOverlay, type Overlay } from './overlays';
+import { fixSpeedKeys, localAt, mediaAt, playLength, type SpeedKey } from './speed';
 import type { ClipTrack } from './track';
+import type { LensLook } from './lensLook';
 
 export type TransitionKind =
   | 'crossfade' | 'dip-black' | 'dip-white' | 'flash' | 'blur'
@@ -38,7 +40,19 @@ export interface StabilizeSettings {
   /** Smoothing window (σ, seconds) used when smoothing is 'custom'. */
   strength?: number;
   horizon: boolean;
+  /** Regular clips: how the picture is cropped to hide the moving edges. Missing = automatic. */
+  crop?: 'auto' | 'manual';
+  /** Automatic: seconds the zoom takes to change (0 = one zoom for the whole clip). */
+  cropSpeed?: number;
+  /** Automatic: most of the field of view it may give up (0–0.8). */
+  maxCrop?: number;
+  /** Manual: share of the field of view given up. */
+  cropAmount?: number;
+  /** Regular clips: undo the wobble of the sensor's rolling shutter. Missing = off. */
+  rolling?: boolean;
 }
+
+export const DEFAULT_CROP = { cropSpeed: 2, maxCrop: 0.35, cropAmount: 0.1 };
 
 export interface Framing {
   label: string;
@@ -57,13 +71,22 @@ export const FRAMINGS: Framing[] = [
 
 export const framingAspect = (label: string) => FRAMINGS.find((f) => f.label === label)?.aspect ?? 16 / 9;
 
+/** What a clip's recorded values mean. 'raw' = not converted (for a LUT made for the camera). */
+export type InputChoice = 'auto' | 'standard' | 'gplog' | 'gplog2' | 'flat' | 'hlg' | 'raw';
+
 export interface TimelineClip {
   id: string;
   mediaPath: string;
   inUs: number;
   outUs: number;
-  /** Playback speed, 0.25–4. */
+  /** Playback speed, 0.1–8 (when there is no ramp). */
   speed: number;
+  /** A speed ramp (see speed.ts). */
+  speedKeys?: SpeedKey[];
+  /** The clip's sound is silent where it plays slower than this. Missing = never. */
+  muteBelow?: number;
+  /** At other speeds the sound keeps its pitch (stretched in time). Missing = yes. */
+  keepPitch?: boolean;
   /** Base look (used when there are no keyframes). */
   look: Look;
   /** Keyframe times are media times, so they stay put when the clip is trimmed or split. */
@@ -73,8 +96,23 @@ export interface TimelineClip {
   volume: number;
   /** Non-360 clips: crop to fill the frame, or fit inside it with bars. */
   fit: 'fill' | 'fit';
+  /**
+   * Regular clips: which lens the view uses. Missing = never reframed, so the clip is shown
+   * exactly as recorded and its look's view settings are ignored.
+   */
+  lensMode?: 'source' | 'custom';
+  /** Regular clips: the user's correction of the detected lens. */
+  lensFix?: { hfov?: number; bend?: number };
   /** Transition from the previous clip into this one (ignored on the first clip). */
   transitionIn?: Transition;
+  /** Missing = auto. */
+  inputColor?: InputChoice;
+  /** The fisheye follows the field of view to keep this look (see lensLook.ts). Missing = a fixed fisheye. */
+  lensLook?: LensLook;
+  /** 360 clips: corrections for each lens (see lensMatch.ts). */
+  lenses?: { front?: Record<string, number>; back?: Record<string, number> };
+  /** The camera recorded wide (Rec.2020) colours. Missing = as the file says. */
+  wideColor?: boolean;
   /** The clip's sound was moved to the audio track (see detachAudio). */
   audioDetached?: boolean;
   /** Subject tracking: pan/tilt follow this path (see track.ts). */
@@ -94,6 +132,9 @@ export interface AudioClip {
   fadeOutUs: number;
   /** Playback speed (detached clip audio keeps its clip's speed). */
   speed?: number;
+  speedKeys?: SpeedKey[];
+  muteBelow?: number;
+  keepPitch?: boolean;
   /** Set when this is a video clip's own sound, detached onto the audio track. */
   linkedClipId?: string;
 }
@@ -131,7 +172,7 @@ export function newClip(mediaPath: string, durationUs: number, is360: boolean): 
   };
 }
 
-export const clipDuration = (c: TimelineClip) => (c.outUs - c.inUs) / c.speed;
+export const clipDuration = (c: TimelineClip) => playLength(c);
 
 /** Overlap between clip i and the one before it (its transition, limited to half of either clip). */
 export function transitionUs(tl: Timeline, i: number): number {
@@ -172,7 +213,7 @@ export interface Located {
 const locatedAt = (tl: Timeline, i: number, start: number, T: number): Located => {
   const c = tl.clips[i]!;
   const local = Math.max(0, Math.min(clipDuration(c), T - start));
-  return { index: i, clip: c, startUs: start, mediaUs: Math.min(c.outUs - 1, c.inUs + local * c.speed) };
+  return { index: i, clip: c, startUs: start, mediaUs: Math.min(c.outUs - 1, mediaAt(c, local)) };
 };
 
 /** Which clip is at timeline time T, and the media time it shows. During a transition this is the outgoing clip. */
@@ -204,7 +245,7 @@ export function layersAt(tl: Timeline, T: number): Layers | null {
   return { a, b: locatedAt(tl, i, starts[i]!, T), transition: next.transitionIn, progress: Math.min(1, (T - starts[i]!) / d) };
 }
 
-export const mediaToTimeline = (startUs: number, c: TimelineClip, mediaUs: number) => startUs + (mediaUs - c.inUs) / c.speed;
+export const mediaToTimeline = (startUs: number, c: TimelineClip, mediaUs: number) => startUs + localAt(c, mediaUs);
 
 const replaceClip = (tl: Timeline, id: string, f: (c: TimelineClip) => TimelineClip | TimelineClip[]): Timeline => ({
   ...tl,
@@ -212,6 +253,41 @@ const replaceClip = (tl: Timeline, id: string, f: (c: TimelineClip) => TimelineC
 });
 
 export const updateClip = (tl: Timeline, id: string, patch: Partial<TimelineClip>) => replaceClip(tl, id, (c) => ({ ...c, ...patch }));
+
+/** Changes a clip's speed or ramp; its sound, if detached, goes along. */
+export function setClipSpeed(tl: Timeline, id: string, patch: Partial<Pick<TimelineClip, 'speed' | 'speedKeys' | 'muteBelow' | 'keepPitch'>>): Timeline {
+  const next = updateClip(tl, id, patch);
+  return next.audio.some((a) => a.linkedClipId === id) ? { ...next, audio: next.audio.map((a) => (a.linkedClipId === id ? { ...a, ...patch } : a)) } : next;
+}
+
+/**
+ * After a clip got longer or shorter (speed, ramp, trim): text, gauges and detached clip sound
+ * stay with the pictures they belonged to. Things after the clip move by the change; edges inside
+ * it stay on the same moment of the recording. Music stays where it is, on its beat.
+ */
+export function rippleItems(before: Timeline, after: Timeline, clipId: string): Timeline {
+  const i = before.clips.findIndex((c) => c.id === clipId), j = after.clips.findIndex((c) => c.id === clipId);
+  if (i < 0 || j < 0) return after;
+  const a = before.clips[i]!, b = after.clips[j]!;
+  const s0 = clipStarts(before)[i]!, e0 = s0 + clipDuration(a), s1 = clipStarts(after)[j]!, e1 = s1 + clipDuration(b);
+  if (Math.abs(s0 - s1) < 1 && Math.abs(e0 - e1) < 1 && a.inUs === b.inUs && a.outUs === b.outUs) return after;
+  const move = (T: number) => {
+    if (T <= s0) return T;
+    if (T >= e0) return T + (e1 - e0);
+    const m = mediaAt(a, T - s0);
+    return m <= b.inUs ? s1 : m >= b.outUs ? e1 : s1 + localAt(b, m);
+  };
+  const MIN = 200_000;
+  const total = timelineDuration(after);
+  return {
+    ...after,
+    overlays: after.overlays.map((o) => {
+      const st = move(o.startUs), en = Math.max(st + MIN, move(o.endUs));
+      return st === o.startUs && en === o.endUs ? o : { ...o, startUs: Math.min(st, Math.max(0, total - MIN)), endUs: Math.min(en, Math.max(total, st + MIN)) };
+    }),
+    audio: after.audio.map((x) => (x.linkedClipId && x.linkedClipId !== clipId && x.startUs >= e0 ? { ...x, startUs: move(x.startUs) } : x)),
+  };
+}
 
 export function addClip(tl: Timeline, clip: TimelineClip, index = tl.clips.length): Timeline {
   const clips = [...tl.clips];
@@ -284,7 +360,7 @@ export function detachAudio(tl: Timeline, clipId: string): Timeline {
   const start = clipStarts(tl)[i]!;
   const a: AudioClip = {
     id: newId('a'), path: c.mediaPath, startUs: start, inUs: c.inUs, outUs: c.outUs,
-    volume: c.volume, fadeInUs: 0, fadeOutUs: 0, speed: c.speed, linkedClipId: c.id,
+    volume: c.volume, fadeInUs: 0, fadeOutUs: 0, speed: c.speed, linkedClipId: c.id, ...(c.speedKeys ? { speedKeys: c.speedKeys } : {}), ...(c.muteBelow ? { muteBelow: c.muteBelow } : {}), ...(c.keepPitch === false ? { keepPitch: false } : {}),
   };
   return { ...updateClip(tl, c.id, { audioDetached: true }), audio: [...tl.audio, a] };
 }
@@ -307,7 +383,7 @@ export const removeAudio = (tl: Timeline, id: string): Timeline => ({ ...tl, aud
 
 /** Timeline range an audio clip covers, cut at the end of the video. */
 export function audioSpan(tl: Timeline, a: AudioClip): { start: number; end: number } {
-  const end = Math.min(a.startUs + (a.outUs - a.inUs) / (a.speed ?? 1), timelineDuration(tl));
+  const end = Math.min(a.startUs + playLength(a), timelineDuration(tl));
   return { start: a.startUs, end: Math.max(a.startUs, end) };
 }
 
@@ -343,8 +419,9 @@ export function loadTimeline(raw: unknown): Timeline {
       look: fixLook(c.look),
       keyframes: (c.keyframes ?? []).map((k) => ({ ...k, easing: k.easing ?? 'smooth', look: fixLook(k.look) })),
       stabilize: { ...{ smoothing: 'off' as const, horizon: false }, ...(c.stabilize ?? {}) },
+      ...(c.speedKeys ? { speedKeys: fixSpeedKeys(c.speedKeys) } : {}),
     })),
-    audio: (p.audio ?? []).map((a) => ({ ...newAudioClip(a.path, a.outUs ?? 0), ...a })),
+    audio: (p.audio ?? []).map((a) => ({ ...newAudioClip(a.path, a.outUs ?? 0), ...a, ...(a.speedKeys ? { speedKeys: fixSpeedKeys(a.speedKeys) } : {}) })),
     overlays: (p.overlays ?? []).map(fixOverlay),
   };
 }

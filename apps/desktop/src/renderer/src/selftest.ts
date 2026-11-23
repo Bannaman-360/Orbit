@@ -19,6 +19,18 @@ import { clipLookAt, clipViewToWorld, presentLook, pushClipFrame, WORLD_STABILIZ
 import { getMedia, loadMusic, mediaNow, type Media } from './media';
 import { generateSynthetic360, generateTone } from './synth';
 import { directionAt, TRACKER, trackSubject } from './tracker';
+import { flatCheck, flatProbe, realSteady, realPlay, realLooks, lensDump, stabCheck } from './selftestFlat';
+import { lensCheck, lensLookCheck } from './selftestLens';
+import { stripCheck } from './selftestStrip';
+import { scrubBackCheck } from './selftestScrub';
+import { exportCheck, exportTag } from './selftestExport';
+import { seamCheck, seamFit, seamLook, seamMeasure } from './selftestSeam';
+import { colorCheck, colorFacts, colorProbe, colorRoutes } from './selftestColor';
+import { speedCheck } from './selftestSpeed';
+import { cardCheck, cardQuit } from './selftestCard';
+import { chapterCheck } from './selftestChapters';
+import { equirectCheck, equirectMotion } from './selftestEquirect';
+import { followCheck, realFollow } from './selftestFollow';
 import { uiCheck } from './selftestUi';
 import { group } from './ui/dockModel';
 import { defaultPrefs, setPrefs } from './ui/prefs';
@@ -481,7 +493,7 @@ async function helmetCheck(media: Media, opts: { yaw: number; pitch: number; siz
  * the tracked view every 0.5 s into a contact sheet so the result can be checked by eye.
  */
 /** Rider's true position in GS010120.360, labelled by eye: time s, world yaw°, pitch°, height°. */
-const RIDER_TRUTH: [number, number, number, number][] = [
+export const RIDER_TRUTH: [number, number, number, number][] = [
   [4.42, 5.0, 9.1, 5],
   [4.67, 5.4, 8.4, 5],
   [4.92, 6.2, 6.2, 6],
@@ -504,7 +516,7 @@ const RIDER_TRUTH: [number, number, number, number][] = [
   [10.43, 179.1, -3.6, 3],
   [10.93, 179.6, -4.9, 3],
 ];
-const riderTruthAt = (ts: number) => {
+export const riderTruthAt = (ts: number) => {
   const k = RIDER_TRUTH.findIndex((p) => p[0] >= ts);
   if (k <= 0) return k === 0 ? RIDER_TRUTH[0]! : RIDER_TRUTH.at(-1)!;
   const a = RIDER_TRUTH[k - 1]!, b = RIDER_TRUTH[k]!, f = (ts - a[0]) / (b[0] - a[0]);
@@ -779,6 +791,15 @@ async function perfCheck(api: EditorApi) {
 }
 
 export async function runSelftest(api: EditorApi) {
+  if (api.mode === 'flat' || api.mode === 'flatprobe' || api.mode === 'stab' || api.mode === 'lensdump' || api.mode === 'reallooks' || api.mode === 'realplay' || api.mode === 'realsteady' || api.mode === 'follow' || api.mode === 'realfollow' || api.mode === 'equirect' || api.mode === 'equirectmotion' || api.mode === 'chapters' || api.mode === 'card' || api.mode === 'cardquit' || api.mode === 'speed' || api.mode === 'colorprobe' || api.mode === 'colorroutes' || api.mode === 'colorfacts' || api.mode === 'color' || api.mode === 'seamlook' || api.mode === 'seam' || api.mode === 'seamfit' || api.mode === 'seamcheck' || api.mode === 'lens' || api.mode === 'exporttag' || api.mode === 'export' || api.mode === 'lenslook' || api.mode === 'strip' || api.mode === 'scrubback') {
+    try {
+      await ace.selftestDone(api.mode === 'scrubback' ? await scrubBackCheck(api) : api.mode === 'strip' ? await stripCheck(api) : api.mode === 'lenslook' ? await lensLookCheck(api) : api.mode === 'export' ? await exportCheck() : api.mode === 'exporttag' ? await exportTag() : api.mode === 'lens' ? await lensCheck(api) : api.mode === 'colorprobe' ? await colorProbe() : api.mode === 'seam' ? await seamMeasure() : api.mode === 'seamcheck' ? await seamCheck() : api.mode === 'seamfit' ? await seamFit() : api.mode === 'seamlook' ? await seamLook() : api.mode === 'color' ? await colorCheck(api) : api.mode === 'colorfacts' ? await colorFacts() : api.mode === 'colorroutes' ? await colorRoutes() : api.mode === 'speed' ? await speedCheck(api) : api.mode === 'card' ? await cardCheck(api) : api.mode === 'cardquit' ? await cardQuit() : api.mode === 'chapters' ? await chapterCheck(api) : api.mode === 'equirectmotion' ? await equirectMotion() : api.mode === 'equirect' ? await equirectCheck(api) : api.mode === 'realfollow' ? await realFollow() : api.mode === 'follow' ? await followCheck(api) : api.mode === 'flat' ? await flatCheck(api) : api.mode === 'stab' ? await stabCheck(api) : api.mode === 'realsteady' ? await realSteady('GX010133.MP4') : api.mode === 'realplay' ? await realPlay(api, 'GX010133.MP4') : api.mode === 'reallooks' ? await realLooks('GX010133.MP4') : api.mode === 'lensdump' ? await lensDump('GX010133.MP4') : await flatProbe());
+    } catch (e) {
+      await ace.capture('flat-crash');
+      await ace.selftestDone({ error: String((e as Error).stack ?? e) });
+    }
+    return;
+  }
   if (api.mode === 'ui') {
     try {
       await ace.selftestDone(await uiCheck(api));
@@ -1012,7 +1033,7 @@ export async function runSelftest(api: EditorApi) {
     // --- Media ---------------------------------------------------------------------------
     const synth = await generateSynthetic360({ seconds: 3 });
     const tone = await generateTone(30);
-    const real = (await ace.listFixtures()).filter((f) => !/[\\/]synthetic[\\/]/.test(f));
+    const real = (await ace.listFixtures()).filter((f) => !/[\\/]synthetic[\\/]/.test(f) && !/GS010004\.mp4$/.test(f)); // (that one is 8 minutes long)
     await api.importPaths([...real, synth]);
     const media = await Promise.all([...real, synth].map((p) => getMedia(p).catch((e) => ({ error: String(e), path: p }))));
     report.media = media.map((m) => ('error' in m ? m : { name: m.name, is360: m.is360, durationS: +(m.durationUs / S).toFixed(2), fps: +m.fps.toFixed(2), size: `${m.width}x${m.height}`, audioTracks: m.info.audioTracks.map((a) => `${a.codec} ${a.channels}ch ${a.sampleRate}Hz`), telemetry: m.stabilizer.hasOrientation }));
@@ -1092,6 +1113,8 @@ export async function runSelftest(api: EditorApi) {
     await capture(api, 'editor-synthetic', (real360 ? 6.5 : 0.5) * S);
     if (real360) await capture(api, 'editor-dip-mid', 7.7 * S);
     if (real360) await capture(api, 'editor-tiny-planet', 9 * S);
+    setPrefs(defaultPrefs());
+    await sleep(400);
     // Panel sections: start closed except the main one, open on click, close all together.
     {
       const heads = () => [...document.querySelectorAll('.inspector .section-toggle')] as HTMLButtonElement[];

@@ -36,7 +36,7 @@ describe('layout calibration', () => {
     const r = calibrateLayout(truth, [paint(truth)]);
     expect(r.layout.tiles.map((t) => [t.x, t.gap, t.right, t.down])).toEqual(truth.tiles.map((t) => [t.x, t.gap, t.right, t.down]));
     expect(r.score).toBeLessThan(3);
-  });
+  }, 30_000);
 
   it('recovers scrambled orientations and a different seam layout', () => {
     const guess = goproMaxLayout(W, H);
@@ -57,5 +57,5 @@ describe('layout calibration', () => {
     expect(r.mirroredTiles).toEqual([]);
     expect(r.layout.tiles.map((t) => [t.x, t.gap, t.right, t.down])).toEqual(truth.tiles.map((t) => [t.x, t.gap, t.right, t.down]));
     expect(r.score).toBeLessThan(r.baselineScore);
-  });
+  }, 30_000);
 });

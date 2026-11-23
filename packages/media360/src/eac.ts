@@ -23,11 +23,10 @@ export interface Tile {
   y: number;
   size: number;
   /**
-   * Pixels of lens overlap stored in the middle of the tile (GoPro stores the side
-   * faces in two halves, one per lens, with an overlap strip between them). The tile
-   * then spans `size + gap` pixels: left half, `gap` overlap pixels, right half.
-   * The first gap/2 overlap pixels continue the left half past the midline, the last
-   * gap/2 continue the right half before it. 0 for faces stored in one piece.
+   * Spare pixels of a tile stored in two halves, one per lens (GoPro's side faces): it spans
+   * `size + gap` pixels, cut in the middle. Each half shows its 45° in about (size − gap) / 2
+   * pixels and then carries on about `gap` pixels into the other lens's side, so the two halves
+   * have nearly 2 × `gap` pixels of picture in common. 0 for faces stored in one piece.
    */
   gap?: number;
   /** World axis the face centre looks at. Must be a unit axis (e.g. [0,0,1]). */
@@ -43,7 +42,12 @@ export interface EacLayout {
   streamWidth: number;
   streamHeight: number;
   tiles: Tile[];
+  /** One stream holding the whole sphere as a stitched latitude / longitude picture (no tiles). */
+  equirect?: boolean;
 }
+
+/** A stitched 360 picture: longitude across (front in the middle), latitude down. */
+export const equirectLayout = (width: number, height: number): EacLayout => ({ name: 'equirectangular', streamWidth: width, streamHeight: height, tiles: [], equirect: true });
 
 const AX = {
   px: [1, 0, 0] as Vec3,
@@ -62,10 +66,12 @@ const AX = {
  * Stream 0: left | front | right, upright. Stream 1: down | back | up, laid sideways
  * (the back-lens strip rotated 90° clockwise), so moving right goes down→back→up.
  * The middle face of each stream is one lens and is stored whole. The outer faces
- * straddle both lenses, so each is stored as two halves with the spare width
- * (stream width − 3 faces, split evenly) as an overlap strip at its midline:
+ * straddle both lenses, so each is stored as two halves of 688 pixels, cut at its midline:
  *
- *   4096 = [672 left-back | 32 overlap | 672 left-front][1344 front][672 right-front | 32 | 672 right-back]
+ *   4096 = [688 left-back | 688 left-front][1344 front][688 right-front | 688 right-back]
+ *
+ * Measured on Max 2 footage against GoPro's own stitched version: a half shows its 45° in 656.5
+ * pixels (not 672) and 31.5 more beyond the midline, so the halves share 63 pixels of picture.
  */
 export function goproMaxLayout(streamWidth: number, streamHeight: number): EacLayout {
   const s = streamHeight;
@@ -89,6 +95,9 @@ export function goproMaxLayout(streamWidth: number, streamHeight: number): EacLa
 /** Width the tile occupies in the stream, overlap included. */
 export const tileWidth = (t: Tile) => t.size + (t.gap ?? 0);
 
+/** Pixels a half of a split tile uses for its own 45° (it stores about `gap` more, past the midline): 656.5 of 688. */
+export const halfSpan = (t: Tile) => t.size / 2 - ((t.gap ?? 0) * 31) / 64;
+
 /**
  * Equi-angular tile coordinates (es, ev in -1..1) → stream pixel. For split tiles the
  * two halves sit either side of the overlap strip. `side` picks which half's mapping
@@ -97,11 +106,11 @@ export const tileWidth = (t: Tile) => t.size + (t.gap ?? 0);
  */
 export function tilePixel(t: Tile, es: number, ev: number, side: 'auto' | 'left' | 'right' = 'auto'): [number, number] {
   const gap = t.gap ?? 0;
-  const half = t.size / 2;
+  const half = halfSpan(t);
   const y = t.y + ((ev + 1) / 2) * t.size;
   if (!gap) return [t.x + ((es + 1) / 2) * t.size, y];
   const useLeft = side === 'left' || (side === 'auto' && es < 0);
-  return [useLeft ? t.x + (es + 1) * half : t.x + half + gap + es * half, y];
+  return [useLeft ? t.x + (es + 1) * half : t.x + t.size + gap - half + es * half, y];
 }
 
 /** EAC warp: cube-plane coordinate (-1..1) to equi-angular coordinate (-1..1). */
@@ -150,11 +159,11 @@ export function streamToDirection(layout: EacLayout, stream: number, x: number, 
   for (const t of layout.tiles) {
     if (t.stream !== stream) continue;
     if (x < t.x || x >= t.x + tileWidth(t) || y < t.y || y >= t.y + t.size) continue;
-    const gap = t.gap ?? 0, half = t.size / 2;
+    const gap = t.gap ?? 0, half = halfSpan(t);
     let es: number;
     if (!gap) es = ((x - t.x) / t.size) * 2 - 1;
-    else if (x < t.x + half + gap / 2) es = (x - t.x) / half - 1; // left half (+ its overlap)
-    else es = (x - t.x - half - gap) / half; // right half (+ its overlap)
+    else if (x < t.x + tileWidth(t) / 2) es = (x - t.x) / half - 1; // left half (+ its overlap)
+    else es = 1 - (t.x + tileWidth(t) - x) / half; // right half (+ its overlap)
     const ev = ((y - t.y) / t.size) * 2 - 1;
     const s = fromEquiAngular(es);
     const v = fromEquiAngular(ev);

@@ -7,6 +7,7 @@
 //       stabilisation (the view stays locked to where the camera pointed at the start).
 
 import { type Mat3, type Vec3, IDENTITY, mulMat, normalize, quatToMat, rotationBetween, transpose } from '@ace/media360';
+import { denseOrientation, fitGyro, type GyroFit } from './gyro';
 import type { GpsSample } from './metrics';
 
 export interface TimedVec3 { t: number; v: Vec3 }
@@ -26,6 +27,8 @@ export interface OrientationData {
   gps?: GpsSample[];
   /** Accelerometer, m/s² (for the G-force overlay). */
   accl?: TimedVec3[];
+  /** Gyroscope at full rate (regular clips only; for rolling shutter). */
+  gyro?: TimedVec3[];
   /** Every stream key found in the file, for diagnostics. */
   streams: string[];
 }
@@ -278,12 +281,22 @@ export class Stabilizer {
 
   /** Orientation of the recorded picture (CORI combined with IORI); used for stabilisation. */
   readonly image: OrientationData | null;
+  /** The same several times per frame, from the gyro (when it is present and agrees). */
+  readonly dense: OrientationData | null = null;
+  readonly gyroFit: GyroFit | null = null;
 
   constructor(readonly data: OrientationData | null, ioriMode: IoriMode = DEFAULT_IORI_MODE) {
     const fits = data ? fitCoriMapping(data) : [];
     // Only trust the fit when it is clearly consistent; otherwise fall back to the gravity mapping.
     this.coriFit = fits[0] && fits[0].score < 0.02 ? fits[0] : null;
     this.image = data ? { ...data, cori: imageOrientation(data, ioriMode) } : null;
+    if (data?.gyro?.length) {
+      this.gyroFit = fitGyro(data.cori, data.gyro);
+      if (this.gyroFit) {
+        const d = { ...data, cori: denseOrientation(data.cori, data.gyro, this.gyroFit) };
+        this.dense = { ...d, cori: imageOrientation(d, ioriMode) };
+      }
+    }
   }
 
   get hasOrientation() {
@@ -326,7 +339,6 @@ export class Stabilizer {
   /** Camera body orientation relative to the stabilised path; pass to the renderer. */
   correctionAt(t: number, opts: StabilizeOptions): Mat3 {
     if (!this.data) return IDENTITY;
-    const P = axisMapMatrix(opts.axisMap);
     const toOurs = this.toOursFn(opts);
 
     // C maps camera coordinates into the stabilised (smoothed-path) frame: C = Sᵀ·R.
@@ -337,16 +349,7 @@ export class Stabilizer {
     if (qr && qs) C = mulMat(transpose(toOurs(qs)), toOurs(qr));
 
     if (opts.horizon) {
-      // Gravity in camera coordinates. With orientation data, carry one clip-wide
-      // "down" through the camera's measured rotation: smooth and drift-free. The raw
-      // gravity sensor is noisy frame to frame and would make the horizon jitter.
-      let gCam: Vec3 | null = null;
-      const down = qr ? this.worldDown(opts, toOurs) : null;
-      if (qr && down) gCam = mulVec3(transpose(toOurs(qr)), down);
-      else {
-        const g = gravityAt(this.data, t);
-        if (g) gCam = normalize(mulVec3(P, g));
-      }
+      const gCam = this.gravityIn(t, opts);
       if (gCam) {
         const gs = normalize(mulVec3(C, gCam));
         C = mulMat(rotationBetween(gs, [0, -1, 0]), C);
@@ -355,9 +358,37 @@ export class Stabilizer {
     return C;
   }
 
+  /**
+   * Which way is down, in camera coordinates. With orientation data, one clip-wide "down" is
+   * carried through the camera's measured rotation: smooth and drift-free. The raw gravity
+   * sensor is noisy frame to frame and would make the horizon jitter.
+   */
+  gravityIn(t: number, opts: Pick<StabilizeOptions, 'axisMap' | 'invertCori'>): Vec3 | null {
+    if (!this.data) return null;
+    const toOurs = this.toOursFn(opts);
+    const qr = orientationAt(this.image!, t);
+    const down = qr ? this.worldDown(opts, toOurs) : null;
+    if (qr && down) return mulVec3(transpose(toOurs(qr)), down);
+    const g = gravityAt(this.data, t);
+    return g && normalize(mulVec3(axisMapMatrix(opts.axisMap), g));
+  }
+
+  /**
+   * How the camera turned between the middle of the frame at `t` and `offsets` µs from it
+   * (for each row of a rolling shutter): camera directions then → camera directions at `t`.
+   */
+  turnWithin(t: number, offsets: number[], opts: Pick<StabilizeOptions, 'axisMap' | 'invertCori'>): Mat3[] | null {
+    const src = this.dense ?? this.image;
+    const q0 = src && orientationAt(src, t);
+    if (!src || !q0) return null;
+    const toOurs = this.toOursFn(opts);
+    const back = transpose(toOurs(q0));
+    return offsets.map((o) => mulMat(back, toOurs(orientationAt(src, t + o)!)));
+  }
+
   private downCache = new Map<string, Vec3>();
   /** Average gravity direction in the world (orientation-data) frame over the whole clip. */
-  private worldDown(opts: StabilizeOptions, toOurs: (q: Quat) => Mat3): Vec3 | null {
+  private worldDown(opts: Pick<StabilizeOptions, 'axisMap' | 'invertCori'>, toOurs: (q: Quat) => Mat3): Vec3 | null {
     const key = `${opts.axisMap.join()}|${opts.invertCori}`;
     const hit = this.downCache.get(key);
     if (hit) return hit;
@@ -393,6 +424,72 @@ export function smoothGravity(samples: TimedVec3[], radius = 5): TimedVec3[] {
 }
 
 /**
+ * Motion data of a recording split into several files, each already on its own video's clock.
+ * Cameras may start each file's orientation from zero again: then it is carried on from where the
+ * file before ended.
+ */
+export function joinOrientation(parts: { data: OrientationData; startUs: number }[]): OrientationData {
+  const move = <T extends { t: number }>(a: T[] | undefined, by: number) => (a ?? []).map((s) => ({ ...s, t: s.t + by }));
+  const out: OrientationData = { grav: [], cori: [], iori: [], gps: [], accl: [], gyro: [], streams: [...new Set(parts.flatMap((p) => p.data.streams))].sort() };
+  const fit = parts[0] && fitCoriMapping(parts[0].data)[0];
+  const known = fit && fit.score < 0.02 ? fit : null;
+  // Whether CORI maps camera to world or the other way round decides the side a new start is undone on.
+  const inverse = known ? known.invert : true;
+  const angle = (a: Quat, b: Quat) => 2 * Math.acos(Math.min(1, Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3])));
+  const unit = (q: Quat): Quat => { const l = Math.hypot(...q) || 1; return [q[0] / l, q[1] / l, q[2] / l, q[3] / l]; };
+  /** Camera turn from one sample to the next, and the sample after a turn. */
+  const between = (p: Quat, q: Quat): Quat => (inverse ? qmul(q, qconj(p)) : qmul(qconj(p), q));
+  const after = (p: Quat, d: Quat): Quat => (inverse ? qmul(d, p) : qmul(p, d));
+  const shift = (q: Quat, w: Quat): Quat => (inverse ? qmul(q, w) : qmul(w, q));
+  /** Average gravity in the frame the orientations are relative to. */
+  const down = (cori: TimedQuat[], data: OrientationData): Vec3 | null => {
+    if (!known || !data.grav.length || !cori.length) return null;
+    const G = mulMat(transpose(axisMapMatrix(known.axisMap)), axisMapMatrix(DEFAULT_AXIS_MAP));
+    const sum: Vec3 = [0, 0, 0];
+    for (const { t, q } of cori) {
+      const g = gravityAt(data, t);
+      if (!g) continue;
+      const R = quatToMat(q as Quat);
+      const w = mulVec3(inverse ? transpose(R) : R, normalize(mulVec3(G, g)));
+      sum[0] += w[0]; sum[1] += w[1]; sum[2] += w[2];
+    }
+    return normalize(sum);
+  };
+  let firstDown: Vec3 | null = null;
+  for (const [i, { data, startUs }] of parts.entries()) {
+    const n = out.cori.length, last = out.cori[n - 1]?.q as Quat | undefined, first = data.cori[0]?.q as Quat | undefined;
+    let cori = data.cori;
+    // A new start is exactly "no rotation", and far from where the last file ended.
+    if (last && first && angle(first, [1, 0, 0, 0]) < 0.01 && angle(last, first) > 0.05) {
+      // The camera kept turning from the last frame of one file to the first of the next.
+      const before = out.cori[n - 2] ? between(out.cori[n - 2]!.q as Quat, last) : ([1, 0, 0, 0] as Quat);
+      const next = data.cori[1] ? between(first, data.cori[1].q as Quat) : before;
+      const s = before[0] * next[0] + before[1] * next[1] + before[2] * next[2] + before[3] * next[3] < 0 ? -1 : 1;
+      const turn = unit(before.map((v, k) => v + s * next[k]!) as Quat);
+      const X = inverse ? qmul(qconj(first), after(last, turn)) : qmul(after(last, turn), qconj(first));
+      cori = data.cori.map((c) => ({ t: c.t, q: shift(c.q as Quat, X) }));
+      // That guess is a little off; gravity says by how much it leans.
+      const d = down(cori, data);
+      if (d && firstDown) {
+        const ax: Vec3 = [d[1] * firstDown[2] - d[2] * firstDown[1], d[2] * firstDown[0] - d[0] * firstDown[2], d[0] * firstDown[1] - d[1] * firstDown[0]];
+        const r = unit([1 + d[0] * firstDown[0] + d[1] * firstDown[1] + d[2] * firstDown[2], ...ax]);
+        if (angle(r, [1, 0, 0, 0]) < 0.35) cori = cori.map((c) => ({ t: c.t, q: shift(c.q as Quat, inverse ? qconj(r) : r) }));
+      }
+    }
+    if (i === 0) firstDown = down(data.cori, data);
+    for (const c of cori) out.cori.push({ t: c.t + startUs, q: c.q });
+    for (const x of move(data.grav, startUs)) out.grav.push(x);
+    for (const x of move(data.iori, startUs)) out.iori!.push(x);
+    for (const x of move(data.gps, startUs)) out.gps!.push(x);
+    for (const x of move(data.accl, startUs)) out.accl!.push(x);
+    for (const x of move(data.gyro, startUs)) out.gyro!.push(x);
+  }
+  if (!out.gyro!.length) delete out.gyro;
+  if (!out.iori!.length) delete out.iori;
+  return out;
+}
+
+/**
  * Puts the orientation data on the video's clock. GoPro writes one CORI sample per
  * video frame, but the timestamps gopro-telemetry derives are shifted (≈43 ms on the
  * Max 2, measured against image motion). When the counts match, sample i belongs to
@@ -412,5 +509,6 @@ export function alignToFrames(data: OrientationData, frameTimes: number[]): Orie
   const iori = data.iori?.map((s, i) => ({ t: ioriPerFrame && i < frameTimes.length ? frameTimes[i]! : s.t - offset, q: s.q }));
   const gps = data.gps?.map((s) => ({ ...s, t: s.t - offset }));
   const accl = data.accl?.map((s) => ({ t: s.t - offset, v: s.v }));
-  return { ...data, cori, grav, iori, gps, accl, syncOffsetUs: offset };
+  const gyro = data.gyro?.map((s) => ({ t: s.t - offset, v: s.v }));
+  return { ...data, cori, grav, iori, gps, accl, gyro, syncOffsetUs: offset };
 }

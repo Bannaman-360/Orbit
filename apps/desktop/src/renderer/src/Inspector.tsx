@@ -4,13 +4,19 @@
 import type { ReactNode } from 'react';
 import { effectiveLens, lensK, MIN_FISHEYE } from '@ace/media360';
 import {
-  ANIMATIONS, blurLabel, FONTS, clipStarts, DEFAULT_TRACK_EASE_S, DEFAULT_TRACK_LENS, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, mediaToTimeline, NO_EFFECTS, trackActive, trackExtent, lookAt, trackHeld, trackRange, trackWeight, GAUGE_STYLES, GAUGES, GRADE_PRESETS, TEXT_PRESETS, gradeFromPreset, keyframeNear, NEUTRAL_GRADE, timelineDuration, TRANSITION_GROUPS, transitionUs,
-  type AudioClip, type ClipTrack, type Easing, type Effects, type GaugeKind, type Grade, type Look, type Overlay, type Smoothing, type Timeline, type TimelineClip, type Transition,
+  ANIMATIONS, blurLabel, FONTS, clipStarts, framingAspect, DEFAULT_CROP, DEFAULT_TRACK_EASE_S, DEFAULT_TRACK_LENS, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, mediaToTimeline, NO_EFFECTS, trackActive, trackExtent, lookAt, trackHeld, trackRange, trackWeight, GAUGE_STYLES, GAUGES, GRADE_PRESETS, TEXT_PRESETS, gradeFromPreset, keyframeNear, NEUTRAL_GRADE, timelineDuration, TRANSITION_GROUPS, transitionUs,
+  cleanSpeed, hasRamp, localAt, mediaAt, MAX_SPEED, MIN_SPEED, RAMP_PRESETS, rampPreset, removeSpeedKey, setSpeedEase, setSpeedKey, speedAt, speedKeyNear, speedRange,
+  fisheyeForLook,
+  type AudioClip, type ClipTrack, type Easing, type Effects, type GaugeKind, type Grade, type InputChoice, type Look, type Overlay, type Smoothing, type Timeline, type TimelineClip, type Transition,
 } from '@ace/project';
 import { CUSTOM_SIGMA_RANGE, SMOOTHING_SIGMA_S } from '@ace/telemetry';
 import { baseName } from './api';
+import { autoInput, INPUT_NAMES, inputName, resolvedInput, wideColor } from './color';
+import { adoptReframe, clipLens, flatShot, lensLookOf, roomFov, shutterDoneInCamera } from './frameRender';
 import type { Media } from './media';
 import { FONT_STACK } from './overlayRender';
+import { LensMatchSection } from './LensMatch';
+import { fmtSpeed } from './SpeedLine';
 import { fmtTime, Lock, Section, SectionList, Seg, Slider, toggleAllSections, type Units } from './ui';
 import { Icon } from './ui/Icon';
 
@@ -40,6 +46,14 @@ export interface InspectorProps {
   onPrevKey: () => void;
   onNextKey: () => void;
   onClip: (patch: Partial<TimelineClip>, key: string) => void;
+  /** Changes speed or ramp. */
+  onSpeed: (patch: Partial<Pick<TimelineClip, 'speed' | 'speedKeys' | 'muteBelow' | 'keepPitch'>>, key: string) => void;
+  speedLines: boolean;
+  onSpeedLines: () => void;
+  /** Works out corrections that make the lenses of a 360 clip alike. */
+  onMatchLenses: (which?: 'front' | 'back') => void;
+  lensBusy: boolean;
+  onLensesToAll: () => void;
   onGradeToAll: () => void;
   onLoadLut: () => void;
   onClearLut: () => void;
@@ -104,7 +118,7 @@ function TrackRangeControls(p: InspectorProps & { clip: TimelineClip; track: Cli
   if (!r || !e) return null;
   const start = clipStarts(p.timeline)[p.clipIndex] ?? 0;
   const toT = (t: number) => mediaToTimeline(start, clip, t) / 1e6;
-  const toMedia = (s: number) => clip.inUs + (s * 1e6 - start) * clip.speed;
+  const toMedia = (s: number) => mediaAt(clip, s * 1e6 - start);
   // Only the part of the path inside this (possibly trimmed) clip can be chosen.
   const lo = Math.max(e[0], clip.inUs), hi = Math.min(e[1], clip.outUs);
   if (hi <= lo) return <p className="hint">The tracked part is outside this clip’s trim.</p>;
@@ -178,10 +192,23 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
   const { clip, look, media } = p;
   const is360 = !!media?.is360;
   const key = keyframeNear(clip.keyframes, p.mediaUs);
+  const ramp = hasRamp(clip), speedNow = speedAt(clip, p.mediaUs), fps = p.media?.fps ?? 30;
+  const speedPoint = speedKeyNear(clip, p.mediaUs);
+  /** The point whose way to the next one the playhead is in. */
+  const stretch = clip.speedKeys?.filter((k, _i, all) => k.t <= p.mediaUs + 1000 && all.some((x) => x.t > k.t)).sort((a, b) => b.t - a.t)[0];
+  const setSpeed = (s: number, k: string) => p.onSpeed(ramp ? { speedKeys: setSpeedKey(clip, p.mediaUs, s) } : { speed: s }, k);
   const keyed = !!key;
   const keyCount = clip.keyframes.length;
   const lens = effectiveLens({ fov: look.fov, fisheye: look.fisheye, autoLens: true });
   const g = look.grade;
+  // The lens look kept while zooming.
+  const kept = lensLookOf(clip);
+  const keepLook = (
+    <>
+      <label className="check" title="The fisheye follows the field of view, so zooming in or out keeps the same look instead of the same lens"><input type="checkbox" checked={!!clip.lensLook} onChange={(e) => p.onClip({ lensLook: e.target.checked ? { fov: look.fov, fisheye: look.fisheye } : undefined, ...(e.target.checked ? {} : { look: { ...clip.look, fisheye: look.fisheye }, keyframes: clip.keyframes.map((k) => ({ ...k, look: { ...k.look, fisheye: look.fisheye } })) }) }, 'lens-look')} /> Keep this look when zooming</label>
+      {kept && <p className="hint">{[60, 120, 200, 300].map((f) => `${f}°: ${lensName(lensK(fisheyeForLook(kept, f))).replace(/ —.*/, '').toLowerCase()}`).join(' · ')}</p>}
+    </>
+  );
 
   // What subject tracking controls at the playhead, and why it can't be changed there.
   const tr = clip.track;
@@ -202,9 +229,33 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
   const bent = steered && (tr!.autoZoom ?? 0) > 0 && look.fisheye > lookAt(clip.keyframes, clip.look, p.mediaUs).fisheye + 0.004;
   const lensLock: string | false = bent ? 'Auto fisheye is bending the lens here to avoid stretched edges. Change “Auto fisheye” in Subject tracking, or set it to 0% to use this slider.' : false;
   const viewLock = aimLock('view') || zoomLock;
+  // Regular clips: the lens they were shot through.
+  const flat = media ? clipLens(media, clip) : null;
+  const canMove = is360 || !!flat;
+  const shot = flat && media && clip.lensMode ? flatShot(clip, media, look, p.mediaUs, framingAspect(p.timeline.framing)) : null;
+  const shown = shot?.fov ?? look.fov;
+  const customLens = clip.lensMode === 'custom';
+  const widest = flat && media ? Math.round(roomFov(clip, media)) : MAX_ZOOM_FOV;
+  /** Changes what the lens is thought to be, keeping an unzoomed clip unzoomed. */
+  const fixLens = (patch: { hfov?: number; bend?: number }) => {
+    const next = { ...clip.lensFix, ...patch };
+    const grow = (f: number) => (patch.hfov && flat ? Math.min(170, (f * patch.hfov) / flat.hfov) : f);
+    p.onClip({ lensFix: next, look: { ...clip.look, fov: grow(clip.look.fov) }, keyframes: clip.keyframes.map((k) => ({ ...k, look: { ...k.look, fov: grow(k.look.fov) } })) }, `lensfix-${Object.keys(patch)}`);
+  };
   const noZoom = !!tr && !(tr.autoZoom ?? 0) && 'This only matters when the view zooms with the subject. Turn up Auto zoom first.';
-  const noMotion = !is360 ? 'Stabilization uses 360 camera motion data, which regular clips don’t have.' : !media?.stabilizer.hasOrientation ? 'This clip has no motion data from the camera, so it can’t be stabilized.' : false;
-  const noGravity = !is360 ? 'Leveling the horizon needs a 360 clip.' : !media?.stabilizer.hasGravity ? 'This clip has no gravity data from the camera, so the horizon can’t be found.' : false;
+  const stitched = !!media?.layout?.equirect;
+  const noMotion = !media?.stabilizer.hasOrientation ? stitched ? 'This 360 video was stitched before you downloaded it. GoPro normally builds its stabilization into these, and the file has no motion data to change it with.' : 'This clip has no motion data from the camera, so it can’t be stabilized.' : false;
+  const stabOn = clip.stabilize.smoothing !== 'off' && !noMotion;
+  const levelOn = clip.stabilize.horizon && !!media?.stabilizer.hasGravity;
+  const cropLock: string | false = !stabOn && !levelOn && (noMotion || 'Cropping hides the edges that stabilization and leveling uncover. Turn Stabilization or Level horizon on first.');
+  const steadyLock: string | false = cropLock || noMotion || (!stabOn && 'This only matters while the picture is stabilized. Turn Stabilization on first.');
+  const rollLock: string | false = steadyLock || (!!media && shutterDoneInCamera(media) && 'This camera already corrects it while recording, so fixing it again would add wobble.') || (!media?.camera.readoutMs && 'The file doesn’t say how fast the sensor is read, so the wobble can’t be worked out.') || (media!.turns !== 0 && 'This isn’t available yet for clips recorded with the camera turned.');
+  /** Changes stabilisation (a regular clip becomes reframable first, which doesn't change how it looks). */
+  const setStab = (patch: Partial<typeof clip.stabilize>, k: string) => {
+    const c = adoptReframe(clip);
+    p.onClip({ ...(c === clip ? {} : { lensMode: c.lensMode, look: c.look, keyframes: c.keyframes }), stabilize: { ...clip.stabilize, ...patch } }, k);
+  };
+  const noGravity = !media?.stabilizer.hasGravity ? 'This clip has no gravity data from the camera, so the horizon can’t be found.' : false;
 
   const keyBar = (
     <div className="keybar">
@@ -239,7 +290,7 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
       st.smoothing === 'custom' ? st.strength ?? SMOOTHING_SIGMA_S.medium
       : st.smoothing === 'low' || st.smoothing === 'medium' || st.smoothing === 'high' ? SMOOTHING_SIGMA_S[st.smoothing]
       : st.strength ?? SMOOTHING_SIGMA_S.medium;
-    const off = !is360 || !media?.stabilizer.hasOrientation;
+    const off = !media?.stabilizer.hasOrientation;
     const fx = look.fx;
     const set = (k: keyof Effects) => (v: number) => p.onLook({ fx: { ...fx, [k]: v } }, `fx-${k}`);
     const fxSlider = (k: keyof Effects, label: string, hint: string) => (
@@ -253,15 +304,15 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
           <p className="hint">{keyCount ? 'Changes now set a keyframe at the playhead. Delete one with its bin, or click its ◆ on the timeline and press ⌫.' : 'Add a keyframe to animate the view, lens and color over time.'}</p>
         </Section>
     ),
-    'Subject tracking': is360 && (
+    'Subject tracking': canMove && (
         <Section title="Subject tracking" badge={clip.track ? (trackActive(clip.track, p.mediaUs) ? 'Following' : 'On') : undefined}>
           {clip.track ? (
             <>
               <TrackRangeControls {...p} clip={clip} track={clip.track} />
               <Slider label="Auto zoom" value={clip.track.autoZoom ?? 0} min={0} max={1} step={0.01} reset={1} units={PCT} format={pct} hint="Zooms in and out so the subject stays the same size in the frame (0% = off)." onChange={(v) => p.onTrackPatch({ autoZoom: v, subjectFrac: clip.track!.subjectFrac ?? 0.25 }, 'track-zoom')} />
               <Slider label="Subject size" value={clip.track.subjectFrac ?? 0.25} min={0.03} max={0.9} step={0.005} reset={0.25} units={PCT} format={pct} locked={noZoom} hint="How much of the frame width the subject fills when auto zoom is on. Scrolling over the preview changes this too." onChange={(v) => p.onTrackPatch({ subjectFrac: v }, 'track-size')} />
-              <Slider label="Auto fisheye" value={clip.track.lens ?? DEFAULT_TRACK_LENS} min={0} max={1} step={0.01} reset={DEFAULT_TRACK_LENS} units={PCT} format={pct} locked={noZoom} hint="Bends the lens as auto zoom goes wide, so the edges don't stretch. 0% keeps the clip's own lens." onChange={(v) => p.onTrackPatch({ lens: v }, 'track-lens')} />
-              <Slider label="Widest zoom" value={clip.track.maxFov ?? DEFAULT_TRACK_MAX_FOV} min={50} max={MAX_ZOOM_FOV} step={1} reset={DEFAULT_TRACK_MAX_FOV} units={DEG} format={deg} locked={noZoom} hint="Auto zoom never shows a wider view than this; the subject gets bigger instead." onChange={(v) => p.onTrackPatch({ maxFov: v }, 'track-maxfov')} />
+              <Slider label="Auto fisheye" value={clip.track.lens ?? DEFAULT_TRACK_LENS} min={0} max={1} step={0.01} reset={DEFAULT_TRACK_LENS} units={PCT} format={pct} locked={noZoom || (!!flat && !customLens && 'The original lens is kept as it is. Choose Custom under Lens to let it bend.')} hint="Bends the lens as auto zoom goes wide, so the edges don't stretch. 0% keeps the clip's own lens." onChange={(v) => p.onTrackPatch({ lens: v }, 'track-lens')} />
+              <Slider label="Widest zoom" value={Math.min(widest, clip.track.maxFov ?? DEFAULT_TRACK_MAX_FOV)} min={Math.min(50, widest - 1)} max={widest} step={1} reset={Math.min(widest, DEFAULT_TRACK_MAX_FOV)} units={DEG} format={deg} locked={noZoom} hint={`Auto zoom never shows a wider view than this; the subject gets bigger instead.${flat ? ` This clip’s picture is ${widest.toFixed(0)}° wide, so it can’t go wider.` : ''}`} onChange={(v) => p.onTrackPatch({ maxFov: v }, 'track-maxfov')} />
               <Slider label="Shift across" value={clip.track.offsetYaw} min={-60} max={60} step={0.1} reset={0} units={DEG} format={deg} hint="Moves the framing left or right of the subject." onChange={(v) => p.onTrackPatch({ offsetYaw: v }, 'track-ox')} />
               <Slider label="Shift up" value={clip.track.offsetPitch} min={-45} max={45} step={0.1} reset={0} units={DEG} format={deg} hint="Moves the framing above or below the subject." onChange={(v) => p.onTrackPatch({ offsetPitch: v }, 'track-oy')} />
               <Slider label="Smoothness" value={clip.track.smoothing} min={0} max={1.5} step={0.01} reset={0.25} format={secs} units={SEC} hint="How much the camera's follow movement is smoothed (seconds)." onChange={(v) => p.onTrackPatch({ smoothing: v }, 'track-smooth')} />
@@ -274,29 +325,47 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
           ) : (
             <>
               <div className="row-buttons"><button onClick={p.onTrackSubject} disabled={p.trackBusy}>◎ Track subject…</button></div>
-              <p className="hint">Drag a box around a person, bike or anything else on the preview: the view follows it from here on. Afterwards you can choose where it starts and stops.</p>
+              <p className="hint">Drag a box around a person, bike or anything else on the preview: the view follows it from here on. Afterwards you can choose where it starts and stops.{flat ? ' A regular clip zooms in a little so there is picture left to move into, and never shows past its edges.' : ''}</p>
+              {flat && noMotion && <p className="hint">This clip has no motion data, so the subject is followed in the picture itself. Hard camera shake makes that less sure.</p>}
             </>
           )}
         </Section>
     ),
-    'View': is360 && (
+    'View': canMove && (
         <Section title="View" defaultOpen>
           <Slider label="Pan" locked={aimLock('pan')} value={look.yaw} min={-180} max={180} step={0.1} reset={0} format={deg} units={DEG} keyed={keyed} onChange={(v) => p.onLook({ yaw: v }, 'yaw')} />
           <Slider label="Tilt" locked={aimLock('tilt')} value={look.pitch} min={-90} max={90} step={0.1} reset={0} format={deg} units={DEG} keyed={keyed} onChange={(v) => p.onLook({ pitch: v }, 'pitch')} />
           <Slider label="Roll" value={look.roll} min={-180} max={180} step={0.1} reset={0} format={deg} units={DEG} keyed={keyed} onChange={(v) => p.onLook({ roll: v }, 'roll')} />
-          <p className="hint">Drag on the preview to look around; scroll to zoom.</p>
+          <p className="hint">{flat ? 'Scroll on the preview to zoom in, then drag to move around the picture.' : 'Drag on the preview to look around; scroll to zoom.'}</p>
+          {flat && <div className="row-buttons"><button onClick={() => p.onLook({ yaw: 0, pitch: 0, roll: 0, fov: flat.hfov, fisheye: 0 }, 'view-reset')}>Show the whole picture</button></div>}
         </Section>
     ),
     'Framing': !is360 && (
         <Section title="Framing" defaultOpen>
           <Seg value={clip.fit} options={[['fill', 'Fill frame'], ['fit', 'Fit (bars)']]} onChange={(v) => p.onClip({ fit: v }, 'fit')} />
-          <p className="hint">This is a regular (non-360) clip, so view and lens controls don’t apply.</p>
+          <p className="hint">Fill zooms in so there are no bars, and never shows past the edge of the picture. Fit shows all of it.</p>
         </Section>
     ),
-    'Lens': is360 && (
+    'Lens': flat ? (
+        <Section title="Lens" badge={customLens ? lensName(lens.k) : 'Original'}>
+          <Seg value={customLens ? 'custom' : 'source'} options={[['source', 'Original lens'], ['custom', 'Custom']]} onChange={(v) => p.onClip({ ...adoptReframe(clip), lensMode: v }, 'lensmode')} />
+          <Slider label="Field of view" locked={zoomLock} value={look.fov} min={5} max={customLens ? 170 : flat.hfov} step={0.1} reset={flat.hfov} format={deg} units={DEG} keyed={keyed} onChange={(v) => p.onLook({ fov: v }, 'fov')} />
+          <Slider label="Fisheye" locked={lensLock || (!customLens && 'The original lens is kept as it is. Choose Custom to straighten or bend it.')} value={look.fisheye} min={MIN_FISHEYE} max={1} step={0.005} reset={0} format={pct} units={PCT} keyed={keyed && !lensLookOf(clip)} onChange={(v) => p.onLook({ fisheye: v }, 'fisheye')} />
+          {customLens && keepLook}
+          {shown < look.fov - 0.2 && <p className="hint">Showing {shown.toFixed(0)}°: zoomed in so nothing outside the picture appears.</p>}
+          <div className="chips">
+            {(([['Original', 'source', 0], ['Linear', 'custom', 0], ['Slight fisheye', 'custom', 0.33], ['Fisheye', 'custom', 0.67]] as const)).map(([name, mode, fisheye]) => (
+              <button key={name} disabled={!!viewLock} className={(customLens ? 'custom' : 'source') === mode && (mode === 'source' || Math.abs(look.fisheye - fisheye) < 0.01) ? 'on' : ''}
+                onClick={() => { const c = adoptReframe(clip); p.onClip({ ...c, lensMode: mode, ...(c.lensLook ? { lensLook: { fov: look.fov, fisheye } } : {}), look: { ...c.look, fisheye }, keyframes: c.keyframes.map((k) => ({ ...k, look: { ...k.look, fisheye } })) }, `lens-${name}`); }}>{name}</button>
+            ))}
+            {viewLock && <Lock reason={viewLock} />}
+          </div>
+        </Section>
+    ) : is360 && (
         <Section title="Lens" badge={`${look.fov.toFixed(0)}°`}>
           <Slider label="Field of view" locked={zoomLock} value={look.fov} min={1} max={360} step={0.5} reset={100} format={deg} units={DEG} keyed={keyed} onChange={(v) => p.onLook({ fov: v }, 'fov')} />
-          <Slider label="Fisheye" locked={lensLock} value={look.fisheye} min={MIN_FISHEYE} max={1} step={0.005} reset={0} format={pct} units={PCT} keyed={keyed} onChange={(v) => p.onLook({ fisheye: v }, 'fisheye')} />
+          <Slider label="Fisheye" locked={lensLock} value={look.fisheye} min={MIN_FISHEYE} max={1} step={0.005} reset={0} format={pct} units={PCT} keyed={keyed && !lensLookOf(clip)} onChange={(v) => p.onLook({ fisheye: v }, 'fisheye')} />
+          {keepLook}
           <p className="hint">
             {lensName(lens.k)}
             {lens.k < lensK(look.fisheye) - 1e-3 &&
@@ -310,6 +379,14 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
           </div>
         </Section>
     ),
+    'Lens details': flat && (
+        <Section title="Lens details" badge={flat.name}>
+          <p className="hint">{media!.camera.model ? `${media!.camera.model} · ` : ''}{flat.name}{flat.from === 'file' ? ' (read from the file)' : flat.from === 'table' ? ' (typical for this camera)' : ' (not known: adjust below if straight lines look bent)'}</p>
+          <Slider label="Recorded width" value={flat.hfov} min={20} max={160} step={0.5} reset={media!.lens!.hfov} units={DEG} format={deg} hint="How wide the camera's view really was. It changes how pan, lens and stabilization behave, not the picture itself." onChange={(v) => fixLens({ hfov: v })} />
+          <Slider label="Bend" locked={!!flat.gopro && 'The exact shape of this lens is stored in the file, so there is nothing to correct.'} value={clip.lensFix?.bend ?? 1} min={0} max={2} step={0.01} reset={1} units={PCT} format={pct} hint="How curved the lens is: lower if a Linear view bends outwards, higher if it bends inwards." onChange={(v) => fixLens({ bend: v })} />
+          {clip.lensFix && <div className="row-buttons"><button onClick={() => p.onClip({ lensFix: undefined, look: { ...clip.look, fov: (clip.look.fov * media!.lens!.hfov) / flat.hfov } }, 'lensfix-reset')}>Back to detected</button></div>}
+        </Section>
+    ),
     'Debug': is360 && (
         <Section title="Debug">
           <label className="check"><input type="checkbox" checked={p.showRaw} onChange={(e) => p.onShowRaw(e.target.checked)} /> Show raw camera streams</label>
@@ -320,8 +397,8 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
           <Seg<Smoothing>
             value={st.smoothing}
             locked={noMotion}
-            options={[['off', 'Off'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['custom', 'Custom'], ['locked', 'Locked']]}
-            onChange={(v) => p.onClip({ stabilize: { ...st, smoothing: v } }, 'stab')}
+            options={[['off', 'Off'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['custom', 'Custom'], ...(flat ? [] : [['locked', 'Locked'] as [Smoothing, string]])]}
+            onChange={(v) => setStab({ smoothing: v }, 'stab')}
           />
           <Slider
             label="Strength"
@@ -333,22 +410,44 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
             format={() => fmtSigma(sigma)}
             units={{ to: (u) => posToSigma(u), from: (n) => sigmaToPos(n), digits: 2 }}
             hint="Smoothing window in seconds: how much of the camera's motion is averaged away. Moving this switches to Custom."
-            onChange={(u) => p.onClip({ stabilize: { ...st, smoothing: 'custom', strength: +posToSigma(u).toFixed(3) } }, 'stab-strength')}
+            onChange={(u) => setStab({ smoothing: 'custom', strength: +posToSigma(u).toFixed(3) }, 'stab-strength')}
           />
+          {flat && media?.camera.stabilizedInCamera && <p className="hint">The camera already stabilized this while recording{media.camera.stabilization && media.camera.stabilization !== 'N/A' ? ` (${media.camera.stabilization})` : ''}, so it starts Off here. Doing it twice can look wobbly.</p>}
+          {flat ? <p className="hint">Low removes vibration and small bumps, Medium smooths shake, High keeps only slow turns. The picture is cropped to hide its moving edges (see Crop).</p> : <>
           <p className="hint">
             Low removes vibration and small bumps, Medium smooths shake, High keeps only slow turns. Locked keeps the view pointing the
             same way no matter how the camera turns. Presets: Low {fmtSigma(SMOOTHING_SIGMA_S.low)}, Medium {fmtSigma(SMOOTHING_SIGMA_S.medium)}, High {fmtSigma(SMOOTHING_SIGMA_S.high)}.
           </p>
-          {is360 && !media?.stabilizer.hasOrientation && <p className="hint">This clip has no motion data (GPMF), so stabilization is unavailable.</p>}
+          </>}
+          {is360 && !media?.stabilizer.hasOrientation && <p className="hint">{stitched ? 'A stitched 360 video: any stabilization is already built into the picture. It has no motion data, so it can’t be changed here.' : 'This clip has no motion data (GPMF), so stabilization is unavailable.'}</p>}
+        </Section>
+    ),
+    'Crop': flat && (
+        <Section title="Crop" defaultOpen badge={(stabOn || levelOn) && shown < look.fov - 0.2 ? `${Math.round((1 - shown / look.fov) * 100)}%` : undefined}>
+          <Seg value={st.crop ?? 'auto'} locked={cropLock} options={[['auto', 'Automatic'], ['manual', 'Manual']]} onChange={(v) => setStab({ crop: v }, 'crop-mode')} />
+          {(st.crop ?? 'auto') === 'auto' ? <>
+            <Slider label="Crop speed" locked={cropLock || (st.cropSpeed === 0 && 'One crop is used for the whole clip, so it never changes. Untick “Same crop for the whole clip” first.')} value={st.cropSpeed || DEFAULT_CROP.cropSpeed} min={0.3} max={8} step={0.1} reset={DEFAULT_CROP.cropSpeed} format={secs} units={SEC} hint="How long the zoom takes to change. Longer is calmer but crops more." onChange={(v) => setStab({ cropSpeed: v }, 'crop-speed')} />
+            <Slider label="Maximum crop" locked={cropLock} value={st.maxCrop ?? DEFAULT_CROP.maxCrop} min={0.02} max={0.8} step={0.01} reset={DEFAULT_CROP.maxCrop} units={PCT} format={pct} hint="The most it may zoom in. Where the shake needs more, it is stabilized a little less instead." onChange={(v) => setStab({ maxCrop: v }, 'crop-max')} />
+            <label className="check"><input type="checkbox" disabled={!!cropLock} checked={st.cropSpeed === 0} onChange={(e) => setStab({ cropSpeed: e.target.checked ? 0 : DEFAULT_CROP.cropSpeed }, 'crop-fixed')} /> Same crop for the whole clip</label>
+          </> : <Slider label="Crop" locked={cropLock} value={st.cropAmount ?? DEFAULT_CROP.cropAmount} min={0.01} max={0.6} step={0.01} reset={DEFAULT_CROP.cropAmount} units={PCT} format={pct} hint="How much of the view is given up. Edges never show: with too little crop, hard shake is stabilized less." onChange={(v) => setStab({ cropAmount: v }, 'crop-amount')} />}
+          <label className="check">
+            <input type="checkbox" disabled={!!rollLock} checked={st.rolling === true && !rollLock} onChange={(e) => setStab({ rolling: e.target.checked }, 'rolling')} />
+            Fix rolling shutter wobble
+            {rollLock && <Lock reason={rollLock} />}
+          </label>
         </Section>
     ),
     'Horizon': (
         <Section title="Horizon" badge={st.horizon && !off ? 'Level' : undefined}>
           <label className="check">
-            <input type="checkbox" disabled={!!noGravity} checked={st.horizon} onChange={(e) => p.onClip({ stabilize: { ...st, horizon: e.target.checked } }, 'horizon')} />
-            Level horizon (removes roll and tilt)
+            <input type="checkbox" disabled={!!noGravity} checked={st.horizon} onChange={(e) => setStab({ horizon: e.target.checked }, 'horizon')} />
+            {flat ? 'Level horizon (removes roll)' : 'Level horizon (removes roll and tilt)'}
             {noGravity && <Lock reason={noGravity} />}
           </label>
+          {flat && st.horizon && !noGravity && (shot && shot.level < 0.97
+            ? <><p className="hint">Not fully level here: that would need more zoom than Maximum crop allows ({Math.round((st.maxCrop ?? DEFAULT_CROP.maxCrop) * 100)}%).</p>
+              {(st.crop ?? 'auto') === 'auto' && <div className="row-buttons"><button onClick={() => setStab({ maxCrop: 0.7 }, 'crop-max')}>Allow more crop</button></div>}</>
+            : <p className="hint">Leaning the camera needs room at the corners, so the picture zooms in (see Crop). Looking up and down is left as filmed.</p>)}
         </Section>
     ),
     'Presets': (
@@ -360,6 +459,25 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
           </div>
         </Section>
     ),
+    'Input color': (
+        <Section title="Input color" badge={p.media && resolvedInput(p.media, clip) !== 'standard' ? inputName(resolvedInput(p.media, clip)).replace(/[ ,(].*/, '') : undefined}>
+          <div className="field-row">
+            <span>Recorded as</span>
+            <select aria-label="Input color" value={clip.inputColor ?? 'auto'} onChange={(e) => p.onClip({ inputColor: e.target.value === 'auto' ? undefined : (e.target.value as InputChoice) }, 'input-color')}>
+              {INPUT_NAMES.map(([k, name]) => <option key={k} value={k}>{k === 'auto' && p.media ? `Auto: ${inputName(autoInput(p.media.color, p.media.camera)).replace(/ \(.*/, '')}` : name}</option>)}
+            </select>
+          </div>
+          {p.media && ['gplog', 'gplog2', 'flat', 'hlg'].includes(resolvedInput(p.media, clip)) && (
+            <>
+              <label className="check"><input type="checkbox" checked={wideColor(p.media, clip)} onChange={(e) => p.onClip({ wideColor: e.target.checked }, 'wide-color')} /> Wide colors (Rec.2020)</label>
+              <p className="hint">Turned into normal color before everything below. Highlights are kept: lower Exposure or Highlights to bring them back.{p.media.color && p.media.color.bits > 8 ? ' This clip is 10-bit; it is decoded as 8-bit and everything after that is done more precisely.' : ''}</p>
+            </>
+          )}
+          {p.media && resolvedInput(p.media, clip) === 'raw' && <p className="hint">The camera’s values as recorded, for a LUT made for this camera (load it under LUT). Without one the picture looks flat or dark.</p>}
+          {p.media && resolvedInput(p.media, clip) === 'standard' && p.media.camera.colorProfile === 'FLAT' && <p className="hint">Recorded in GoPro’s Flat profile and shown as recorded. Choose “Flat / Protune” to turn it into full-contrast color.</p>}
+        </Section>
+    ),
+    'Lens match': <LensMatchSection {...p} />,
     'Light': (
         <Section title="Light" defaultOpen>
           <Slider label="Exposure" value={g.exposure} min={-8} max={4} reset={0} units={EV} keyed={keyed} format={(v) => `${v > 0 ? '+' : ''}${v.toFixed(2)} EV`} onChange={(v) => p.onGrade({ exposure: v }, 'exposure')} />
@@ -435,11 +553,33 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
         </Section>
     ),
     'Speed': (
-        <Section title="Speed" defaultOpen badge={clip.speed !== 1 ? `${clip.speed}×` : undefined}>
-        <Slider label="Speed" value={Math.log2(clip.speed)} min={-2} max={2} step={0.05} reset={0} format={() => `${clip.speed.toFixed(2)}×`} units={{ to: (v) => 2 ** v, from: (n) => Math.log2(n), digits: 2 }} onChange={(v) => p.onClip({ speed: Math.round(2 ** v * 100) / 100 }, 'speed')} />
+        <Section title="Speed" defaultOpen badge={ramp ? 'Ramp' : clip.speed !== 1 ? fmtSpeed(clip.speed) : undefined}>
+        <Slider label={ramp ? 'Speed here' : 'Speed'} keyed={ramp && !!speedPoint} value={Math.log2(speedNow)} min={Math.log2(MIN_SPEED)} max={Math.log2(MAX_SPEED)} step={0.01} reset={0} format={() => fmtSpeed(speedNow)} units={{ to: (v) => 2 ** v, from: (n) => Math.log2(Math.max(MIN_SPEED, n)), digits: 2 }} hint={ramp ? 'Changes the point at the playhead, or adds one there. Double-click for normal speed.' : 'Double-click for normal speed'} onChange={(v) => setSpeed(Math.abs(v) < 0.04 ? 1 : +(2 ** v).toFixed(3), 'speed')} />
         <div className="chips">
-          {[0.25, 0.5, 1, 2, 4].map((s) => <button key={s} className={clip.speed === s ? 'on' : ''} onClick={() => p.onClip({ speed: s }, 'speed-preset')}>{s}×</button>)}
+          {[0.25, 0.5, 1, 2, 4, 8].map((s) => <button key={s} className={Math.abs(speedNow - s) < 0.005 ? 'on' : ''} onClick={() => setSpeed(s, 'speed-preset')}>{s}×</button>)}
         </div>
+        {fps >= 50 && !ramp && (
+          <div className="row-buttons"><button title="Plays every recorded picture, at 30 a second" onClick={() => p.onSpeed({ speed: cleanSpeed(fps, 30), ...(clip.muteBelow === undefined ? { muteBelow: 0.5 } : {}) }, 'slowmo')}>Use as slow motion ({fmtSpeed(cleanSpeed(fps, 30))})</button></div>
+        )}
+        {media && <p className="hint">Recorded at {Math.round(fps)} pictures a second: smooth down to {fmtSpeed(cleanSpeed(fps, 30))} in a 30 fps video{fps >= 50 ? `, ${fmtSpeed(cleanSpeed(fps, 60))} in a 60 fps one` : ''}. Slower than that, pictures repeat{fps * speedRange(clip).min < 23.5 ? ` (this clip goes down to ${Math.max(1, Math.round(fps * speedRange(clip).min))} different pictures a second)` : ''}.</p>}
+        <div className="chips">
+          {RAMP_PRESETS.map(([k, name, hint]) => <button key={k} title={`${hint}. Replaces the speed of the whole clip.`} onClick={() => p.onSpeed({ speedKeys: rampPreset(k, clip, p.mediaUs, media ? Math.min(0.5, cleanSpeed(fps, 30)) : 0.5), ...(clip.muteBelow === undefined ? { muteBelow: 0.5 } : {}) }, `ramp-${k}`)}>{name}</button>)}
+        </div>
+        <div className="row-buttons">
+          {speedPoint
+            ? <button onClick={() => p.onSpeed(removeSpeedKey(clip, speedPoint.id), 'speeddel')}>Delete point</button>
+            : <button title="Adds a point to the ramp at the playhead" onClick={() => p.onSpeed({ speedKeys: setSpeedKey(clip, p.mediaUs), ...(ramp || clip.muteBelow !== undefined ? {} : { muteBelow: 0.5 }) }, 'speedadd')}>Add point here</button>}
+          {ramp && <button title="Back to one speed for the whole clip" onClick={() => p.onSpeed({ speedKeys: undefined, speed: 1 }, 'ramp-off')}>Remove ramp</button>}
+        </div>
+        {ramp && stretch && (
+          <div className="field-row">
+            <span>Change from {fmtTime(localAt(clip, stretch.t) + clipStart)}</span>
+            <Seg value={stretch.ease ?? 'smooth'} options={[['smooth', 'Eased'], ['linear', 'Even'], ['jump', 'Jump']]} onChange={(v) => p.onSpeed({ speedKeys: setSpeedEase(clip.speedKeys!, stretch.id, v) }, 'speed-ease')} />
+          </div>
+        )}
+        {hasSound && <Slider label="Mute below" value={clip.muteBelow ?? 0} min={0} max={1} step={0.05} reset={0.5} format={(v) => (v > 0 ? fmtSpeed(v) : 'Never')} units={{ digits: 2 }} hint="Silences this clip’s sound where it plays slower than this." onChange={(v) => p.onSpeed({ muteBelow: v > 0.001 ? +v.toFixed(2) : 0 }, 'mute-below')} />}
+        {hasSound && <label className="check" title="Off: sound plays faster or slower like a tape, higher or deeper"><input type="checkbox" checked={clip.keepPitch !== false} onChange={(e) => p.onSpeed({ keepPitch: e.target.checked ? undefined : false }, 'keep-pitch')} /> Keep the sound’s pitch</label>}
+        <label className="check"><input type="checkbox" checked={p.speedLines} onChange={p.onSpeedLines} /> Show speed lines on the timeline</label>
       </Section>
     ),
     'Audio': (

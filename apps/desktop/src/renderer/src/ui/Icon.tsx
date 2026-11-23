@@ -4,6 +4,9 @@
 const P: Record<string, string> = {
   menu: 'M4 7h16M4 12h16M4 17h16',
   import: 'M12 3v11M8 10l4 4 4-4M4 15v3.5A2.5 2.5 0 0 0 6.5 21h11a2.5 2.5 0 0 0 2.5-2.5V15',
+  card: 'M8.500 3.500h8A1.500 1.500 0 0 1 18 5v14a1.500 1.500 0 0 1-1.500 1.500h-9A1.500 1.500 0 0 1 6 19V6ZM9.500 4.500V8M12 4v4M14.500 4v4M12 11v6M9.500 14.500 12 17l2.500-2.500',
+  check: 'm5 12.500 4.500 4.500L19 7.500',
+  speedline: 'M3 8h4c5 0 4 9 8.500 9 3.500 0 3-6 5.500-6M3 4v16.500h18',
   music: 'M9 18V6l11-2v12M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM20 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
   undo: 'M8 5 4 9l4 4M4 9h10a6 6 0 0 1 0 12h-3',
   redo: 'm16 5 4 4-4 4M20 9H10a6 6 0 0 0 0 12h3',
@@ -40,7 +43,7 @@ export type IconName = keyof typeof P;
 const FILLED = new Set(['play', 'prev', 'next', 'start', 'end', 'keyframe']);
 /** For colourful icons. */
 const HUE: Record<string, string> = {
-  import: '#0a84ff', music: '#ff375f', text: '#bf5af2', gauge: '#30b0c7', track: '#00c7be', camera: '#ff9f0a', export: '#0a84ff', split: '#ff9f0a', delLeft: '#ff9f0a', delRight: '#ff9f0a', detach: '#30d158', trash: '#ff453a', undo: '#8e8e93', redo: '#8e8e93', keyframe: '#ffcc33', play: '#30d158', pause: '#30d158', customize: '#bf5af2', workspaces: '#5e5ce6', fullscreen: '#64d2ff', duplicate: '#5e5ce6', save: '#0a84ff', open: '#0a84ff', frame: '#64d2ff', zoom: '#64d2ff', quality: '#30d158', transition: '#ff375f',
+  import: '#0a84ff', card: '#0a84ff', music: '#ff375f', text: '#bf5af2', gauge: '#30b0c7', track: '#00c7be', camera: '#ff9f0a', export: '#0a84ff', split: '#ff9f0a', delLeft: '#ff9f0a', delRight: '#ff9f0a', detach: '#30d158', trash: '#ff453a', undo: '#8e8e93', redo: '#8e8e93', keyframe: '#ffcc33', play: '#30d158', pause: '#30d158', customize: '#bf5af2', workspaces: '#5e5ce6', fullscreen: '#64d2ff', duplicate: '#5e5ce6', save: '#0a84ff', open: '#0a84ff', frame: '#64d2ff', zoom: '#64d2ff', quality: '#30d158', transition: '#ff375f',
 };
 
 export function Icon({ name, size, className = '' }: { name: string; size?: number; className?: string }) {

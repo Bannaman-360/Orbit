@@ -1,4 +1,4 @@
-// Subject tracking for 360 clips. Renders a small undistorted view aimed at the subject,
+// Subject tracking. Renders a small undistorted view aimed at the subject,
 // finds where the subject moved within it (MOSSE correlation tracker), re-aims, and repeats
 // for every frame. Because the view is re-aimed each frame the subject always sits near the
 // centre of a rectilinear patch, so 360 distortion and wrap-around never get in the way.
@@ -6,7 +6,8 @@
 import { TrackDecoder } from '@ace/engine';
 import { cameraRay, effectiveLens, Mosse, mulVec, ReframeRenderer, viewRotation, type Vec3 } from '@ace/media360';
 import { DEFAULT_LOOK, NEUTRAL_GRADE, NO_EFFECTS, type Look, type TimelineClip, type TrackPoint } from '@ace/project';
-import { clipViewToWorld, presentLook, pushClipFrame, WORLD_STABILIZE } from './frameRender';
+import { clipViewToWorld, presentLook, pushClipFrame, pushWorldView, WORLD_STABILIZE, worldInPicture } from './frameRender';
+import { backgroundShift, STILL } from './background';
 import type { Media } from './media';
 
 const RAD = Math.PI / 180;
@@ -46,6 +47,8 @@ export const TRACKER = {
    */
   movingMotion: 3,
   movingFocus: 1.6,
+  /** The same without motion data (still things measured up to 1.45 there, the rider from 1.58). */
+  movingFocusBlind: 1.5,
   recentre: 0.1,
   /** Weight of the appearance (brightness) channel. */
   appearance: 1,
@@ -152,6 +155,8 @@ export interface TrackStart {
   pitch: number;
   /** Angular size of the subject (degrees). */
   sizeDeg: number;
+  /** `yaw` / `pitch` are already in the world-steady frame. */
+  world?: boolean;
 }
 
 export interface TrackOutcome {
@@ -159,6 +164,8 @@ export interface TrackOutcome {
   points: TrackPoint[];
   /** Media time where the subject was lost (tracking stopped early). */
   lostAt?: number;
+  /** It was lost because it went out of the recorded picture (regular clips). */
+  left?: boolean;
   /** Confidence (PSR) per step, for diagnostics. */
   confidence?: number[];
   /** Raw motion-blob size per step (degrees; -1 = nothing moving), for diagnostics. */
@@ -189,7 +196,46 @@ export async function trackSubject(s: TrackStart, onProgress: (fraction: number)
   const warmup = TRACKER.motion > 0 && first > 0 ? 1 : 0;
   decs.forEach((d) => { d.maxAhead = 6; d.seek(times[0] ?? s.startUs); });
 
-  let { yaw, pitch } = clipViewToWorld(media, clip, times[0] ?? s.startUs, s.yaw, s.pitch);
+  let { yaw, pitch } = s.world ? { yaw: s.yaw, pitch: s.pitch } : clipViewToWorld(media, clip, times[0] ?? s.startUs, s.yaw, s.pitch);
+  // Regular clips only recorded part of the sphere.
+  const flat = !!media.lens;
+  /** Nothing is known about how the camera moved. */
+  const blind = !media.stabilizer.hasOrientation;
+  const placeAt = (t: number) => (flat ? worldInPicture(media, clip, t) : null);
+  /** Whether a direction is inside the recorded picture (always, for 360 clips). */
+  const recorded = (t: number, y: number, p: number) => { const q = placeAt(t)?.(y, p); return !q || (q.inside && Math.abs(q.x) < 0.985 && Math.abs(q.y) < 0.985); };
+  /** Pixels of an n×n view that show nothing recorded (null = every one does). */
+  const missing = (t: number, y: number, p: number, f: number, n: number): Uint8Array | null => {
+    const at = placeAt(t);
+    if (!at) return null;
+    const G = 32, cell = n / G, out = new Uint8Array(G * G);
+    let any = false;
+    const look = { ...DEFAULT_LOOK, yaw: y, pitch: p, roll: 0, fov: f, fisheye: 0 };
+    const test = (gx: number, gy: number) => {
+      const d = directionAt(look, 1, ((gx + 0.5) / G) * 2 - 1, 1 - ((gy + 0.5) / G) * 2);
+      return !d || !at(d.yaw, d.pitch).inside;
+    };
+    for (let k = 0; k < G; k++) for (const [gx, gy] of [[k, 0], [k, G - 1], [0, k], [G - 1, k]] as const) if (test(gx, gy)) any = true;
+    if (!any) return null;
+    for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) if (test(gx, gy)) out[gy * G + gx] = 1;
+    // One cell of margin, so no sliver of the border is left.
+    const mask = new Uint8Array(n * n);
+    for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) {
+      let hit = 0;
+      for (let dy = -1; dy <= 1 && !hit; dy++) for (let dx = -1; dx <= 1; dx++) if (out[Math.max(0, Math.min(G - 1, gy + dy)) * G + Math.max(0, Math.min(G - 1, gx + dx))]) { hit = 1; break; }
+      if (hit) for (let yy = Math.floor(gy * cell); yy < (gy + 1) * cell; yy++) mask.fill(1, yy * n + Math.floor(gx * cell), yy * n + Math.ceil((gx + 1) * cell));
+    }
+    return mask;
+  };
+  /** Share of the subject's box (middle of a view) that was recorded. */
+  const boxSeen = (mask: Uint8Array | null, f: number): number => {
+    if (!mask) return 1;
+    const h = Math.max(3, Math.round(((sizeEst / f) * N) / 2)), m = N / 2;
+    let seen = 0, all = 0;
+    for (let yy = Math.max(0, m - h); yy < Math.min(N, m + h); yy++) for (let xx = Math.max(0, m - h); xx < Math.min(N, m + h); xx++) { all++; if (!mask[yy * N + xx]) seen++; }
+    return seen / Math.max(1, all);
+  };
+  let lastMask: Uint8Array | null = null;
   let fov = Math.max(TRACKER.minFov, Math.min(TRACKER.maxFov, s.sizeDeg * TRACKER.context));
   // The tracking view keeps the subject at a constant share of itself, so its width tells us
   // the subject's size: size = sizeDeg × fov / fov₀.
@@ -271,33 +317,63 @@ export async function trackSubject(s: TrackStart, onProgress: (fraction: number)
   // motion data), neutral colour, no effects, no blur. The tracker then only has to follow
   // the subject's own motion, and the path works with any stabilisation setting.
   const bare: TimelineClip = { ...clip, keyframes: [], track: undefined, stabilize: WORLD_STABILIZE };
-  type Prev = { gray: Float64Array; yaw: number; pitch: number; fov: number; step: number };
+  type Prev = { gray: Float64Array; yaw: number; pitch: number; fov: number; step: number; mask: Uint8Array | null };
   /** Renders an n×n view and returns its feature channels (+ motion vs. `pv`, same size). */
   const renderView = async (
     rend: ReframeRenderer, cnv: OffscreenCanvas, rd: OffscreenCanvasRenderingContext2D, n: number,
     t: number, frames: VideoFrame[], y: number, p: number, f: number, pv: Prev | null,
   ): Promise<Float64Array[]> => {
     rend.resetHistory();
-    pushClipFrame(rend, { ...bare, look: { ...DEFAULT_LOOK, yaw: y, pitch: p, roll: 0, fov: f, fisheye: 0, grade: NEUTRAL_GRADE, fx: NO_EFFECTS } }, media, t, frames);
+    if (flat) pushWorldView(rend, clip, media, t, frames, { yaw: y, pitch: p, fov: f });
+    else pushClipFrame(rend, { ...bare, look: { ...DEFAULT_LOOK, yaw: y, pitch: p, roll: 0, fov: f, fisheye: 0, grade: NEUTRAL_GRADE, fx: NO_EFFECTS } }, media, t, frames);
     presentLook(rend, { ...DEFAULT_LOOK, grade: NEUTRAL_GRADE, fx: NO_EFFECTS, motionBlur: 0 });
     const bmp = await createImageBitmap(cnv);
     rd.drawImage(bmp, 0, 0);
     bmp.close();
     const chans = features(rd.getImageData(0, 0, n, n).data, n, TRACKER.features);
-    if (TRACKER.motion <= 0) return chans;
+    if (TRACKER.motion <= 0 && !flat) return chans;
     // Motion channel against the previous frame, seen from (approximately) the same direction.
     const g = chans[0]!;
+    // Nothing recorded there: neither an edge to hold on to nor something that moves.
+    const mask = (lastMask = missing(t, y, p, f, n));
+    if (mask) {
+      for (const ch of chans) {
+        let sum = 0, cnt = 0;
+        for (let i = 0; i < n * n; i++) if (!mask[i]) { sum += ch[i]!; cnt++; }
+        const mean = cnt ? sum / cnt : 0;
+        for (let i = 0; i < n * n; i++) if (mask[i]) ch[i] = mean;
+      }
+    }
     const motion = new Float64Array(n * n);
     if (pv) {
       const pxPerDeg = n / 2 / Math.tan((f * RAD) / 2) * RAD;
       const sx = Math.round(wrapDeg(y - pv.yaw) * Math.cos(p * RAD) * pxPerDeg);
       const sy = Math.round(-(p - pv.pitch) * pxPerDeg);
       const scale = pv.fov / f;
+      // No motion data: the camera's own movement shows as everything moving. Take it out.
+      let bg = STILL;
+      if (blind) {
+        const back = new Float64Array(n * n), backMask = pv.mask ? new Uint8Array(n * n) : null;
+        for (let yy = 0; yy < n; yy++)
+          for (let xx = 0; xx < n; xx++) {
+            const px = Math.round((xx - n / 2 + sx) / scale + n / 2), py = Math.round((yy - n / 2 + sy) / scale + n / 2);
+            const at = Math.min(n - 1, Math.max(0, py)) * n + Math.min(n - 1, Math.max(0, px));
+            back[yy * n + xx] = pv.gray[at]!;
+            if (backMask) backMask[yy * n + xx] = px < 0 || py < 0 || px >= n || py >= n || pv.mask![at] ? 1 : 0;
+          }
+        bg = backgroundShift(g, back, n, Math.min(n * 0.3, ((sizeEst / f) * n) / 2 + 4), mask, backMask);
+      }
+      const mid = (n - 1) / 2;
       for (let yy = 0; yy < n; yy++)
         for (let xx = 0; xx < n; xx++) {
           // Where this pixel was in the previous view (shift for the aim change, scale for zoom).
-          const px = Math.round((xx - n / 2 + sx) / scale + n / 2), py = Math.round((yy - n / 2 + sy) / scale + n / 2);
-          const v = pv.gray[Math.min(n - 1, Math.max(0, py)) * n + Math.min(n - 1, Math.max(0, px))]!;
+          const ux = xx - mid, uy = yy - mid;
+          const bx = xx + bg.dx + bg.a * ux - bg.b * uy, by = yy + bg.dy + bg.b * ux + bg.a * uy;
+          const px = Math.round((bx - n / 2 + sx) / scale + n / 2), py = Math.round((by - n / 2 + sy) / scale + n / 2);
+          if (blind && (px < 0 || py < 0 || px >= n || py >= n)) continue;
+          const at = Math.min(n - 1, Math.max(0, py)) * n + Math.min(n - 1, Math.max(0, px));
+          if (mask?.[yy * n + xx] || pv.mask?.[at]) continue;
+          const v = pv.gray[at]!;
           motion[yy * n + xx] = Math.abs(g[yy * n + xx]! - v);
         }
     }
@@ -332,7 +408,7 @@ export async function trackSubject(s: TrackStart, onProgress: (fraction: number)
     const fw = Math.min(150, fov * 2);
     const pv = prevWide && step - prevWide.step <= 3 ? prevWide : null;
     const chans = await renderView(wideR, wideCanvas, wideRead, NW, t, frames, y, p, fw, pv);
-    prevWide = { gray: chans[0]!, yaw: y, pitch: p, fov: fw, step };
+    prevWide = { gray: chans[0]!, yaw: y, pitch: p, fov: fw, step, mask: null };
     let best: { yaw: number; pitch: number; psr: number } | null = null;
     for (const oy of [0, N / 2, N]) for (const ox of [0, N / 2, N]) {
       const res = mosse.find(chans.map((c) => crop(c, ox, oy)));
@@ -378,7 +454,7 @@ export async function trackSubject(s: TrackStart, onProgress: (fraction: number)
   /** The previous step's final patch (brightness) and where it was aimed. */
   let prev: Prev | null = null;
   const remember = (patch: Float64Array[], y: number, p: number, f: number) => {
-    prev = { gray: patch[0]!, yaw: y, pitch: p, fov: f, step };
+    prev = { gray: patch[0]!, yaw: y, pitch: p, fov: f, step, mask: lastMask };
   };
   /** Moves the aim to where (dx, dy) pixels of the current patch point. */
   const reaim = (dx: number, dy: number) => {
@@ -416,7 +492,7 @@ export async function trackSubject(s: TrackStart, onProgress: (fraction: number)
       }
       const inMean = inS / Math.max(1, inC);
       motionFocus = inC && outC ? inS / inC / Math.max(0.5, outS / outC) : 0;
-      moving = inMean > 1.5 && motionFocus > TRACKER.movingFocus;
+      moving = inMean > 1.5 && motionFocus > (blind ? TRACKER.movingFocusBlind : TRACKER.movingFocus);
       if (moving) mosse.weights[nApp] = TRACKER.movingMotion;
       probeLog = [inS / Math.max(1, inC), outS / Math.max(1, outC)];
       prev = null;
@@ -486,6 +562,8 @@ export async function trackSubject(s: TrackStart, onProgress: (fraction: number)
           if (w > 0) reaim((sx / w) * TRACKER.recentre, (sy / w) * TRACKER.recentre);
         }
       }
+      // Out of the picture: nothing there to follow.
+      if (!recorded(t, yaw, pitch)) psr = 0;
       lastPsr = psr;
       confidence.push(+psr.toFixed(1));
       if (psr < LOST_PSR) {
@@ -495,7 +573,7 @@ export async function trackSubject(s: TrackStart, onProgress: (fraction: number)
         let found: { yaw: number; pitch: number; psr: number } | null = null;
         for (const oy of [-0.7, 0, 0.7]) for (const ox of [-0.7, 0, 0.7]) {
           const d = directionAt({ ...DEFAULT_LOOK, yaw: guess.yaw, pitch: guess.pitch, roll: 0, fov, fisheye: 0 }, 1, ox, oy);
-          if (!d) continue;
+          if (!d || !recorded(t, d.yaw, d.pitch)) continue;
           const pt = await patchAt(t, fr, d.yaw, d.pitch, fov);
           const res = mosse.find(pt, motionPrior(pt) ?? undefined);
           if (res.psr > (found?.psr ?? REACQUIRE_PSR)) {
@@ -519,7 +597,10 @@ export async function trackSubject(s: TrackStart, onProgress: (fraction: number)
         vel = { yaw: vel.yaw * 0.9, pitch: vel.pitch * 0.9 };
         coastStart ??= { index: points.length, t };
         if (t - coastStart.t > COAST_US) {
-          return { points: points.slice(0, coastStart.index), lostAt: coastStart.t, confidence, blobs: blobLog, wide: { searched: wideUsed, taken: wideTaken }, motionFocus, probe: probeLog };
+          const last = points[coastStart.index - 1] ?? points[0]!;
+          const spot = placeAt(last.t)?.(last.yaw, last.pitch);
+          const left = !!spot && (Math.abs(spot.x) > 0.85 || Math.abs(spot.y) > 0.85 || !recorded(t, yaw, pitch));
+          return { left, points: points.slice(0, coastStart.index), lostAt: coastStart.t, confidence, blobs: blobLog, wide: { searched: wideUsed, taken: wideTaken }, motionFocus, probe: probeLog };
         }
         points.push({ t, yaw, pitch, size: sizeNow() });
         continue;
@@ -553,7 +634,7 @@ export async function trackSubject(s: TrackStart, onProgress: (fraction: number)
       // Learn the subject's new appearance (only when confident, so we don't learn background).
       {
         const patch = await patchAt(t, fr, yaw, pitch, fov);
-        if (psr > 7) mosse.update(patch);
+        if (psr > 7 && boxSeen(lastMask, fov) > 0.6) mosse.update(patch);
         remember(patch, yaw, pitch, fov);
         motionSized = updateSize(patch);
         debugPatches?.push(patch[patch.length - 1]!);

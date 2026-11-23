@@ -29,7 +29,7 @@ export function MediaBin({ items, onAdd, onImport, onRemove, level }: { items: B
             draggable={!!it.media}
             onDragStart={(e) => e.dataTransfer.setData('text/x-ace-media', it.path)}
             onDoubleClick={() => it.media && onAdd(it.path)}
-            title={it.error ?? `${it.path}\nDouble-click or drag to the timeline`}
+            title={it.error ?? `${it.media && it.media.parts.length > 1 ? `${it.media.parts.length} files joined into one recording:\n${it.media.parts.map((x) => `${baseName(x.path)} (from ${fmtTime(x.startUs).replace(/\.\d+$/, '')})`).join('\n')}` : it.path}${it.media?.partsNote ? `\n${it.media.partsNote}` : ''}\nDouble-click or drag to the timeline`}
           >
             <div className="thumb" style={{ backgroundImage: it.media?.thumbnail ? `url(${it.media.thumbnail})` : undefined }}>
               {it.media?.is360 && <b className="badge">360</b>}
@@ -38,8 +38,9 @@ export function MediaBin({ items, onAdd, onImport, onRemove, level }: { items: B
             <div className="bin-meta">
               <span className="name">{baseName(it.path)}</span>
               <span className="muted small">
-                {it.error ? 'Cannot open' : it.media ? `${it.media.width}×${it.media.height}${it.media.is360 ? '×2' : ''} · ${Math.round(it.media.fps)} fps` : 'Opening…'}
+                {it.error ? 'Cannot open' : it.media ? `${it.media.width}×${it.media.height}${it.media.tracks.length > 1 ? '×2' : ''} · ${Math.round(it.media.fps)} fps${it.media.parts.length > 1 ? ` · ${it.media.parts.length} parts` : ''}` : 'Opening…'}
               </span>
+              {it.media?.partsNote && <span className="proxy-state error" title={it.media.partsNote}>Not all parts joined</span>}
               {it.media && level > 1 && (() => {
                 const p = proxyProgress.get(it.path);
                 const err = proxyErrors.get(it.path);

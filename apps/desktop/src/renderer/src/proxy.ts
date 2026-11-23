@@ -4,8 +4,9 @@
 
 import { CanvasSource, canEncodeVideo, Mp4OutputFormat, Output, QUALITY_MEDIUM, StreamTarget, type StreamTargetChunk } from 'mediabunny';
 import { find360Pair, openMedia, TrackDecoder, type ByteReader, type VideoTrackInfo } from '@ace/engine';
-import { goproMaxLayout, type EacLayout } from '@ace/media360';
+import { equirectLayout, goproMaxLayout, ReframeRenderer, type EacLayout } from '@ace/media360';
 import { ace, ipcReader } from './api';
+import { copyInput, specialColor } from './color';
 import type { Media } from './media';
 
 export type PreviewLevel = 1 | 2 | 4 | 8;
@@ -59,15 +60,15 @@ export function previewSource(m: Media): PreviewSource {
 
 export const hasProxy = (m: Media, l: PreviewLevel) => l === 1 || opened.has(key(m.path, l));
 
-async function openProxy(path: string, file: string, l: PreviewLevel): Promise<PreviewSource> {
+async function openProxy(m: Media, file: string, l: PreviewLevel): Promise<PreviewSource> {
   const { size } = await ace.stat(file);
   const reader = ipcReader(file, size);
   const info = await openMedia(reader);
   const pair = find360Pair(info);
   const tracks = pair ?? info.videoTracks.slice(0, 1);
   if (!tracks.length) throw new Error('Proxy has no video');
-  const src: PreviewSource = { level: l, reader, tracks, layout: pair ? goproMaxLayout(pair[0].width, pair[0].height) : null };
-  opened.set(key(path, l), src);
+  const src: PreviewSource = { level: l, reader, tracks, layout: pair ? goproMaxLayout(pair[0].width, pair[0].height) : m.layout?.equirect ? equirectLayout(tracks[0]!.width, tracks[0]!.height) : null };
+  opened.set(key(m.path, l), src);
   return src;
 }
 
@@ -81,7 +82,10 @@ async function build(m: Media, l: PreviewLevel, file: string, signal: AbortSigna
   const writable = new WritableStream<StreamTargetChunk>({ write: (chunk) => ace.writeAt(part, chunk.position, chunk.data) });
   const output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target: new StreamTarget(writable) });
   const canvases = m.tracks.map(() => new OffscreenCanvas(W, H));
-  const ctxs = canvases.map((c) => c.getContext('2d')!);
+  // Log, HLG and wide-colour files: keep the recorded values (drawing them would convert them).
+  const special = specialColor(m.color);
+  const renderers = special ? await Promise.all(canvases.map((c) => ReframeRenderer.create(c))) : null;
+  const ctxs = special ? [] : canvases.map((c) => c.getContext('2d')!);
   const sources = canvases.map((c) => new CanvasSource(c, { codec, bitrate: QUALITY_MEDIUM, keyFrameInterval: KEYFRAME_S }));
   for (const s of sources) output.addVideoTrack(s, { frameRate: m.fps });
   await output.start();
@@ -102,7 +106,11 @@ async function build(m: Media, l: PreviewLevel, file: string, signal: AbortSigna
         await sleep(2);
       }
       for (let k = 0; k < frames.length; k++) {
-        ctxs[k]!.drawImage(frames[k]!, 0, 0, W, H);
+        if (renderers) {
+          renderers[k]!.resetHistory();
+          renderers[k]!.pushFrame({ frames: [frames[k]!], mode: 'flat', view: { yaw: 0, pitch: 0, roll: 0, fov: 90, fisheye: 0 }, fill: true, input: copyInput(m) });
+          renderers[k]!.present({ blendFrames: 1, bypass: true });
+        } else ctxs[k]!.drawImage(frames[k]!, 0, 0, W, H);
         await sources[k]!.add(t / 1e6, frameS);
       }
       if (i % 10 === 0) {
@@ -120,6 +128,7 @@ async function build(m: Media, l: PreviewLevel, file: string, signal: AbortSigna
     throw e;
   } finally {
     decs.forEach((d) => d.close());
+    renderers?.forEach((r) => r.destroy());
   }
 }
 
@@ -139,13 +148,13 @@ async function runQueue() {
     running = new AbortController();
     runningPath = m.path;
     try {
-      const { path: file, exists } = await ace.proxyPath(m.path, l);
+      const { path: file, exists } = await ace.proxyPath(m.path, l, `${m.parts.length > 1 ? `|${m.parts.length}|${m.size}` : ''}${specialColor(m.color) ? '|recorded1' : ''}`);
       if (!exists) {
         proxyProgress.set(m.path, 0);
         notify();
         await build(m, l, file, running.signal);
       }
-      await openProxy(m.path, file, l);
+      await openProxy(m, file, l);
       proxyErrors.delete(m.path);
     } catch (e) {
       if ((e as Error).name !== 'AbortError') proxyErrors.set(m.path, String(e));

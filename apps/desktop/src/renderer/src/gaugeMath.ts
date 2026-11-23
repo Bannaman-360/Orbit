@@ -46,3 +46,8 @@ export function scrollingGraph(f: Sampler, now: number, span: number, points: nu
   out.push({ x: 1, v: smoothAt(f, now, step / 2) });
   return out.filter((p) => Number.isFinite(p.v));
 }
+
+/** Feet where people think in feet (US, UK and Liberia's English), metres elsewhere. */
+export const usesFeet = () => /^en-(US|GB|LR)$/i.test(globalThis.navigator?.language ?? '');
+/** A jump length for lists and labels: “4.2 m” or “14 ft”. */
+export const fmtJumpLength = (m: number, feet = usesFeet()) => (feet ? `${Math.round(m * 3.28084)} ft` : `${m.toFixed(1)} m`);

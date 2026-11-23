@@ -226,9 +226,9 @@ export async function airtimeCheck(api: EditorApi) {
     lows.sort((a, b) => a - b);
     const j = tm.jumps();
     out[p.split('/').pop()!] = {
-      seconds: +((r[1] - r[0]) / 1e6).toFixed(1),
+      seconds: +((r[1] - r[0]) / 1e6).toFixed(1), gps: tm.gpsRange ? tm.gpsRange.map((x) => +(x / 1e6).toFixed(1)) : 'none', maxKmh: +(tm.maxSpeed * 3.6).toFixed(1),
       lowestG: +lows[0]!.toFixed(2), p1G: +lows[Math.floor(lows.length * 0.01)]!.toFixed(2),
-      jumps: j.map((x) => `${(x.startUs / 1e6).toFixed(2)}s ${x.airMs}ms land ${x.landingG}G`),
+      jumps: j.map((x) => `${(x.startUs / 1e6).toFixed(2)}s ${x.airMs}ms ${x.distanceM ?? '-'}m @${x.speedMs !== undefined ? (x.speedMs * 3.6).toFixed(1) : '-'}km/h land ${x.landingG}G`),
       atHalfG: tm.jumps({ below: 0.5 }).length, atThirdG: tm.jumps({ below: 0.3 }).length,
       before: tm.jumps({ joinMs: 80 }).length,
       byShortest: Object.fromEntries([80, 150, 200, 300, 400, 600, 1000].map((ms) => [ms, tm.jumps({ minMs: ms }).length])),
@@ -239,7 +239,9 @@ export async function airtimeCheck(api: EditorApi) {
     const f = (await ace.listFixtures()).find((x) => /GS010004/.test(x));
     if (f) {
       const near = (await getMedia(f)).telemetry.jumps().filter((x) => x.endUs > 404.3e6 && x.startUs < 405.4e6);
-      out['GS010004 at 6:44'] = near.map((x) => `${(x.startUs / 1e6).toFixed(2)}s ${x.airMs}ms land ${x.landingG}G`);
+      const t4 = (await getMedia(f)).telemetry;
+      out['GS010004 jumps'] = t4.jumps().map((x) => `${(x.startUs / 1e6).toFixed(1)}s ${x.airMs}ms ${x.distanceM ?? '-'}m @${x.speedMs !== undefined ? (x.speedMs * 3.6).toFixed(1) : '-'}km/h`);
+      out['GS010004 at 6:44'] = near.map((x) => `${(x.startUs / 1e6).toFixed(2)}s ${x.airMs}ms ${x.distanceM ?? '-'}m land ${x.landingG}G`);
       if (near.length !== 1) fails.push('GS010004 at 6:44 is one jump');
     }
   }
@@ -259,6 +261,28 @@ export async function airtimeCheck(api: EditorApi) {
   ok('and holds the jump after landing', Math.abs(r(mid.endUs + 0.5e6).num - mid.airMs / 1000) < 0.006, r(mid.endUs + 0.5e6).value);
   const later = j[j.length - 1]!.endUs + 3.5e6;
   if (later < m.durationUs) ok('then shows the best so far', Math.abs(r(later).num - Math.max(...j.map((x) => x.airMs)) / 1000) < 0.006 && /BEST/.test(r(later).label), [r(later).value, r(later).label]);
+  // The jump distance gauge (on GS010004, which has GPS): grows through a jump, then holds it.
+  const f4 = (await ace.listFixtures()).find((x) => /GS010004/.test(x));
+  if (f4) {
+    const m4 = await getMedia(f4);
+    const tl4 = addClip(emptyTimeline(), newClip(m4.path, m4.durationUs, true));
+    const dg = { ...newGaugeOverlay('jumpdist', 0, m4.durationUs), animation: 'none' as const };
+    const jd = m4.telemetry.jumps().find((x) => x.startUs > 404e6)!;
+    const dr = (T: number) => gaugeReading(dg, tl4, T);
+    const half = dr((jd.startUs + jd.endUs) / 2).num, after = dr(jd.endUs + 0.5e6).num;
+    ok('jump distance grows in the air and holds on landing', half > 0.3 * jd.distanceM! && half < 0.7 * jd.distanceM! && Math.abs(after - jd.distanceM!) < 0.06, [half, after, jd.distanceM]);
+    // Running total: only ever the sum, growing through each jump, flat in between.
+    const rg = { ...dg, airShow: 'running' as const };
+    const all4 = m4.telemetry.jumps(), before = all4.filter((x) => x.endUs <= jd.startUs).reduce((a, x) => a + x.distanceM!, 0);
+    const rr = (T: number) => gaugeReading(rg, tl4, T).num;
+    ok('running total adds each jump as it happens', Math.abs(rr(jd.startUs - 50_000) - before) < 0.06 && rr((jd.startUs + jd.endUs) / 2) > before + 0.3 * jd.distanceM! && Math.abs(rr(jd.endUs + 0.5e6) - (before + jd.distanceM!)) < 0.06 && Math.abs(rr(jd.endUs + 5e6) - rr(jd.endUs + 0.5e6)) < 0.06 || all4.some((x) => x.startUs > jd.endUs && x.startUs < jd.endUs + 5e6), [rr(jd.startUs - 50_000), rr(jd.endUs + 0.5e6), before + jd.distanceM!]);
+    ok('no GPS, no jump distance', !gaugeReading(dg, tl, mid.endUs + 0.5e6).available);
+  }
+  {
+    const ra = { ...gauge, airShow: 'running' as const }, rr = (T: number) => gaugeReading(ra, tl, T).num;
+    const prev = j.filter((x) => x.endUs <= mid.startUs).reduce((a, x) => a + x.airMs / 1000, 0);
+    ok('running total airtime grows through a jump and holds', Math.abs(rr(mid.startUs + 200_000) - (prev + 0.2)) < 0.01 && Math.abs(rr(mid.endUs + 0.5e6) - (prev + mid.airMs / 1000)) < 0.006, [rr(mid.startUs + 200_000), rr(mid.endUs + 0.5e6), prev + mid.airMs / 1000]);
+  }
   // Clicking a mark goes to that jump.
   marks[1]!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
   await sleep(200);

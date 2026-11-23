@@ -16,7 +16,7 @@ export interface GpsSample {
 
 interface TimedV { t: number; v: [number, number, number] }
 
-import { findJumps, type AirtimeSettings, type Jump } from './airtime';
+import { findJumps, jumpDistance, type AirtimeSettings, type Jump } from './airtime';
 
 const G = 9.80665;
 const EARTH_R = 6_371_000;
@@ -145,7 +145,11 @@ export class TelemetrySeries {
     if (!this.hasAccel) return [];
     const key = `${s.below ?? ''}|${s.minMs ?? ''}|${s.shape ?? ''}|${s.joinMs ?? ''}`;
     let j = this.jumpCache.get(key);
-    if (!j) { j = findJumps(this.aT, this.rawG, s); this.jumpCache.set(key, j); }
+    if (!j) {
+      j = findJumps(this.aT, this.rawG, s);
+      if (this.hasGps) { const [g0, g1] = this.gpsRange!; j = j.map((x) => (x.startUs >= g0 && x.endUs <= g1 ? jumpDistance(x, (t) => this.speedAt(t)) : x)); }
+      this.jumpCache.set(key, j);
+    }
     return j;
   }
   /** Position on the fitted map (0–1). */

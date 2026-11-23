@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { airtimeStats, findJumps } from './airtime';
+import { airtimeStats, findJumps, jumpDistance } from './airtime';
 
 const RATE = 50; // Hz, like the averaged GoPro accelerometer
 let seed = 3;
@@ -78,5 +78,19 @@ describe('airtime', () => {
   it('no landing, no jump', () => {
     const { t, g } = ride(10, [{ at: 3, len: 0.5, g: 0.1 }, { at: 3.5, len: 2, g: 1 }]);
     expect(findJumps(t, g)).toHaveLength(0);
+  });
+  it('distance is ground speed × time in the air', () => {
+    const j = { startUs: 5e6, endUs: 5.8e6, airMs: 800, landingG: 4 };
+    const d = jumpDistance(j, () => 6.25);
+    expect(d.speedMs).toBe(6.25);
+    expect(d.distanceM).toBe(5);
+    // Speed read across the jump: a slowing rider gets the average.
+    const slowing = jumpDistance(j, (t) => 8 - (t - 4.85e6) / 1e6 * 2.5);
+    expect(slowing.distanceM!).toBeGreaterThan(5.2);
+    expect(slowing.distanceM!).toBeLessThan(5.6);
+    // No GPS, no distance.
+    expect(jumpDistance(j, () => NaN).distanceM).toBeUndefined();
+    expect(airtimeStats([d, { ...j, startUs: 9e6 }]).farthestM).toBe(5);
+    expect(airtimeStats([j]).farthestM).toBeUndefined();
   });
 });

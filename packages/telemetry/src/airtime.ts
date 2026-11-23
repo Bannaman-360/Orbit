@@ -36,6 +36,26 @@ export interface Jump {
   airMs: number;
   /** Hardest reading in the landing (G). */
   landingG: number;
+  /** Ground speed through the jump (m/s), from GPS; missing without a GPS fix. */
+  speedMs?: number;
+  /** How far it went along the ground (m): ground speed × time in the air. */
+  distanceM?: number;
+}
+
+/**
+ * Distance of a jump from the ground speed around it. In the air nothing pushes the bike
+ * forward or holds it back (air drag over a second is a few cm), so the horizontal speed stays
+ * what it was at takeoff and distance = speed × airtime. GPS speed is Doppler-measured and
+ * smoothed over about a second, so it's read across the whole jump and a little either side,
+ * which also steadies it against the jolt of the landing.
+ */
+export function jumpDistance(j: Jump, speedAt: (t: number) => number): Jump {
+  const a = j.startUs - 150_000, b = j.endUs;
+  let sum = 0, c = 0;
+  for (let k = 0; k <= 10; k++) { const v = speedAt(a + ((b - a) * k) / 10); if (Number.isFinite(v)) { sum += v; c++; } }
+  if (c < 6) return j;
+  const speedMs = sum / c;
+  return { ...j, speedMs: Math.round(speedMs * 100) / 100, distanceM: Math.round(speedMs * (j.airMs / 1000) * 10) / 10 };
 }
 
 /** Jumps in a G-force series (`t` in µs, `g` in G, gravity included), in time order. */
@@ -106,5 +126,6 @@ export function findJumps(t: ArrayLike<number>, g: ArrayLike<number>, s: Partial
 /** Totals for a list of jumps. */
 export function airtimeStats(j: Jump[]) {
   const total = j.reduce((a, x) => a + x.airMs, 0);
-  return { count: j.length, longestMs: j.reduce((a, x) => Math.max(a, x.airMs), 0), totalMs: total, hardestG: j.reduce((a, x) => Math.max(a, x.landingG), 0) };
+  const far = j.filter((x) => x.distanceM !== undefined);
+  return { farthestM: far.length ? far.reduce((a, x) => Math.max(a, x.distanceM!), 0) : undefined, count: j.length, longestMs: j.reduce((a, x) => Math.max(a, x.airMs), 0), totalMs: total, hardestG: j.reduce((a, x) => Math.max(a, x.landingG), 0) };
 }

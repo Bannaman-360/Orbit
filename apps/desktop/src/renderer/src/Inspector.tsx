@@ -20,6 +20,7 @@ import { LensMatchSection } from './LensMatch';
 import { fmtSpeed } from './SpeedLine';
 import { fmtTime, Lock, Section, SectionList, Seg, Slider, toggleAllSections, type Units } from './ui';
 import { Icon } from './ui/Icon';
+import { fmtJumpLength } from './gaugeMath';
 
 export interface InspectorProps {
   clip: TimelineClip | null;
@@ -603,15 +604,17 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
         <Section title="Airtime" badge={jumps.length ? `${jumps.length} jump${jumps.length === 1 ? '' : 's'}` : undefined}>
           {jumps.length ? (
             <>
-              <div className="air-stats">
+              <div className={`air-stats${st.farthestM !== undefined ? ' four' : ''}`}>
                 <span><b>{sec(st.longestMs)}</b>longest</span>
+                {st.farthestM !== undefined && <span title="Ground speed × time in the air, from the camera’s GPS"><b>{fmtJumpLength(st.farthestM)}</b>farthest</span>}
                 <span><b>{sec(st.totalMs)}</b>in the air</span>
                 <span><b>{st.hardestG.toFixed(1)} G</b>hardest landing</span>
               </div>
-              <div className="air-list">
+              {st.farthestM === undefined && <p className="hint">{media.telemetry.hasGps ? 'Jump distances need GPS during the jumps.' : 'The camera had no GPS position in this clip, so how far each jump went can’t be worked out.'}</p>}
+              <div className={`air-list${st.farthestM !== undefined ? ' dist' : ''}`}>
                 {jumps.map((j, i) => (
                   <button key={j.startUs} className="air-row" title="Go to this jump" onClick={() => p.onSeekMedia(j.startUs)}>
-                    <span>Jump {i + 1}</span><span className="muted">{fmtTime(mediaToTimeline(clipStart, clip, j.startUs))}</span><b>{sec(j.airMs)}</b><span className="muted">{j.landingG.toFixed(1)} G</span>
+                    <span>Jump {i + 1}</span><span className="muted">{fmtTime(mediaToTimeline(clipStart, clip, j.startUs))}</span><b>{sec(j.airMs)}</b>{st.farthestM !== undefined && <span title={j.speedMs !== undefined ? `At ${(j.speedMs * 3.6).toFixed(0)} km/h (${(j.speedMs * 2.23694).toFixed(0)} mph)` : 'No GPS here'}>{j.distanceM !== undefined ? fmtJumpLength(j.distanceM) : '–'}</span>}<span className="muted">{j.landingG.toFixed(1)} G</span>
                   </button>
                 ))}
               </div>
@@ -738,7 +741,7 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
   const o = p.overlay;
   const isText = o.kind === 'text';
   const gauge = GAUGES.find(([k]) => k === o.kind)?.[1];
-  const hasUnits = o.kind === 'speed' || o.kind === 'altitude' || o.kind === 'distance';
+  const hasUnits = o.kind === 'speed' || o.kind === 'altitude' || o.kind === 'distance' || o.kind === 'jumpdist';
   const total = Math.max(1, timelineDuration(p.timeline) / 1e6);
   const colour = (label: string, key: 'color' | 'accent' | 'bgColor' | 'outlineColor') => (
     <label className="field">
@@ -798,7 +801,7 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
             <Section title="Look" defaultOpen>
               <GaugeLookPicker o={o} onPick={(design, style) => p.onOverlay(lookPatch(design, style), 'ov-look')} />
               <div className="row-buttons"><button title="Gives every gauge this design (each in the closest type it comes in)" onClick={() => p.onGaugeDesignAll(o.design ?? 'classic')}>Use this design for all gauges</button></div>
-              {o.kind === 'airtime' && <Seg value={o.airShow ?? 'best'} options={[['best', 'Best'], ['last', 'Last'], ['total', 'Total']]} onChange={(v) => p.onOverlay({ airShow: v }, 'ov-air')} />}
+              {(o.kind === 'airtime' || o.kind === 'jumpdist') && <Seg value={o.airShow ?? 'best'} options={[['best', o.kind === 'jumpdist' ? 'Longest' : 'Best'], ['last', 'Last'], ['total', 'Total'], ['running', 'Running total']]} onChange={(v) => p.onOverlay({ airShow: v }, 'ov-air')} />}
               {hasUnits && <Seg value={o.units} options={[['metric', 'Metric'], ['imperial', 'Imperial']]} onChange={(v) => p.onOverlay({ units: v }, 'ov-units')} />}
               <div className="field-row">
                 {colour('Text', 'color')}
@@ -820,7 +823,8 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
               <p className="hint">
                 {o.kind === 'timer' ? 'Counts up from when this overlay starts.'
                   : o.kind === 'clock' ? 'Time of day from the camera’s clock.'
-                  : o.kind === 'airtime' ? 'Counts up while in the air and holds each jump for 3 s after landing; between jumps it shows the best (or last, or total) so far. How jumps are found is set per clip, under Airtime.'
+                  : o.kind === 'jumpdist' ? 'How far each jump went: ground speed from the GPS × time in the air. Counts up during the jump and holds it for 3 s after landing; between jumps it shows the longest (or last, or total) so far. How jumps are found is set per clip, under Airtime.'
+                  : o.kind === 'airtime' ? 'Counts up while in the air and holds each jump for 3 s after landing; between jumps it shows the best (or last, or total) so far; Running total shows only the total, adding up as you jump. How jumps are found is set per clip, under Airtime.'
                   : 'Shows data from the camera’s GPS / motion sensors for whichever clip is playing. Clips without the data show “--”.'}
               </p>
             </Section>

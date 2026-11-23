@@ -14,6 +14,7 @@ import { mediaNow, musicNow, type Media } from './media';
 import { fmtSpeed, SpeedLine } from './SpeedLine';
 import { STRIP_H, STRIP_W, stripPicture, useFilmstrip } from './filmstrip';
 import { fmtTime, useDrag } from './ui';
+import { fmtJumpLength } from './gaugeMath';
 
 interface Props {
   timeline: Timeline;
@@ -351,7 +352,7 @@ function JumpMarks({ clip: c, media, pps, startUs, onSeek }: { clip: TimelineCli
             key={j.startUs}
             className="clip-jump"
             style={{ left, width }}
-            title={`Jump: ${(j.airMs / 1000).toFixed(2)} s in the air, landing ${j.landingG.toFixed(1)} G — click to go there`}
+            title={`Jump: ${(j.airMs / 1000).toFixed(2)} s in the air${j.distanceM !== undefined ? `, ${fmtJumpLength(j.distanceM)} long` : ''}, landing ${j.landingG.toFixed(1)} G — click to go there`}
             aria-label={`Jump, ${(j.airMs / 1000).toFixed(2)} seconds`}
             onPointerDown={(e) => { e.stopPropagation(); onSeek(startUs + a); }}
           ><span>{(j.airMs / 1000).toFixed(1)}s</span></button>

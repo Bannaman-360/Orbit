@@ -75,7 +75,7 @@ function toDisplay(o: Overlay, raw: number): number {
   const imp = o.units === 'imperial';
   switch (o.kind) {
     case 'speed': return raw * (imp ? 2.23694 : 3.6);
-    case 'altitude': return raw * (imp ? 3.28084 : 1);
+    case 'altitude': case 'jumpdist': return raw * (imp ? 3.28084 : 1);
     case 'distance': return raw / (imp ? 1609.344 : 1000);
     default: return raw;
   }
@@ -131,22 +131,36 @@ export function gaugeReading(o: Overlay, tl: Timeline, T: number): GaugeReading 
       if (!Number.isFinite(v)) return blank('G', 'G-FORCE', max);
       return { value: smoothAt(f, textTime(t), CALM.gforce).toFixed(1), unit: 'G', label: label || 'G-FORCE', fraction: Math.min(1, v / max), available: true, max, num: v };
     }
-    case 'airtime': {
+    case 'airtime':
+    case 'jumpdist': {
+      const dist = o.kind === 'jumpdist';
       const at = forced ? null : locate(tl, T);
-      const jumps = !tm ? [] : at ? tm.jumps(at.clip.airtime ?? {}).filter((j) => j.endUs > at.clip.inUs && j.startUs < at.clip.outUs) : tm.jumps();
-      if (!tm?.hasAccel) return blank('s', 'AIRTIME');
-      const best = jumps.reduce((a, j) => Math.max(a, j.airMs), 0) / 1000 || 1;
+      const all = !tm ? [] : at ? tm.jumps(at.clip.airtime ?? {}).filter((j) => j.endUs > at.clip.inUs && j.startUs < at.clip.outUs) : tm.jumps();
+      const unit = dist ? (imp ? 'ft' : 'm') : 's';
+      if (!tm?.hasAccel || (dist && !tm.hasGps)) return blank(unit, dist ? 'JUMP' : 'AIRTIME');
+      // What each jump is worth, in display units: its time in the air, or how far it went.
+      const jumps = dist ? all.filter((j) => j.distanceM !== undefined) : all;
+      const of = (j: (typeof all)[number]) => (dist ? toDisplay(o, j.distanceM!) : j.airMs / 1000);
+      const best = jumps.reduce((a, j) => Math.max(a, of(j)), 0) || 1;
       const now = jumps.find((j) => t >= j.startUs && t < j.endUs);
       const done = jumps.filter((j) => j.endUs <= t);
       const last = done[done.length - 1];
       // In the air: counting up. Just landed: that jump, for 3 s. Otherwise as chosen.
-      let v: number, lab = label || 'AIRTIME';
-      if (now) v = (t - now.startUs) / 1e6;
-      else if (last && t - last.endUs < 3e6) v = last.airMs / 1000;
-      else if (o.airShow === 'total') { v = done.reduce((a, j) => a + j.airMs, 0) / 1000; lab = label || 'TOTAL AIR'; }
-      else if (o.airShow === 'last') v = (last?.airMs ?? 0) / 1000;
-      else { v = done.reduce((a, j) => Math.max(a, j.airMs), 0) / 1000; lab = label || 'BEST AIR'; }
-      return { value: v.toFixed(2), unit: 's', label: lab, fraction: Math.min(1, v / best), available: true, max: best, num: v };
+      let v: number, lab = label || (dist ? 'JUMP' : 'AIRTIME');
+      const sofar = done.reduce((a, j) => a + of(j), 0);
+      const inAir = now ? of(now) * Math.min(1, (t - now.startUs) / (now.endUs - now.startUs)) : 0;
+      if (o.airShow === 'running') {
+        // Only the total: it grows through every jump and stays put on the ground.
+        v = sofar + inAir; lab = label || (dist ? 'TOTAL JUMPED' : 'TOTAL AIR');
+        const all = jumps.reduce((a, j) => a + of(j), 0) || 1;
+        return { value: v.toFixed(dist ? 1 : 2), unit, label: lab, fraction: Math.min(1, v / all), available: true, max: all, num: v };
+      }
+      if (now) v = inAir;
+      else if (last && t - last.endUs < 3e6) v = of(last);
+      else if (o.airShow === 'total') { v = sofar; lab = label || (dist ? 'TOTAL JUMPED' : 'TOTAL AIR'); }
+      else if (o.airShow === 'last') v = last ? of(last) : 0;
+      else { v = done.reduce((a, j) => Math.max(a, of(j)), 0); lab = label || (dist ? 'LONGEST JUMP' : 'BEST AIR'); }
+      return { value: v.toFixed(dist ? 1 : 2), unit, label: lab, fraction: Math.min(1, v / best), available: true, max: best, num: v };
     }
     case 'timer': {
       const s = Math.max(0, (T - o.startUs) / 1e6);

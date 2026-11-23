@@ -89,6 +89,7 @@ const ICON: Partial<Record<GaugeKind, string>> = {
   altitude: 'M3 19l6-10 4 6 3-4 5 8z',
   distance: 'M5 19c0-6 14-8 14-14M5 19a2 2 0 1 0 0 .1M19 5a2 2 0 1 0 0 .1',
   airtime: 'M3 19h5M16 19h5M6 19c2-8 10-8 12 0M12 4v5M9.500 6.500 12 9l2.500-2.500',
+  jumpdist: 'M3 18c3-9 15-9 18 0M3 21h18M3 19.500v3M21 19.500v3',
   timer: 'M12 8v5l3 2M9 3h6M12 21a8 8 0 1 0 0-16 8 8 0 0 0 0 16z',
   clock: 'M12 7v5l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z',
 };

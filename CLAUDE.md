@@ -23,7 +23,8 @@ Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:
 
 - Checks: `pnpm typecheck` and `pnpm test` (Vitest, no footage needed).
 - Build the renderer: `cd apps/desktop && npx electron-vite build`
-- Hidden self-test: `cd apps/desktop && npx electron . --selftest --selftest-mode=<mode>`
+- **Self-tests (use these):** `scripts/selftest.sh <mode>...` runs modes hidden, rebuilding only when sources changed (`--build` forces a build); it prints `<mode> pass` or the fails, and keeps `selftest-out/report-<mode>.json`. `scripts/regress.sh --quick` runs about 5 minutes of checks; `scripts/regress.sh` runs everything (about 45 minutes) and retries a failed mode once.
+- Underlying command: `cd apps/desktop && npx electron . --selftest --selftest-mode=<mode>`
   - It writes `selftest-out/report.json`; `fails: []` means it passed. Screenshots land in `selftest-out/`.
   - Modes:
     - interface and app: `ui`, `tour`, `drop`, `report`, `startup`

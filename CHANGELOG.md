@@ -15,6 +15,15 @@
 - Missing videos stay in the project (shown as missing) and can be found again in a folder or on a card, even when renamed.
 - See how much room the preview copies take, and delete them.
 
+## 0.1.0-beta.2
+
+Fixes:
+- The app could open to an empty grey window, after a newer version of it had been used on the
+  same computer. Projects saved by newer versions now open (with a note about what they added that
+  this version doesn't show).
+- If the window ever fails to draw, it now says so and offers Try again, Start fresh (your last
+  session is kept) and a problem report, instead of staying blank.
+
 ## 0.1.0-beta.1
 
 The first beta.

@@ -59,6 +59,7 @@ contextBridge.exposeInMainWorld('ace', {
   orientation: inv('telemetry:orientation'),
   autosaveLoad: inv('autosave:load'),
   autosaveSave: inv('autosave:save'),
+  autosaveAside: inv('autosave:aside'),
   capture: inv('selftest:capture'),
   selftestMetrics: inv('selftest:metrics'),
   selftestInput: inv('selftest:input'),

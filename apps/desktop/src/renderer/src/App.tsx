@@ -814,6 +814,9 @@ export function App() {
   const [trackBox, setTrackBox] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [trackJob, setTrackJob] = useState<{ progress: number; abort: AbortController } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Self-test only: make drawing fail, to check the app shows what to do instead of a blank window.
+  const [crashTest, setCrashTest] = useState(false);
+  if (crashTest) throw new Error('Self-test: drawing failed on purpose');
   const startTrackPick = () => {
     if (!clip || !media || !canReframe(media)) return setError('This clip can’t be reframed, so a subject can’t be followed.');
     player.pause();
@@ -947,6 +950,8 @@ export function App() {
     const library = [...new Set([...entries.map((e) => e.path), ...timeline.clips.map((c) => c.mediaPath)])];
     // A file moved or deleted since it was last opened mustn't come back from memory.
     await Promise.all([...library, ...timeline.audio.map((a) => a.path)].map((p) => ace.stat(p).catch(() => forgetMedia(p))));
+    // Saved by a version newer than this one: opens, but what it added isn't shown.
+    const newer = (typeof (raw as { version?: unknown }).version === 'number' && (raw as { version: number }).version > 2) || (((raw.timeline as { version?: unknown } | undefined)?.version ?? 2) as number) > 2;
     setBin([]);
     binRef.current = [];
     setBins(Array.isArray(raw.bins) ? raw.bins.filter((b) => b && typeof b.id === 'string' && typeof b.name === 'string') : []);
@@ -966,6 +971,7 @@ export function App() {
     player.seek(0);
     const offline = new Set(timeline.clips.filter((c) => !mediaNow(c.mediaPath)).map((c) => c.mediaPath));
     if (offline.size) setNotice(offline.size === 1 ? `“${baseName([...offline][0]!)}” is missing: it was moved, renamed or deleted. Choose Relink in Media to find it.` : `${offline.size} videos are missing: they were moved, renamed or deleted. Choose Relink in Media to find them.`);
+    if (!offline.size && newer) setNotice('This project was saved by a newer version of the app. It opened, but what that version added isn’t shown here.');
   }, [importPaths, player]);
 
   const saveText = () => JSON.stringify({ version: 2, timeline: tlRef.current, library: binRef.current.map((b) => ({ path: b.path, ...(b.rating ? { rating: b.rating } : {}), ...(b.flag ? { flag: b.flag } : {}), ...(b.bin ? { bin: b.bin } : {}), ...((b.media?.size ?? savedSizes.current.get(b.path)) ? { size: b.media?.size ?? savedSizes.current.get(b.path) } : {}) })), bins: binsRef.current } satisfies SaveFile);
@@ -1000,12 +1006,14 @@ export function App() {
           saveText: () => saveTextRef.current(),
           restore: (text) => restoreRef.current(text),
           relink: (folder) => relinkRef.current(folder),
+          crashForTest: () => setCrashTest(true),
         };
         void runSelftest(api);
         return;
       }
       const text = await ace.autosaveLoad();
-      if (text) await restore(text).catch((e) => setError(`Could not restore last session: ${e}`));
+      // A last session that can't be opened is kept aside, so the app always starts.
+      if (text) await restore(text).catch(async (e) => { ace.logError('restore', String(e)); await ace.autosaveAside(); setError('Your last session couldn’t be opened, so the app started fresh. It was kept, not deleted.'); });
       restored.current = true;
     });
   }, [commit, importPaths, player, restore]);

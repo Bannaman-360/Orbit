@@ -92,6 +92,14 @@ export function getMedia(path: string): Promise<Media> {
   return p;
 }
 
+/** Forgets a file (it was moved or deleted): it's opened afresh next time it's asked for. */
+export function forgetMedia(path: string) {
+  media.delete(path);
+  ready.delete(path);
+  sounds.delete(path);
+  music.delete(path);
+}
+
 /**
  * What to import for the files the user picked: each recording once, by its first file, however
  * many of its chapters were picked.
@@ -363,10 +371,13 @@ export async function loadMusic(path: string) {
  * Looks at the file itself: empty, cut off while recording, sound only, or not a video at all.
  */
 export async function whyCannotOpen(path: string, e: unknown): Promise<string> {
+  // (MISSING, below, is what the Media list shows for a file that isn't there any more.)
   const raw = String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, '');
   if (/no video track/.test(raw)) return 'This file has sound only. To use it, choose Add Music.';
   const codec = raw.match(/cannot decode (\S+)/)?.[1];
   if (codec) return `This computer can’t play this kind of video (${codec}).`;
+  const missing = await ace.stat(path).then(() => false, (x) => /ENOENT|no such file/i.test(String(x)));
+  if (missing) return MISSING;
   try {
     const { size } = await ace.stat(path);
     if (!size) return 'The file is empty (0 bytes): the copy probably didn’t finish. Copy it from the card again.';
@@ -379,3 +390,6 @@ export async function whyCannotOpen(path: string, e: unknown): Promise<string> {
   } catch { /* can't look inside: say what happened */ }
   return `It can’t be opened: ${raw}`;
 }
+
+/** What the Media list says about a file that isn't where the project expects it. */
+export const MISSING = 'Missing: it was moved, renamed or deleted. Relink it to find it again.';

@@ -27,11 +27,11 @@ Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:
   - It writes `selftest-out/report.json`; `fails: []` means it passed. Screenshots land in `selftest-out/`.
   - Modes:
     - interface and app: `ui`, `tour`, `drop`, `report`, `startup`
-    - playback and editing: `perf`, `full`, `speed`, `scrubback`, `strip`, `zoom`, `follow`, `stab`, `flat`
+    - playback and editing: `perf`, `full`, `speed`, `scrubback`, `strip`, `zoom`, `follow`, `stab`, `flat`, `protrim` (roll/slip/slide, JKL, Source view), `snap` (snapping, beats), `markers` (markers, project v2, missing files)
     - colour, lens and 360: `color`, `lens`, `lenslook`, `equirect`, `seamcheck`
-    - files: `chapters`, `card`, `odd`, `long`
+    - files: `chapters`, `card`, `odd`, `long`, `pool` (ratings, folders, relink, preview copies)
     - ride data and export: `gauges`, `airtime`, `export`, `tenbitexport`, `rider`
-  - A full regression runs all of them and takes about 40 minutes. Timing checks (`gauges`, `scrubback`) can fail once when the machine is busy: rerun before treating it as a bug.
+  - A full regression runs all of them and takes about 45 minutes. Timing checks (`gauges`, `scrubback`) can fail once when the machine is busy: rerun before treating it as a bug.
 - Installers: `pnpm --filter action-cam-editor dist:mac`. This builds Apple Silicon and Intel dmgs into `apps/desktop/release/`. Windows is built by `.github/workflows/installers.yml`.
 - Packaged self-test: run `<App>.app/Contents/MacOS/Action Cam Editor --selftest --selftest-mode=<mode>` with `ACE_REPO_ROOT` set to this repo.
 

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import { copyFile, constants as fsFlags, open, mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile, type FileHandle } from 'node:fs/promises';
@@ -8,7 +8,7 @@ import { extractOrientation, type GpmfRequest } from '@ace/telemetry/node';
 import { setupImporter } from './importer';
 import { deepEncoders, setupEncoder } from './encoder';
 import { log, setupDiagnostics } from './diagnostics';
-import { AUDIO_EXT, findImportable, hasExt, VIDEO_EXT } from './importPaths';
+import { AUDIO_EXT, findImportable, hasExt, matchMissing, VIDEO_EXT, type Wanted } from './importPaths';
 
 const SELFTEST = process.argv.includes('--selftest');
 /** The app's name, in one place (window title, About box, installer). */
@@ -308,6 +308,34 @@ ipcMain.handle('proxy:discard', async (_e, file: string) => {
   await unlink(`${file}.part`).catch(() => {});
 });
 
+// --- Relink: find where missing files went --------------------------------------------
+ipcMain.handle('media:relink', async (_e, wanted: Wanted[], folder?: string) => {
+  let dir = SELFTEST ? folder : undefined;
+  if (!dir) {
+    const r = await dialog.showOpenDialog(win!, { title: 'Find the missing videos', message: 'Choose a folder (or the memory card) they might be in. Folders inside it are searched too.', properties: ['openDirectory'], defaultPath: lastImportDir });
+    if (r.canceled || !r.filePaths[0]) return null;
+    dir = r.filePaths[0];
+  }
+  const found = await findImportable([dir]);
+  const candidates = await Promise.all([...found.video, ...found.audio].map(async (p) => ({ path: p, size: (await stat(p)).size })));
+  const matches = matchMissing(wanted, candidates);
+  allowRead(matches.map((m) => m.to));
+  return { folder: path.basename(dir), matches };
+});
+
+// --- Preview proxies: how much room they take, and clearing them ------------------------
+ipcMain.handle('proxy:usage', async () => {
+  const files = await readdir(proxyDir()).catch(() => [] as string[]);
+  let bytes = 0;
+  for (const f of files) bytes += (await stat(path.join(proxyDir(), f)).catch(() => ({ size: 0 }))).size;
+  return { files: files.filter((f) => f.endsWith('.mp4')).length, bytes };
+});
+ipcMain.handle('proxy:clear', async () => {
+  const files = await readdir(proxyDir()).catch(() => [] as string[]);
+  for (const f of files) if (/^[0-9a-f]{20}-\d+\.mp4(\.part)?$/.test(f)) await unlink(path.join(proxyDir(), f)).catch(() => {});
+});
+ipcMain.handle('proxy:reveal', async () => { await mkdir(proxyDir(), { recursive: true }); if (!SELFTEST) void shell.openPath(proxyDir()); });
+
 ipcMain.handle('media:list-fixtures', () => (FIXTURES ? listMedia(FIXTURES) : []));
 
 ipcMain.handle('telemetry:orientation', async (_e, p: string, req: GpmfRequest) => extractOrientation((o, l) => readRange(p, o, l), req));
@@ -401,8 +429,8 @@ function buildMenu() {
   const template: MenuItemConstructorOptions[] = [
     ...(MAC ? [{ label: app.name, submenu: [{ role: 'about' }, sep, it('Customize…', 'customize'), sep, { role: 'services' }, sep, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, sep, { role: 'quit' }] as MenuItemConstructorOptions[] }] : []),
     { label: 'File', submenu: [it('Import Media…', 'import'), it('Import from Memory Card…', 'card'), it('Add Music…', 'music'), sep, it('Open Project…', 'open'), it('Save Project…', 'save'), sep, it('Export Video…', 'export'), it('Save Frame…', 'grab'), sep, MAC ? { role: 'close' } : { role: 'quit' }] },
-    { label: 'Edit', submenu: [it('Undo', 'undo'), it('Redo', 'redo'), sep, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }, sep, it('Split', 'split'), it('Split and Delete Left', 'delLeft'), it('Split and Delete Right', 'delRight'), it('Duplicate Clip', 'duplicate'), it('Delete', 'delete'), sep, it('Add Keyframe', 'keyframe'), it('Add Text', 'text'), it('Track Subject…', 'track')] },
-    { label: 'View', submenu: [it('Media', 'toggleMedia'), it('Inspector', 'toggleInspector'), it('Timeline', 'toggleTimeline'), sep, it('Customize…', 'customize'), it('Arrange Interface', 'arrange'), it('Undo Interface Change', 'undoUi'), sep, it('Show Before / After', 'compare'), it('Full-Screen Preview', 'fullscreen'), { role: 'togglefullscreen', label: 'Enter Full Screen Window' }, ...(app.isPackaged ? [] : [sep, { role: 'reload' }, { role: 'toggleDevTools' }] as MenuItemConstructorOptions[])] },
+    { label: 'Edit', submenu: [it('Undo', 'undo'), it('Redo', 'redo'), sep, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }, sep, it('Split', 'split'), it('Split and Delete Left', 'delLeft'), it('Split and Delete Right', 'delRight'), it('Duplicate Clip', 'duplicate'), it('Delete', 'delete'), sep, it('Add Keyframe', 'keyframe'), it('Add Marker', 'marker'), it('Add Text', 'text'), it('Track Subject…', 'track')] },
+    { label: 'View', submenu: [it('Media', 'toggleMedia'), it('Inspector', 'toggleInspector'), it('Timeline', 'toggleTimeline'), it('Markers', 'markersPanel'), sep, it('Customize…', 'customize'), it('Arrange Interface', 'arrange'), it('Undo Interface Change', 'undoUi'), sep, it('Show Before / After', 'compare'), it('Full-Screen Preview', 'fullscreen'), { role: 'togglefullscreen', label: 'Enter Full Screen Window' }, ...(app.isPackaged ? [] : [sep, { role: 'reload' }, { role: 'toggleDevTools' }] as MenuItemConstructorOptions[])] },
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, ...(MAC ? [sep, { role: 'front' }] as MenuItemConstructorOptions[] : [])] },
     { label: 'Help', submenu: [it('Show Tour Again', 'tour'), it('Welcome Screen', 'welcome'), sep, it('Keyboard Shortcuts', 'shortcuts'), sep, it('Report a Problem…', 'report')] },
   ];

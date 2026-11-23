@@ -167,6 +167,14 @@ async function runQueue() {
   }
 }
 
+/** After the preview copies were deleted: forget them (they're built again as needed). */
+export function forgetProxies() {
+  opened.clear();
+  queue.length = 0;
+  running?.abort();
+  notify();
+}
+
 /** Makes sure proxies at the current level exist (or are being built) for these media. */
 export function ensureProxies(media: Media[]) {
   if (level === 1) return;

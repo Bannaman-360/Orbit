@@ -55,3 +55,31 @@ export async function findImportable(paths: string[]): Promise<Found> {
   if (files.length >= MAX_FILES) skipped.push({ name: `More than ${MAX_FILES} files`, why: 'only the first ones were imported' });
   return { video, audio, skipped };
 }
+
+export interface Wanted { path: string; size?: number }
+export interface Candidate { path: string; size: number }
+export interface Relink { from: string; to: string; how: 'name and size' | 'name' | 'size' }
+
+/**
+ * Finds where missing files went. Best: same name and size. Then the same name (the size wasn't
+ * known), then the same size to the byte (a renamed file: sizes of videos are practically unique).
+ * Each candidate is used once.
+ */
+export function matchMissing(wanted: Wanted[], candidates: Candidate[]): Relink[] {
+  const used = new Set<string>();
+  const out: Relink[] = [];
+  const base = (p: string) => path.basename(p).toLowerCase();
+  const take = (w: Wanted, test: (c: Candidate) => boolean, how: Relink['how']) => {
+    const c = candidates.find((x) => !used.has(x.path) && test(x));
+    if (!c) return false;
+    used.add(c.path);
+    out.push({ from: w.path, to: c.path, how });
+    return true;
+  };
+  const left: Wanted[] = [];
+  for (const w of wanted) if (!(w.size !== undefined && take(w, (c) => base(c.path) === base(w.path) && c.size === w.size, 'name and size'))) left.push(w);
+  const left2: Wanted[] = [];
+  for (const w of left) if (!(w.size === undefined && take(w, (c) => base(c.path) === base(w.path), 'name'))) left2.push(w);
+  for (const w of left2) if (w.size !== undefined && w.size > 1_000_000) take(w, (c) => c.size === w.size, 'size');
+  return out;
+}

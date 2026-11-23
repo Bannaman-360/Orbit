@@ -25,6 +25,8 @@ export interface SpeedLineProps {
   onSpeed: (speed: number) => void;
   onGrab: () => void;
   onEnd: () => void;
+  /** Lines a point's place in the clip (µs from its start) up with beats and markers. */
+  snapLocal?: (localUs: number, e: PointerEvent) => number;
 }
 
 export function SpeedLine(p: SpeedLineProps) {
@@ -41,7 +43,8 @@ export function SpeedLine(p: SpeedLineProps) {
   };
   const movePoint = useDrag((dx, dy, e) => {
     const g = grabbed.current, k = orig.current.speedKeys!.find((x) => x.id === g.id)!;
-    const t = Math.abs(dx) < 3 ? k.t : mediaAt(orig.current, localAt(orig.current, k.t) + dx * usPerPx);
+    const local = localAt(orig.current, k.t) + dx * usPerPx;
+    const t = Math.abs(dx) < 3 ? k.t : mediaAt(orig.current, p.snapLocal ? p.snapLocal(local, e) : local);
     const s = drag(g.speed, dy, e.shiftKey);
     p.onPoint(g.id, t, s);
     setLabel((l) => l && { ...l, text: fmtSpeed(s) });

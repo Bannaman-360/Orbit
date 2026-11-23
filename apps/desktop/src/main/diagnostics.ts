@@ -95,6 +95,10 @@ export function setupDiagnostics(o: Setup) {
   });
   // (Self-tests leave the clipboard alone: it's the user's.)
   ipcMain.handle('report:copy', (_e, text: string) => { if (!o.quiet) clipboard.writeText(String(text)); });
+  // Any text the user asked to copy (chapters, …). Self-tests keep what would have been copied instead.
+  let lastCopied = '';
+  ipcMain.handle('clipboard:write', (_e, text: string) => { lastCopied = String(text); if (!o.quiet) clipboard.writeText(lastCopied); });
+  ipcMain.handle('clipboard:last', () => (o.quiet ? lastCopied : ''));
   ipcMain.handle('report:reveal', () => {
     if (o.quiet) return; if (existsSync(file)) shell.showItemInFolder(file); else void shell.openPath(o.dir); });
 }

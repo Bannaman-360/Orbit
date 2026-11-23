@@ -87,6 +87,8 @@ export interface TimelineClip {
   muteBelow?: number;
   /** At other speeds the sound keeps its pitch (stretched in time). Missing = yes. */
   keepPitch?: boolean;
+  /** How jumps are found in this clip (G below which it's in the air, shortest jump in ms). Missing = defaults. */
+  airtime?: { below?: number; minMs?: number; shape?: boolean; joinMs?: number };
   /** Base look (used when there are no keyframes). */
   look: Look;
   /** Keyframe times are media times, so they stay put when the clip is trimmed or split. */

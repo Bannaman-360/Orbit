@@ -33,6 +33,8 @@ export interface Prefs {
   shortcuts: Record<string, string>;
   /** Items added to the app after these toolbars were saved, already offered once. */
   seen: string[];
+  /** The welcome screen has been seen (first launch done). */
+  welcomed: boolean;
 }
 
 const INSPECTOR = ['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection'];
@@ -49,7 +51,7 @@ export const DEFAULT_BARS: Record<BarId, BarPrefs> = {
   // (On a Mac the menu bar does the menu's job.)
   main: { items: [...(navigator.platform.toLowerCase().includes('mac') ? [] : ['menu']), 'import', 'card', 'music', 'space', 'undo', 'redo', 'space', 'text', 'gauges', 'track', 'flex', 'status', 'flex', 'frame', 'grab', 'space', 'workspaces', 'customize', 'space', 'export'], position: 'top', hidden: false },
   transport: { items: ['time', 'flex', 'start', 'prev', 'play', 'next', 'end', 'flex', 'compare', 'quality', 'fps', 'fullscreen'], position: 'bottom', hidden: false },
-  timeline: { items: ['split', 'delLeft', 'delRight', 'space', 'detach', 'speedline', 'delete', 'flex', 'tlinfo', 'tlzoom'], position: 'top', hidden: false },
+  timeline: { items: ['split', 'delLeft', 'delRight', 'space', 'detach', 'speedline', 'jumps', 'delete', 'flex', 'tlinfo', 'tlzoom'], position: 'top', hidden: false },
 };
 
 /** Which sections each panel shows to begin with. */
@@ -58,7 +60,7 @@ export const DEFAULT_SECTIONS: Record<string, string[]> = {
   stabilize: ['Stabilization', 'Crop', 'Horizon'],
   color: ['Input color', 'Presets', 'Light', 'Color', 'Detail', 'LUT', 'Lens match', 'Match clips'],
   effects: ['Motion blur (ND filter)', 'Speed & lens', 'Film & light', 'Quick looks'],
-  clip: ['Speed', 'Audio', 'Trim'],
+  clip: ['Speed', 'Airtime', 'Audio', 'Trim'],
   'sel:text': ['Text', 'Font', 'Colour & effect', 'Position', 'Overlay timing'],
   'sel:gauge': ['Look', 'Position', 'Overlay timing'],
   'sel:transition': [...TRANSITION_GROUPS.map(([g]) => g), 'Transition timing'],
@@ -66,7 +68,7 @@ export const DEFAULT_SECTIONS: Record<string, string[]> = {
 };
 
 /** Toolbar items added later: put into saved toolbars once (next to a neighbour), then left to the user. */
-const NEW_ITEMS: { item: string; bar: BarId; before: string }[] = [{ item: 'compare', bar: 'transport', before: 'quality' }, { item: 'card', bar: 'main', before: 'music' }, { item: 'speedline', bar: 'timeline', before: 'delete' }];
+const NEW_ITEMS: { item: string; bar: BarId; before: string }[] = [{ item: 'compare', bar: 'transport', before: 'quality' }, { item: 'card', bar: 'main', before: 'music' }, { item: 'speedline', bar: 'timeline', before: 'delete' }, { item: 'jumps', bar: 'timeline', before: 'delete' }];
 function offerNew(bars: Record<BarId, BarPrefs>, seen: string[]) {
   for (const n of NEW_ITEMS) {
     if (seen.includes(n.item) || Object.values(bars).some((b) => b.items.includes(n.item))) continue;
@@ -77,7 +79,7 @@ function offerNew(bars: Record<BarId, BarPrefs>, seen: string[]) {
 }
 
 const defaults = (): Prefs => ({
-  theme: DEFAULT_THEME, themes: {}, layout: LAYOUTS[0]![1](), workspaces: {}, bars: structuredClone(DEFAULT_BARS), customPanels: [], sections: {}, hiddenSections: [], rows: {}, hiddenRows: {}, shortcuts: {}, seen: NEW_ITEMS.map((n) => n.item),
+  theme: DEFAULT_THEME, themes: {}, layout: LAYOUTS[0]![1](), workspaces: {}, bars: structuredClone(DEFAULT_BARS), customPanels: [], sections: {}, hiddenSections: [], rows: {}, hiddenRows: {}, shortcuts: {}, seen: NEW_ITEMS.map((n) => n.item), welcomed: false,
 });
 export const defaultPrefs = defaults;
 
@@ -115,6 +117,7 @@ export function sanitizePrefs(raw: unknown): Prefs {
     workspaces: Object.fromEntries(Object.entries(rec(r.workspaces)).flatMap(([k, w]) => { const l = sanitize(rec(w).layout, known); return l ? [[k, { layout: l, bars: sanitizeBars(rec(w).bars) }]] : []; })),
     bars: r.bars ? offerNew(sanitizeBars(r.bars), strs(r.seen)) : d.bars,
     seen: d.seen,
+    welcomed: r.welcomed === true,
     customPanels, sections: lists(r.sections), hiddenSections: strs(r.hiddenSections), rows: lists(r.rows), hiddenRows: lists(r.hiddenRows), shortcuts,
   };
 }

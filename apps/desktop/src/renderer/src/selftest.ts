@@ -22,6 +22,10 @@ import { directionAt, TRACKER, trackSubject } from './tracker';
 import { flatCheck, flatProbe, realSteady, realPlay, realLooks, lensDump, stabCheck } from './selftestFlat';
 import { lensCheck, lensLookCheck } from './selftestLens';
 import { stripCheck } from './selftestStrip';
+import { airtimeCheck, gaugesCheck } from './selftestGauges';
+import { dropCheck } from './selftestDrop';
+import { tenbitExport, tenbitProbe } from './selftestTenbit';
+import { tourCheck } from './selftestTour';
 import { scrubBackCheck } from './selftestScrub';
 import { exportCheck, exportTag } from './selftestExport';
 import { seamCheck, seamFit, seamLook, seamMeasure } from './selftestSeam';
@@ -39,7 +43,7 @@ import { previewSource, proxiesIdle, proxyErrors, setPreviewLevel } from './prox
 import type { TickResult, TimelinePlayer } from './timelinePlayer';
 
 export interface EditorApi {
-  importPaths(paths: string[]): Promise<void>;
+  importPaths(paths: string[]): Promise<unknown>;
   getTimeline(): Timeline;
   setTimeline(t: Timeline): void;
   player: TimelinePlayer;
@@ -52,6 +56,8 @@ export interface EditorApi {
   run?: (cmd: string) => void;
   /** Track the subject inside this box (preview pixels), as if dragged in "Track subject". */
   trackBox?: (box: { x0: number; y0: number; x1: number; y1: number }) => Promise<void>;
+  /** As if these files were dragged in from the desktop (onto the timeline at `at`). */
+  dropPaths?: (paths: string[], at?: number) => Promise<void>;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -791,9 +797,9 @@ async function perfCheck(api: EditorApi) {
 }
 
 export async function runSelftest(api: EditorApi) {
-  if (api.mode === 'flat' || api.mode === 'flatprobe' || api.mode === 'stab' || api.mode === 'lensdump' || api.mode === 'reallooks' || api.mode === 'realplay' || api.mode === 'realsteady' || api.mode === 'follow' || api.mode === 'realfollow' || api.mode === 'equirect' || api.mode === 'equirectmotion' || api.mode === 'chapters' || api.mode === 'card' || api.mode === 'cardquit' || api.mode === 'speed' || api.mode === 'colorprobe' || api.mode === 'colorroutes' || api.mode === 'colorfacts' || api.mode === 'color' || api.mode === 'seamlook' || api.mode === 'seam' || api.mode === 'seamfit' || api.mode === 'seamcheck' || api.mode === 'lens' || api.mode === 'exporttag' || api.mode === 'export' || api.mode === 'lenslook' || api.mode === 'strip' || api.mode === 'scrubback') {
+  if (api.mode === 'flat' || api.mode === 'flatprobe' || api.mode === 'stab' || api.mode === 'lensdump' || api.mode === 'reallooks' || api.mode === 'realplay' || api.mode === 'realsteady' || api.mode === 'follow' || api.mode === 'realfollow' || api.mode === 'equirect' || api.mode === 'equirectmotion' || api.mode === 'chapters' || api.mode === 'card' || api.mode === 'cardquit' || api.mode === 'speed' || api.mode === 'colorprobe' || api.mode === 'colorroutes' || api.mode === 'colorfacts' || api.mode === 'color' || api.mode === 'seamlook' || api.mode === 'seam' || api.mode === 'seamfit' || api.mode === 'seamcheck' || api.mode === 'lens' || api.mode === 'exporttag' || api.mode === 'export' || api.mode === 'lenslook' || api.mode === 'strip' || api.mode === 'scrubback' || api.mode === 'gauges' || api.mode === 'drop' || api.mode === 'airtime' || api.mode === 'tenbit' || api.mode === 'tenbitexport' || api.mode === 'tour' || api.mode === 'startup') {
     try {
-      await ace.selftestDone(api.mode === 'scrubback' ? await scrubBackCheck(api) : api.mode === 'strip' ? await stripCheck(api) : api.mode === 'lenslook' ? await lensLookCheck(api) : api.mode === 'export' ? await exportCheck() : api.mode === 'exporttag' ? await exportTag() : api.mode === 'lens' ? await lensCheck(api) : api.mode === 'colorprobe' ? await colorProbe() : api.mode === 'seam' ? await seamMeasure() : api.mode === 'seamcheck' ? await seamCheck() : api.mode === 'seamfit' ? await seamFit() : api.mode === 'seamlook' ? await seamLook() : api.mode === 'color' ? await colorCheck(api) : api.mode === 'colorfacts' ? await colorFacts() : api.mode === 'colorroutes' ? await colorRoutes() : api.mode === 'speed' ? await speedCheck(api) : api.mode === 'card' ? await cardCheck(api) : api.mode === 'cardquit' ? await cardQuit() : api.mode === 'chapters' ? await chapterCheck(api) : api.mode === 'equirectmotion' ? await equirectMotion() : api.mode === 'equirect' ? await equirectCheck(api) : api.mode === 'realfollow' ? await realFollow() : api.mode === 'follow' ? await followCheck(api) : api.mode === 'flat' ? await flatCheck(api) : api.mode === 'stab' ? await stabCheck(api) : api.mode === 'realsteady' ? await realSteady('GX010133.MP4') : api.mode === 'realplay' ? await realPlay(api, 'GX010133.MP4') : api.mode === 'reallooks' ? await realLooks('GX010133.MP4') : api.mode === 'lensdump' ? await lensDump('GX010133.MP4') : await flatProbe());
+      await ace.selftestDone(api.mode === 'startup' ? { fails: [], readyMs: Math.round(performance.now()), packaged: (await ace.info()).packaged } : api.mode === 'tour' ? await tourCheck(api) : api.mode === 'tenbitexport' ? await tenbitExport() : api.mode === 'tenbit' ? await tenbitProbe() : api.mode === 'airtime' ? await airtimeCheck(api) : api.mode === 'drop' ? await dropCheck(api) : api.mode === 'gauges' ? await gaugesCheck(api) : api.mode === 'scrubback' ? await scrubBackCheck(api) : api.mode === 'strip' ? await stripCheck(api) : api.mode === 'lenslook' ? await lensLookCheck(api) : api.mode === 'export' ? await exportCheck() : api.mode === 'exporttag' ? await exportTag() : api.mode === 'lens' ? await lensCheck(api) : api.mode === 'colorprobe' ? await colorProbe() : api.mode === 'seam' ? await seamMeasure() : api.mode === 'seamcheck' ? await seamCheck() : api.mode === 'seamfit' ? await seamFit() : api.mode === 'seamlook' ? await seamLook() : api.mode === 'color' ? await colorCheck(api) : api.mode === 'colorfacts' ? await colorFacts() : api.mode === 'colorroutes' ? await colorRoutes() : api.mode === 'speed' ? await speedCheck(api) : api.mode === 'card' ? await cardCheck(api) : api.mode === 'cardquit' ? await cardQuit() : api.mode === 'chapters' ? await chapterCheck(api) : api.mode === 'equirectmotion' ? await equirectMotion() : api.mode === 'equirect' ? await equirectCheck(api) : api.mode === 'realfollow' ? await realFollow() : api.mode === 'follow' ? await followCheck(api) : api.mode === 'flat' ? await flatCheck(api) : api.mode === 'stab' ? await stabCheck(api) : api.mode === 'realsteady' ? await realSteady('GX010133.MP4') : api.mode === 'realplay' ? await realPlay(api, 'GX010133.MP4') : api.mode === 'reallooks' ? await realLooks('GX010133.MP4') : api.mode === 'lensdump' ? await lensDump('GX010133.MP4') : await flatProbe());
     } catch (e) {
       await ace.capture('flat-crash');
       await ace.selftestDone({ error: String((e as Error).stack ?? e) });

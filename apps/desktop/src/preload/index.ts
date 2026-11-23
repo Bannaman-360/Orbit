@@ -1,10 +1,13 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 const inv = (ch: string) => (...args: unknown[]) => ipcRenderer.invoke(ch, ...args);
 
 contextBridge.exposeInMainWorld('ace', {
   info: inv('app:info'),
   openMediaDialog: inv('dialog:open-media'),
+  importPaths: inv('media:import-paths'),
+  /** Where dropped files are on disk (files from the desktop only). */
+  pathsOf: (files: File[]) => files.map((f) => webUtils.getPathForFile(f)).filter(Boolean),
   openAudioDialog: inv('dialog:open-audio'),
   openLutDialog: inv('dialog:open-lut'),
   openProjectDialog: inv('dialog:open-project'),
@@ -22,6 +25,11 @@ contextBridge.exposeInMainWorld('ace', {
   writeAt: inv('file:write-at'),
   closeFile: inv('file:close'),
   release: inv('file:release'),
+  encoderAvailable: inv('encoder:available'),
+  encoderStart: inv('encoder:start'),
+  encoderFrame: inv('encoder:frame'),
+  encoderFinish: inv('encoder:finish'),
+  encoderCancel: inv('encoder:cancel'),
   cards: inv('card:cards'),
   scanCard: inv('card:scan'),
   cardThumb: inv('card:thumb'),
@@ -31,6 +39,8 @@ contextBridge.exposeInMainWorld('ace', {
   importControl: inv('card:control'),
   onCards: (f: (c: unknown) => void) => { ipcRenderer.on('card:cards', (_e, c) => f(c)); },
   onImport: (f: (e: unknown) => void) => { ipcRenderer.on('card:event', (_e, x) => f(x)); },
+  onOpenProject: (f: (p: { path: string; text: string }) => void) => { ipcRenderer.on('open:project', (_e, x) => f(x)); },
+  onOpenMedia: (f: (found: unknown) => void) => { ipcRenderer.on('open:media', (_e, x) => f(x)); },
   selftestFiles: inv('selftest:files'),
   proxyPath: inv('proxy:path'),
   proxyFinish: inv('proxy:finish'),

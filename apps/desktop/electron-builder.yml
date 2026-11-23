@@ -1,0 +1,78 @@
+# Installers: a .dmg for Mac (Apple Silicon and Intel in one app), and for Windows an installer
+# plus a portable .exe. Build with `pnpm dist:mac` (on a Mac) or `pnpm dist:win`.
+#
+# Signing is off for now. To turn it on later:
+#   Mac: put your "Developer ID Application" certificate in the keychain, set `identity` below to
+#        its name (or delete the line), set `notarize: true`, and set APPLE_ID,
+#        APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID in the environment when building.
+#   Windows: set CSC_LINK (the .pfx file) and CSC_KEY_PASSWORD in the environment, and remove
+#        `signAndEditExecutable: false`.
+appId: app.actioncameditor.desktop
+productName: Action Cam Editor
+copyright: Copyright © 2026
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**
+  - package.json
+asarUnpack:
+  - "**/*.node"
+extraResources:
+  - from: resources/ffmpeg
+    to: ffmpeg
+    filter: ["**/*"]
+fileAssociations:
+  - ext: acproj
+    name: Action Cam Editor Project
+    description: Action Cam Editor project
+    role: Editor
+    rank: Owner
+  - ext: ["360", "mp4", "mov", "lrv"]
+    name: Video
+    role: Viewer
+    rank: Alternate
+
+mac:
+  category: public.app-category.video
+  icon: build/icon.icns
+  target:
+    - target: dmg
+      arch: universal
+  # Ad-hoc signature: Apple Silicon Macs need one to run the app at all. A Developer ID replaces it.
+  identity: "-"
+  hardenedRuntime: false
+  notarize: false
+  # Both halves of the universal app carry the same (universal) ffmpeg.
+  x64ArchFiles: "Contents/Resources/ffmpeg/ffmpeg"
+  extendInfo:
+    NSHighResolutionCapable: true
+    LSMinimumSystemVersion: "12.0"
+dmg:
+  title: Action Cam Editor
+  icon: build/icon.icns
+  window: { width: 560, height: 360 }
+  contents:
+    - { x: 150, y: 180 }
+    - { x: 410, y: 180, type: link, path: /Applications }
+  artifactName: Action-Cam-Editor-${version}-mac.${ext}
+
+win:
+  icon: build/icon.png
+  target:
+    - target: nsis
+      arch: x64
+    - target: portable
+      arch: x64
+  signAndEditExecutable: false
+nsis:
+  # Installs for the current user (no admin password), starts the app when done.
+  oneClick: true
+  perMachine: false
+  runAfterFinish: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Action Cam Editor
+  artifactName: Action-Cam-Editor-${version}-setup.${ext}
+portable:
+  artifactName: Action-Cam-Editor-${version}-portable.${ext}

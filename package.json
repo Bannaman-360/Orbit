@@ -7,10 +7,10 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "pnpm --filter desktop dev",
+    "dev": "pnpm --filter action-cam-editor dev",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
-    "selftest": "pnpm --filter desktop selftest"
+    "selftest": "pnpm --filter action-cam-editor selftest"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

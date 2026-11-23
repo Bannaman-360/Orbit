@@ -1,30 +1,36 @@
 {
-  "name": "desktop",
+  "name": "action-cam-editor",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "selftest": "electron-vite build && electron . --selftest"
+    "selftest": "electron-vite build && electron . --selftest",
+    "dist:mac": "electron-vite build && electron-builder --mac --universal",
+    "dist:win": "electron-vite build && electron-builder --win --x64"
   },
   "devDependencies": {
-    "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^6.3.0",
-    "electron": "^45.4.1",
-    "electron-vite": "^6.0.0",
-    "vite": "^8.3.8"
-  },
-  "dependencies": {
     "@ace/engine": "workspace:*",
     "@ace/media360": "workspace:*",
     "@ace/project": "workspace:*",
     "@ace/telemetry": "workspace:*",
-    "gopro-telemetry": "^1.2.11",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "electron": "^45.4.1",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
     "mediabunny": "^1.66.2",
     "mp4box": "^2.6.0",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
-  }
+    "react-dom": "^19.3.1",
+    "vite": "^8.3.8"
+  },
+  "dependencies": {
+    "gopro-telemetry": "^1.2.11"
+  },
+  "productName": "Action Cam Editor",
+  "description": "Editor for GoPro and action-camera footage",
+  "author": "Action Cam Editor"
 }

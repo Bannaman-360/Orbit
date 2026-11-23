@@ -4,7 +4,7 @@
 
 import type { TransitionKind } from './timeline';
 
-export type GaugeKind = 'speed' | 'altitude' | 'distance' | 'gforce' | 'map' | 'timer' | 'clock';
+export type GaugeKind = 'speed' | 'altitude' | 'distance' | 'gforce' | 'airtime' | 'map' | 'timer' | 'clock';
 export type OverlayKind = 'text' | GaugeKind;
 export type OverlayFont =
   | 'sans' | 'rounded' | 'condensed' | 'heavy' | 'impact' | 'futura' | 'avenir' | 'gill' | 'optima'
@@ -15,6 +15,8 @@ export type OverlayAnimation = 'none' | 'fade' | 'pop' | 'slide-up' | 'typewrite
 export type OverlayBackground = 'none' | 'shadow' | 'box' | 'glow';
 /** Gauge looks; which ones apply depends on the gauge (see GAUGE_STYLES). */
 export type GaugeStyle = 'digital' | 'dial' | 'needle' | 'bar' | 'graph' | 'square' | 'round';
+/** A gauge's design: its shapes, type and colours (see GAUGE_DESIGNS). */
+export type GaugeDesign = 'classic' | 'minimal' | 'sport' | 'neon' | 'carbon' | 'lcd' | 'cockpit' | 'arc' | 'ring' | 'tape' | 'badge' | 'moto';
 
 export interface Overlay {
   id: string;
@@ -51,6 +53,10 @@ export interface Overlay {
   tracking: number;
   uppercase: boolean;
   align: 'left' | 'center' | 'right';
+  /** Gauges: the design. Missing = classic. */
+  design?: GaugeDesign;
+  /** Airtime gauge, between jumps: the longest jump so far, all time in the air so far, or the last jump. Missing = longest. */
+  airShow?: 'best' | 'total' | 'last';
 }
 
 export const GAUGES: [GaugeKind, string][] = [
@@ -58,6 +64,7 @@ export const GAUGES: [GaugeKind, string][] = [
   ['altitude', 'Altitude'],
   ['distance', 'Distance'],
   ['gforce', 'G-force'],
+  ['airtime', 'Airtime'],
   ['map', 'GPS map'],
   ['timer', 'Timer'],
   ['clock', 'Time of day'],
@@ -68,10 +75,79 @@ export const GAUGE_STYLES: Record<GaugeKind, [GaugeStyle, string][]> = {
   gforce: [['digital', 'Number'], ['dial', 'Dial'], ['needle', 'Meter'], ['bar', 'Bar'], ['graph', 'Graph']],
   altitude: [['digital', 'Number'], ['bar', 'Bar'], ['graph', 'Profile']],
   distance: [['digital', 'Number'], ['bar', 'Progress']],
+  airtime: [['digital', 'Number'], ['bar', 'Bar']],
   map: [['square', 'Square'], ['round', 'Round']],
   timer: [['digital', 'Number']],
   clock: [['digital', 'Number']],
 };
+
+/**
+ * Gauge designs. Choosing one sets its colours, type and panel (which can then be changed);
+ * `styles` are the drawing types it comes in, `kinds` the gauges it suits (missing = all but the map).
+ */
+export interface GaugeDesignInfo { id: GaugeDesign; name: string; styles: GaugeStyle[]; kinds?: GaugeKind[]; patch: Partial<Overlay> }
+const WITH_VALUE: GaugeKind[] = ['speed', 'gforce', 'altitude', 'distance', 'airtime'];
+export const GAUGE_DESIGNS: GaugeDesignInfo[] = [
+  { id: 'classic', name: 'Classic', styles: ['digital', 'dial', 'needle', 'bar', 'graph', 'square', 'round'], kinds: [...WITH_VALUE, 'map', 'timer', 'clock'], patch: { color: '#ffffff', accent: '#ff7a1a', bgColor: '#000000', bgOpacity: 0.45, font: 'condensed', bold: true, italic: false, background: 'shadow' } },
+  { id: 'minimal', name: 'Minimal', styles: ['digital', 'dial', 'bar', 'graph', 'square', 'round'], kinds: [...WITH_VALUE, 'map', 'timer', 'clock'], patch: { color: '#ffffff', accent: '#ffffff', bgColor: '#000000', bgOpacity: 0, font: 'avenir', bold: false, italic: false, background: 'shadow' } },
+  { id: 'sport', name: 'Sport', styles: ['digital', 'bar'], patch: { color: '#ffffff', accent: '#ffd400', bgColor: '#111111', bgOpacity: 0.85, font: 'condensed', bold: true, italic: true, background: 'box' } },
+  { id: 'neon', name: 'Neon', styles: ['digital', 'dial', 'needle', 'bar', 'graph', 'square', 'round'], kinds: [...WITH_VALUE, 'map', 'timer', 'clock'], patch: { color: '#e9fdff', accent: '#ff2bd6', bgColor: '#05000f', bgOpacity: 0.35, font: 'rounded', bold: true, italic: false, background: 'glow' } },
+  { id: 'carbon', name: 'Carbon', styles: ['digital', 'dial', 'needle', 'bar', 'graph', 'square', 'round'], kinds: [...WITH_VALUE, 'map', 'timer', 'clock'], patch: { color: '#f2f2f2', accent: '#e10600', bgColor: '#16181b', bgOpacity: 0.92, font: 'futura', bold: true, italic: false, background: 'box' } },
+  { id: 'lcd', name: 'Retro LCD', styles: ['digital'], patch: { color: '#1d2a12', accent: '#1d2a12', bgColor: '#a8c27a', bgOpacity: 0.95, font: 'mono', bold: true, italic: false, background: 'box' } },
+  { id: 'cockpit', name: 'Cockpit', styles: ['needle'], kinds: ['speed', 'gforce', 'altitude', 'airtime'], patch: { color: '#ffffff', accent: '#ff9f0a', bgColor: '#0a0a0a', bgOpacity: 1, font: 'sans', bold: true, italic: false, background: 'box' } },
+  { id: 'arc', name: 'Arc', styles: ['dial'], kinds: WITH_VALUE, patch: { color: '#ffffff', accent: '#30d158', bgColor: '#000000', bgOpacity: 0.35, font: 'rounded', bold: true, italic: false, background: 'shadow' } },
+  { id: 'ring', name: 'Ring', styles: ['dial'], kinds: WITH_VALUE, patch: { color: '#ffffff', accent: '#0a84ff', bgColor: '#000000', bgOpacity: 0.4, font: 'sans', bold: true, italic: false, background: 'shadow' } },
+  { id: 'tape', name: 'Tape', styles: ['digital'], kinds: ['speed', 'gforce', 'altitude'], patch: { color: '#ffffff', accent: '#ffd60a', bgColor: '#000000', bgOpacity: 0.5, font: 'condensed', bold: true, italic: false, background: 'box' } },
+  { id: 'badge', name: 'Badge', styles: ['digital'], patch: { color: '#ffffff', accent: '#ff375f', bgColor: '#1c1c1e', bgOpacity: 0.8, font: 'rounded', bold: true, italic: false, background: 'box' } },
+  { id: 'moto', name: 'Moto', styles: ['needle'], kinds: ['speed', 'gforce'], patch: { color: '#ffffff', accent: '#ff3b30', bgColor: '#000000', bgOpacity: 0.55, font: 'heavy', bold: true, italic: true, background: 'shadow' } },
+];
+/** The looks a gauge can take: every design × drawing type that suits it. */
+export function gaugeLooks(kind: GaugeKind): { design: GaugeDesign; style: GaugeStyle; name: string }[] {
+  const own = GAUGE_STYLES[kind];
+  const out: { design: GaugeDesign; style: GaugeStyle; name: string }[] = [];
+  for (const d of GAUGE_DESIGNS) {
+    if (!(d.kinds ?? WITH_VALUE.concat(['timer', 'clock'])).includes(kind)) continue;
+    const styles = d.styles.length === 1 ? d.styles : d.styles.filter((s) => own.some(([o]) => o === s));
+    for (const st of styles) {
+      const typeName = own.find(([o]) => o === st)?.[1];
+      out.push({ design: d.id, style: st, name: d.styles.length === 1 || !typeName ? d.name : d.id === 'classic' ? typeName : `${d.name} ${typeName.toLowerCase()}` });
+    }
+  }
+  return out;
+}
+/** What choosing a look changes. */
+export const lookPatch = (design: GaugeDesign, style: GaugeStyle): Partial<Overlay> => ({ ...GAUGE_DESIGNS.find((d) => d.id === design)!.patch, design, style });
+
+/** The look a gauge gets in a design: the design itself if it suits the gauge, else a plain number in its colours. */
+export function designFor(kind: GaugeKind, design: GaugeDesign, prefer?: GaugeStyle): Partial<Overlay> {
+  const looks = gaugeLooks(kind).filter((l) => l.design === design);
+  const pick = looks.find((l) => l.style === prefer) ?? looks[0];
+  if (pick) return lookPatch(pick.design, pick.style);
+  const d = GAUGE_DESIGNS.find((x) => x.id === design)!;
+  const fallback = gaugeLooks(kind).find((l) => l.design === 'classic' && (kind !== 'map' || l.style === 'square'))!;
+  return { ...lookPatch('classic', fallback.style), color: d.patch.color, accent: d.patch.accent, font: d.patch.font, italic: d.patch.italic };
+}
+/** A matching set of gauges in one design, placed so they don't overlap. */
+export function gaugeSet(design: GaugeDesign, startUs: number, endUs: number): Overlay[] {
+  const place: [GaugeKind, Partial<Overlay>, GaugeStyle?][] = [
+    ['speed', { x: 0.13, y: 0.8, size: 0.2 }, 'needle'],
+    ['gforce', { x: 0.36, y: 0.86, size: 0.1 }, 'digital'],
+    ['airtime', { x: 0.6, y: 0.86, size: 0.1 }, 'digital'],
+    ['altitude', { x: 0.86, y: 0.12, size: 0.09 }, 'digital'],
+    ['map', { x: 0.87, y: 0.77, size: 0.26 }, 'round'],
+  ];
+  return place.map(([kind, at, prefer]) => {
+    const o = { ...newGaugeOverlay(kind, startUs, endUs), ...designFor(kind, design, prefer), ...at };
+    // Wide designs get a smaller size so the set still fits.
+    if (o.design === 'tape' || o.design === 'badge' || o.design === 'sport' || o.design === 'lcd') o.size *= kind === 'speed' ? 0.55 : 0.85;
+    if (kind === 'speed' && (o.style === 'digital' || o.style === 'bar')) o.size = Math.min(o.size, 0.12);
+    // Round gauges are as wide as they are high: bigger, to read as easily as the numbers.
+    const round = o.style === 'dial' || o.style === 'needle';
+    if (round && kind !== 'speed') o.size = kind === 'altitude' ? 0.14 : 0.17;
+    if (round && kind === 'altitude') { o.x = 0.9; o.y = 0.14; }
+    return o;
+  });
+}
 
 export const FONTS: [OverlayFont, string][] = [
   ['sans', 'Sans'],
@@ -135,6 +211,7 @@ const GAUGE_SPOT: Record<GaugeKind, Partial<Overlay>> = {
   altitude: { x: 0.88, y: 0.12, size: 0.1 },
   distance: { x: 0.88, y: 0.26, size: 0.1 },
   gforce: { x: 0.3, y: 0.87, size: 0.1 },
+  airtime: { x: 0.5, y: 0.87, size: 0.1 },
   map: { x: 0.87, y: 0.78, size: 0.3, style: 'square' },
   timer: { x: 0.5, y: 0.08, size: 0.08 },
   clock: { x: 0.12, y: 0.1, size: 0.08 },

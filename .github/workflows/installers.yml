@@ -1,0 +1,44 @@
+# Builds the installers: run it by hand from the Actions tab (Run workflow).
+# Mac: a universal .dmg (Apple Silicon + Intel). Windows: an installer and a portable .exe.
+# Both unsigned for now (see apps/desktop/electron-builder.yml for turning signing on).
+name: Installers
+on:
+  workflow_dispatch:
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: ffmpeg (LGPL, built from the official source)
+        run: |
+          mkdir -p build-deps/ffmpeg-dl
+          curl -fsSL -o build-deps/ffmpeg-dl/ffmpeg-7.1.1.tar.xz https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz
+          echo "733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1  build-deps/ffmpeg-dl/ffmpeg-7.1.1.tar.xz" | shasum -a 256 -c
+          scripts/build-ffmpeg-mac.sh
+      - run: pnpm --filter action-cam-editor dist:mac
+      - uses: actions/upload-artifact@v4
+        with: { name: mac, path: apps/desktop/release/*.dmg }
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: ffmpeg (LGPL build by BtbN; uses the graphics chip's encoders for 10-bit)
+        shell: pwsh
+        run: |
+          $u = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-lgpl-7.1.zip"
+          Invoke-WebRequest $u -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-x
+          $d = "apps/desktop/resources/ffmpeg"; New-Item -ItemType Directory -Force $d | Out-Null
+          Copy-Item (Get-ChildItem ffmpeg-x -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName $d
+          Copy-Item (Get-ChildItem ffmpeg-x -Recurse -Filter LICENSE.txt | Select-Object -First 1).FullName "$d/LICENSE-ffmpeg.txt"
+      - run: pnpm --filter action-cam-editor dist:win
+      - uses: actions/upload-artifact@v4
+        with: { name: windows, path: apps/desktop/release/*.exe }

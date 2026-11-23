@@ -1,0 +1,110 @@
+// Airtime: in the air, the camera falls with the rider and its accelerometer reads close to 0 G
+// (on the ground it reads about 1 G, more in turns and landings). A stretch below a threshold,
+// long enough, is a jump.
+
+export interface AirtimeSettings {
+  /** Below this many G counts as in the air. */
+  below: number;
+  /** Shorter dips aren't jumps (ms). */
+  minMs: number;
+  /** Also count a shallower dip that ends in a hard landing (the dip-then-spike shape). */
+  shape: boolean;
+  /** Stretches in the air closer together than this (ms) are one jump: a rider moving mid-air
+   *  lifts the reading for a moment without landing. */
+  joinMs: number;
+}
+export const DEFAULT_AIRTIME: AirtimeSettings = { below: 0.4, minMs: 200, shape: true, joinMs: 300 };
+/** Dip-then-spike: the dip may read this much above the threshold… */
+const SHAPE_SLACK = 0.2;
+/** …when it ends in a landing at least this hard (G), within LAND_WINDOW_US. Pumping over a
+ *  roller dips about as low but lands softer or the dip is shorter (measured on pump-track rides). */
+const SHAPE_LANDING_G = 2.5;
+const LAND_WINDOW_US = 300_000;
+/** Between two parts of one jump the reading stays under this: a lift mid-air, not a landing. */
+const STILL_IN_AIR_G = 1.0;
+/** Every jump ends in a landing: a reading that never comes back above this wasn't in the air. */
+const MIN_LANDING_G = 1.3;
+/** Back on the ground only once the reading is this much above the threshold (no chatter). */
+const HYSTERESIS = 0.15;
+/** Longer than this isn't a jump (a camera dropped or thrown). */
+const MAX_MS = 8000;
+
+export interface Jump {
+  /** Takeoff and landing, media time µs. */
+  startUs: number;
+  endUs: number;
+  airMs: number;
+  /** Hardest reading in the landing (G). */
+  landingG: number;
+}
+
+/** Jumps in a G-force series (`t` in µs, `g` in G, gravity included), in time order. */
+export function findJumps(t: ArrayLike<number>, g: ArrayLike<number>, s: Partial<AirtimeSettings> = {}): Jump[] {
+  const { below, minMs, shape, joinMs } = { ...DEFAULT_AIRTIME, ...s };
+  const n = Math.min(t.length, g.length);
+  if (n < 3) return [];
+  // Light smoothing (±~20 ms): enough to steady single noisy samples, not to blur takeoff.
+  const rate = (n - 1) / ((t[n - 1]! - t[0]!) / 1e6 || 1);
+  const r = Math.max(0, Math.round(rate * 0.02));
+  const v = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let sum = 0, c = 0;
+    for (let k = Math.max(0, i - r); k <= Math.min(n - 1, i + r); k++) { sum += g[k]!; c++; }
+    v[i] = sum / c;
+  }
+  // When a level is crossed between two samples (linear).
+  const cross = (i: number, level: number) => {
+    const a = v[i - 1]!, b = v[i]!;
+    const f = b === a ? 0 : (level - a) / (b - a);
+    return t[i - 1]! + Math.max(0, Math.min(1, f)) * (t[i]! - t[i - 1]!);
+  };
+  // Stretches below a level, with the landing (back up through the level) found to the sample.
+  const stretches = (level: number) => {
+    const raw: { s: number; e: number; ei: number }[] = [];
+    let inAir = false, s0 = 0;
+    for (let i = 1; i < n; i++) {
+      if (!inAir && v[i]! < level) { inAir = true; s0 = v[i - 1]! >= level ? cross(i, level) : t[i]!; }
+      else if (inAir && v[i]! > level + HYSTERESIS) {
+        inAir = false;
+        let j = i;
+        while (j > 1 && v[j - 1]! >= level) j--;
+        raw.push({ s: s0, e: cross(j, level), ei: i });
+      }
+    }
+    // Parts of one jump: close together, and nothing in between that reads like touching down.
+    const touched = (from: number, until: number) => { for (let k = Math.max(0, from - 1); k < n && t[k]! < until; k++) if (v[k]! >= STILL_IN_AIR_G) return true; return false; };
+    const merged: typeof raw = [];
+    for (const x of raw) {
+      const last = merged[merged.length - 1];
+      if (last && (x.s - last.e) / 1000 < joinMs && !touched(last.ei, x.s)) { last.e = x.e; last.ei = x.ei; } else merged.push({ ...x });
+    }
+    return merged.filter((x) => { const ms = (x.e - x.s) / 1000; return ms >= minMs && ms <= MAX_MS; });
+  };
+  const found = stretches(below);
+  if (shape) {
+    // A shallower dip counts when a hard landing follows it straight away.
+    for (const x of stretches(below + SHAPE_SLACK)) {
+      if (found.some((f) => f.s < x.e && x.s < f.e)) continue;
+      let spike = 0;
+      for (let k = x.ei; k < n && t[k]! - x.e < LAND_WINDOW_US; k++) spike = Math.max(spike, v[k]!);
+      if (spike >= SHAPE_LANDING_G) found.push(x);
+    }
+    found.sort((a, b) => a.s - b.s);
+  }
+  const out: Jump[] = [];
+  for (const x of found) {
+    const airMs = (x.e - x.s) / 1000;
+    // Hardest moment within 0.4 s of touching down.
+    let peak = 0;
+    for (let k = x.ei; k < n && t[k]! - x.e < 400_000; k++) peak = Math.max(peak, g[k]!);
+    if (peak < MIN_LANDING_G) continue;
+    out.push({ startUs: Math.round(x.s), endUs: Math.round(x.e), airMs: Math.round(airMs), landingG: Math.round(peak * 10) / 10 });
+  }
+  return out;
+}
+
+/** Totals for a list of jumps. */
+export function airtimeStats(j: Jump[]) {
+  const total = j.reduce((a, x) => a + x.airMs, 0);
+  return { count: j.length, longestMs: j.reduce((a, x) => Math.max(a, x.airMs), 0), totalMs: total, hardestG: j.reduce((a, x) => Math.max(a, x.landingG), 0) };
+}

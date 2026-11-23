@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MIN_FISHEYE, parseCube, ReframeRenderer } from '@ace/media360';
 import {
-  addClip, clipDuration, clipStarts, deleteSideAt, detachAudio, duplicateClip, emptyTimeline, FRAMINGS, framingAspect, GAUGES, keyframeNear, loadTimeline, locate,
+  addClip, designFor, GAUGE_DESIGNS, gaugeSet, clipDuration, clipStarts, localAt, deleteSideAt, detachAudio, duplicateClip, emptyTimeline, FRAMINGS, framingAspect, GAUGES, keyframeNear, loadTimeline, locate,
   mediaToTimeline, moveClip, newAudioClip, newClip, newGaugeOverlay, newTextOverlay, nextKeyTime, prevKeyTime, reattachAudio, removeAudio,
   removeClip, removeKeyframe, removeOverlay, setEasing, setKeyframe, splitAt, timelineDuration, transitionLook, trimClip, updateAudio,
   updateClip, updateOverlay,
   hasRamp, mediaAt, moveSpeedKey, rippleItems, DEFAULT_LENS_LOOK, fisheyeForLook, lookAt, removeSpeedKey, setClipSpeed, setSpeedEase, setSpeedKey, speedAt, speedKeyNear,
   COMFORT_FOV, fitSubjectFrac, fracForFov, moveKeyframe, trackWeight, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, setTrackRange, trackActive, trackExtent, trackHeld, trackRange,
-  type ClipTrack, type Easing, type GaugeKind, type Grade, type Look, type Overlay, type Timeline, type TimelineClip, type Transition,
+  type ClipTrack, type Easing, type GaugeDesign, type GaugeKind, type Grade, type Look, type Overlay, type Timeline, type TimelineClip, type Transition,
 } from '@ace/project';
-import { ace, baseName } from './api';
+import { ace, baseName, type FoundMedia } from './api';
 import { AudioPlayer } from './audioEngine';
 import { hasTwoLenses, lensUi, matchClipLenses, setLensUi } from './lensMatching';
 import { cardOf, running, startCards, useCards } from './cardImport';
@@ -32,6 +32,7 @@ import { fmtTime, openSection, Range, toggleAllSections } from './ui';
 import { Bar, dragItem, type ToolItem } from './ui/Bars';
 import { comboLabel, comboOf, combosOf, COMMANDS, keyOf, KeyMatcher } from './ui/commands';
 import { ArrangeBar, Customize, reopenPanel, type CustomizePage } from './ui/Customize';
+import { Tour, Welcome } from './Tour';
 import { Dock, type PanelDef } from './ui/Dock';
 import { closePanel, openPanels } from './ui/dockModel';
 import { Icon } from './ui/Icon';
@@ -128,7 +129,7 @@ export function App() {
   const importPaths = useCallback(async (picked: string[]) => {
     const paths = await wholeRecordings(picked);
     const fresh = paths.filter((p) => !binRef.current.some((b) => b.path === p));
-    if (!fresh.length) return;
+    if (!fresh.length) return paths;
     setBin((b) => [...b, ...fresh.map((path) => ({ path }))]);
     await Promise.all(
       fresh.map(async (path) => {
@@ -141,6 +142,7 @@ export function App() {
         }
       }),
     );
+    return paths;
   }, []);
 
   const addToTimeline = useCallback((path: string, index?: number) => {
@@ -231,10 +233,15 @@ export function App() {
       // More pixels than the footage has only costs speed (a full-screen Retina preview would be
       // drawn at twice the detail of the 360 source).
       const cap = Math.min(dpr, 2048 / Math.max(w, h));
-      for (const c of [canvas0.current!, canvas1.current!, overlayRef.current!]) {
+      for (const c of [canvas0.current!, canvas1.current!]) {
         c.width = Math.max(2, Math.round(w * cap));
         c.height = Math.max(2, Math.round(h * cap));
       }
+      // Gauges and titles stay sharp at every preview quality: drawn at the screen's own pixels
+      // (a lower-resolution layer stretched by the browser makes thin lines shimmer as they move).
+      const ov = overlayRef.current!;
+      ov.width = Math.max(2, Math.round(w * full));
+      ov.height = Math.max(2, Math.round(h * full));
     };
     fit();
     const ro = new ResizeObserver(fit);
@@ -268,8 +275,11 @@ export function App() {
   const drawOverlayLayer = () => {
     const c = overlayRef.current;
     if (!c) return;
+    // Nothing on it and nothing to draw: leave the (large) layer alone.
+    if (!tlRef.current.overlays.length && !c.dataset.drawn) return;
     const ctx = c.getContext('2d')!;
     ctx.clearRect(0, 0, c.width, c.height);
+    if (tlRef.current.overlays.length) c.dataset.drawn = '1'; else delete c.dataset.drawn;
     const s = selRef.current;
     drawOverlays(ctx, c.width, c.height, tlRef.current, player.time, s?.kind === 'overlay' ? s.id : null);
   };
@@ -519,6 +529,8 @@ export function App() {
     if (c) player.seek(mediaToTimeline(clipStarts(next)[i]!, c, before.mediaUs));
   };
   const [speedLines, setSpeedLines] = useState(() => { try { return localStorage.getItem('ace.speedLines') === 'true'; } catch { return false; } });
+  const [jumpMarks, setJumpMarks] = useState(() => { try { return localStorage.getItem('ace.jumpMarks') !== 'false'; } catch { return true; } });
+  const toggleJumpMarks = () => setJumpMarks((v) => { try { localStorage.setItem('ace.jumpMarks', String(!v)); } catch { /* private mode */ } return !v; });
   const toggleSpeedLines = () => setSpeedLines((v) => { try { localStorage.setItem('ace.speedLines', String(!v)); } catch { /* private mode */ } return !v; });
   const [speedSel, setSpeedSel] = useState<{ clipId: string; id: string } | null>(null);
   const [speedMenu, setSpeedMenu] = useState<{ clipId: string; id: string; x: number; y: number } | null>(null);
@@ -611,6 +623,16 @@ export function App() {
     const o = newGaugeOverlay(kind, 0, timelineDuration(t));
     commit({ ...t, overlays: [...t.overlays, o] });
     setSel({ kind: 'overlay', id: o.id });
+  };
+  /** A matching set of gauges in one design, over the whole edit. */
+  const addGaugeSet = (design: GaugeDesign) => {
+    const t = tlRef.current;
+    if (!t.clips.length) return;
+    commit({ ...t, overlays: [...t.overlays, ...gaugeSet(design, 0, timelineDuration(t))] });
+  };
+  const gaugeDesignAll = (design: GaugeDesign) => {
+    const t = tlRef.current;
+    commit({ ...t, overlays: t.overlays.map((o) => (o.kind === 'text' ? o : { ...o, ...designFor(o.kind, design, o.style) })) });
   };
   const selectedOverlay = sel?.kind === 'overlay' ? tl.overlays.find((o) => o.id === sel.id) ?? null : null;
   const editOverlay = (patch: Partial<Overlay>, key: string) =>
@@ -822,6 +844,7 @@ export function App() {
           mode: info.selftestMode,
           trackBox: (box) => runTrackingRef.current(box),
           run: (cmd) => runRef.current[cmd]?.(),
+          dropPaths: async (paths, at) => importFoundRef.current(await ace.importPaths(paths), at),
         };
         void runSelftest(api);
         return;
@@ -842,11 +865,63 @@ export function App() {
     const path = await ace.saveDialog('project', 'My edit.acproj');
     if (path) await ace.writeFile(path, saveText());
   };
-  const importDialog = async () => {
-    const paths = await ace.openMediaDialog();
-    if (paths.some(cardOf)) setNotice('These files are on a memory card, so they stop working when it’s taken out. “Import from memory card” copies them to the computer.');
-    await importPaths(paths);
+  const importDialog = async () => importFound(await ace.openMediaDialog());
+  /**
+   * Brings in what a dialog or a drop found: videos to the media bin, sound to the music track.
+   * Dropped on the timeline (at time `at`), the videos also go onto it there, in order.
+   */
+  const importFound = async (found: FoundMedia, at?: number) => {
+    const { video, audio, skipped } = found;
+    if (skipped.length) {
+      const why = [...new Set(skipped.map((x) => x.why))];
+      setNotice(skipped.length === 1 ? `“${skipped[0]!.name}” wasn’t imported: ${skipped[0]!.why}.` : `${skipped.length} items weren’t imported (${why.join('; ')}).`);
+    } else if ([...video, ...audio].some(cardOf)) setNotice('These files are on a memory card, so they stop working when it’s taken out. “Import from memory card” copies them to the computer.');
+    else if (!video.length && !audio.length) setNotice('Nothing there could be imported: videos (.360, .mp4, .mov) and sound (.mp3, .m4a, .wav…) can.');
+    const paths = video.length ? await importPaths(video) : [];
+    if (at !== undefined && paths.length) {
+      const t = tlRef.current, d = timelineDuration(t);
+      const hit = d > 0 ? locate(t, Math.min(at, d - 1)) : null;
+      let index = hit ? hit.index + (at > hit.startUs + clipDuration(hit.clip) / 2 ? 1 : 0) : t.clips.length;
+      if (at >= d) index = t.clips.length;
+      for (const p of paths) if (mediaNow(p)) addToTimeline(p, index++);
+    }
+    if (audio.length) await addMusicPaths(audio, at);
   };
+  const importFoundRef = useRef(importFound);
+  importFoundRef.current = importFound;
+  // Opened with the app from Finder / Explorer.
+  const restoreRef = useRef(restore);
+  restoreRef.current = restore;
+  useEffect(() => {
+    ace.onOpenMedia((f) => { setWelcome(false); void importFoundRef.current(f); });
+    ace.onOpenProject((p) => { setWelcome(false); setBusy('Opening project…'); void restoreRef.current(p.text).catch((e) => setError(String(e))).finally(() => setBusy(null)); });
+  }, []);
+  // --- Files dragged in from the desktop ---------------------------------------------------------
+  const [dropZone, setDropZone] = useState<null | 'app' | 'timeline'>(null);
+  const dropAtRef = useRef<(x: number) => number | undefined>(() => undefined);
+  useEffect(() => {
+    const files = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+    const zone = (e: DragEvent) => ((e.target as Element | null)?.closest?.('.timeline-wrap') ? 'timeline' : 'app') as 'timeline' | 'app';
+    let depth = 0;
+    const enter = (e: DragEvent) => { if (!files(e)) return; depth++; setDropZone(zone(e)); };
+    const over = (e: DragEvent) => { if (!files(e)) return; e.preventDefault(); e.dataTransfer!.dropEffect = 'copy'; setDropZone(zone(e)); };
+    const leave = (e: DragEvent) => { if (!files(e)) return; depth = Math.max(0, depth - 1); if (!depth) setDropZone(null); };
+    const drop = (e: DragEvent) => {
+      if (!files(e)) return;
+      e.preventDefault();
+      depth = 0;
+      setDropZone(null);
+      const paths = ace.pathsOf([...e.dataTransfer!.files]);
+      if (!paths.length) return;
+      const at = zone(e) === 'timeline' ? dropAtRef.current(e.clientX) : undefined;
+      void ace.importPaths(paths).then((f) => importFound(f, at), (err) => setError(String(err)));
+    };
+    window.addEventListener('dragenter', enter);
+    window.addEventListener('dragover', over);
+    window.addEventListener('dragleave', leave);
+    window.addEventListener('drop', drop);
+    return () => { window.removeEventListener('dragenter', enter); window.removeEventListener('dragover', over); window.removeEventListener('dragleave', leave); window.removeEventListener('drop', drop); };
+  });
   // --- Memory cards ------------------------------------------------------------------------------
   const [cardOpen, setCardOpen] = useState(false);
   const [cardFound, setCardFound] = useState<string | null>(null);
@@ -865,14 +940,14 @@ export function App() {
     }
     wasImporting.current = importing;
   }, [cardRun, importing, cardOpen]);
-  const addMusic = async () => {
-    const paths = await ace.openAudioDialog();
+  const addMusic = async () => addMusicPaths(await ace.openAudioDialog());
+  const addMusicPaths = async (paths: string[], at?: number) => {
     for (const p of paths) {
       try {
         setBusy(`Loading ${baseName(p)}…`);
         const m = await loadMusic(p);
         const t = tlRef.current;
-        const start = t.audio.length ? player.time : 0;
+        const start = at ?? (t.audio.length ? player.time : 0);
         const a = newAudioClip(p, m.durationUs, start);
         commit({ ...t, audio: [...t.audio, a] });
         setSel({ kind: 'audio', id: a.id });
@@ -922,6 +997,19 @@ export function App() {
     else void viewerRef.current?.requestFullscreen().catch((e) => setError(`Full screen: ${e}`));
   };
 
+  // --- First launch: welcome screen and tour -----------------------------------------------------
+  const [welcome, setWelcome] = useState(false);
+  const [tourOpen, setTourOpen] = useState(false);
+  const [appName, setAppName] = useState('Action Cam Editor');
+  useEffect(() => {
+    void ace.info().then((info) => {
+      if (info.name) setAppName(info.name);
+      // (Self-tests start from a clean slate; only the tour's own test shows it.)
+      if (!getPrefs().welcomed && (!info.selftest || info.selftestMode === 'tour')) setWelcome(true);
+    });
+  }, []);
+  const closeWelcome = () => { setWelcome(false); if (!getPrefs().welcomed) setPrefs({ welcomed: true }); };
+
   // --- Keyboard ----------------------------------------------------------------------------------
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [customize, setCustomize] = useState<CustomizePage | null>(null);
@@ -940,7 +1028,7 @@ export function App() {
     duplicate: () => { if (clip) commit(duplicateClip(tlRef.current, clip.id)); }, delete: deleteCurrent, undo, redo,
     import: () => void importDialog(), card: () => setCardOpen(true), music: () => void addMusic(), open: () => void openProject(), save: () => void saveProject(), export: () => { if (tlRef.current.clips.length) setExportOpen(true); }, grab: () => void frameGrab(),
     customize: () => setCustomize((v) => (v ? null : 'themes')), arrange: () => { setArranging(!isArranging()); setCustomize(null); }, undoUi: undoPrefs, toggleMedia: () => togglePanel(['media']),
-    toggleInspector: () => togglePanel(['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection']), toggleTimeline: () => togglePanel(['timeline']), compare: () => setCompare(true), sections: toggleAllSections, speedline: toggleSpeedLines, shortcuts: () => setShortcutsOpen(true),
+    toggleInspector: () => togglePanel(['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection']), toggleTimeline: () => togglePanel(['timeline']), compare: () => setCompare(true), sections: toggleAllSections, speedline: toggleSpeedLines, jumps: toggleJumpMarks, shortcuts: () => setShortcutsOpen(true), tour: () => { setWelcome(false); setTourOpen(true); }, welcome: () => setWelcome(true),
   };
   const runRef = useRef(run);
   runRef.current = run;
@@ -1135,7 +1223,7 @@ export function App() {
     undo: cmdItem('undo', 'Undo', 'undo', { disabled: !hist.current.past.length }),
     redo: cmdItem('redo', 'Redo', 'redo', { disabled: !hist.current.future.length }),
     text: cmdItem('text', 'Text', 'text', { locked: noClips }),
-    gauges: { label: 'Gauges', icon: 'gauge', title: 'Add a telemetry gauge', locked: noClips, menu: GAUGES.map(([k, label]) => ({ label, onClick: () => addGauge(k) })) },
+    gauges: { label: 'Gauges', icon: 'gauge', title: 'Add a telemetry gauge', locked: noClips, menu: [...GAUGES.map(([k, label]) => ({ label, onClick: () => addGauge(k) })), 'sep' as const, { label: 'A matching set of gauges:', disabled: true, onClick: () => {} }, ...GAUGE_DESIGNS.map((d) => ({ label: `${d.name} set`, onClick: () => addGaugeSet(d.id) }))] },
     track: cmdItem('track', 'Track', 'track', { locked: noClips ?? (trackJob ? 'A subject is being tracked. Wait for it to finish, or press Stop.' : undefined), on: trackPick }),
     status: { label: 'Messages', control: status, wide: true },
     frame: {
@@ -1187,6 +1275,7 @@ export function App() {
     arrange: cmdItem('arrange', 'Arrange', 'workspaces', { on: arranging }),
     shortcuts: cmdItem('shortcuts', 'Shortcuts', 'keyboard'),
     speedline: cmdItem('speedline', 'Speed line', 'speedline', { on: speedLines, locked: noClips }),
+    jumps: cmdItem('jumps', 'Jumps', 'jumps', { on: jumpMarks, locked: noClips }),
     tlinfo: { label: 'Clip count', control: <span className="muted">{tl.clips.length} clip{tl.clips.length === 1 ? '' : 's'} · {fmtTime(duration)}</span> },
     tlzoom: { label: 'Timeline zoom', title: 'Timeline zoom', control: <label className="inline zoom"><Icon name="zoom" /><Range label="Timeline zoom" min={Math.log(4)} max={Math.log(400)} step={0.01} value={Math.log(pps)} onChange={(v) => setPps(Math.exp(v))} /></label> },
   };
@@ -1231,8 +1320,13 @@ export function App() {
       commit({ ...t, clips: t.clips.map((c) => (hasTwoLenses(mediaNow(c.mediaPath)) ? { ...c, lenses: clip.lenses } : c)) });
     },
     onSpeed: (patch, key) => clip && changeSpeed(clip.id, patch, key),
+    onGaugeDesignAll: gaugeDesignAll,
     speedLines,
     onSpeedLines: toggleSpeedLines,
+    jumpMarks,
+    onJumpMarks: toggleJumpMarks,
+    onPreviewAt: (T) => { seek(T); if (!player.playing) player.play(); },
+    onSeekMedia: (m) => { if (!clip) return; const i = tlRef.current.clips.findIndex((c) => c.id === clip.id); if (i >= 0) seek(clipStarts(tlRef.current)[i]! + localAt(clip, m)); },
     onGradeToAll: () => {
           if (!look) return;
           const t = tlRef.current;
@@ -1300,7 +1394,7 @@ export function App() {
             {compare && has && <span className="compare-tag">Before</span>}
             {trackBox && <div className="track-box" style={{ left: trackBox.x0, top: trackBox.y0, width: trackBox.x1 - trackBox.x0, height: trackBox.y1 - trackBox.y0 }} />}
           </div>
-        {!has && <div className="empty"><div><Icon name="media" size={42} /><p>Import media, then double-click a clip<br />or drag it onto the timeline.</p><button className="primary" onClick={run.import}>Import media…</button> <button onClick={run.card}>From memory card…</button></div></div>}
+        {!has && <div className="empty"><div><Icon name="media" size={42} /><p>Drag videos or folders here,<br />or import them:</p><button className="primary" onClick={run.import}>Import media…</button> <button onClick={run.card}>From memory card…</button></div></div>}
       </div>
       {bars.transport.position === 'bottom' && transport}
     </main>
@@ -1316,6 +1410,14 @@ export function App() {
       <Bar id="transport" items={items} />
     </div>
   );
+  /** The timeline time under a point of the screen (where something dropped lands). */
+  dropAtRef.current = (x: number) => {
+    const scroller = document.querySelector<HTMLElement>('.timeline-wrap .timeline-scroll');
+    const inner = scroller?.querySelector<HTMLElement>('.timeline-inner');
+    if (!scroller || !inner) return undefined;
+    const frac = (x - scroller.getBoundingClientRect().left + scroller.scrollLeft) / inner.clientWidth;
+    return Math.max(0, frac * Math.max(duration, 1));
+  };
   const timelinePanel = () => (
       <div
         className="timeline-wrap"
@@ -1325,10 +1427,7 @@ export function App() {
           if (!path) return;
           e.preventDefault();
           // Insert after the clip under the drop point (or at the end).
-          const scroller = (e.currentTarget as HTMLElement).querySelector('.timeline-scroll') as HTMLElement;
-          const inner = scroller.querySelector('.timeline-inner') as HTMLElement;
-          const frac = (e.clientX - scroller.getBoundingClientRect().left + scroller.scrollLeft) / inner.clientWidth;
-          const T = frac * Math.max(duration, 1);
+          const T = dropAtRef.current(e.clientX) ?? 0;
           const hit = duration > 0 ? locate(tlRef.current, T) : null;
           addToTimeline(path, hit ? hit.index + (T > hit.startUs + clipDuration(hit.clip) / 2 ? 1 : 0) : undefined);
         }}
@@ -1354,6 +1453,7 @@ export function App() {
           onMoveKeyframe={dragKeyframe}
           onKeyframeMenu={(clipId, id, x, y) => { pickKeyframe(clipId, id); setKfMenu({ clipId, id, x, y }); }}
           speedLines={speedLines}
+          jumpMarks={jumpMarks}
           speedPoint={pickedSpeed}
           onSpeedPoint={pickSpeedPoint}
           onMoveSpeedPoint={moveSpeedPoint}
@@ -1467,11 +1567,18 @@ export function App() {
         })()}
       />
       {anyStatus && !statusShown && <div className="toast">{status}</div>}
+      {dropZone && (
+        <div className={`drop-veil ${dropZone}`} aria-hidden>
+          <div className="drop-card"><Icon name="media" size={34} /><b>{dropZone === 'timeline' ? 'Drop to add to the timeline' : 'Drop to import'}</b><span>Videos, folders and music</span></div>
+        </div>
+      )}
       {arranging && <ArrangeBar items={items} drag={(e, id, label) => dragItem(e, id, label, null)} onCustomize={() => setCustomize('layout')} onDone={() => setArranging(false)} />}
       {customize && <Customize page={customize} onPage={setCustomize} onClose={() => setCustomize(null)} items={items} />}
       {exportOpen && <ExportDialog timeline={tl} onClose={() => setExportOpen(false)} />}
       {cardOpen && <ImportWindow onClose={() => setCardOpen(false)} />}
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
+      {welcome && <Welcome name={appName} onClose={closeWelcome} onImport={run.import!} onCard={run.card!} onOpen={run.open!} onTour={() => setTourOpen(true)} />}
+      {tourOpen && <Tour onClose={() => setTourOpen(false)} />}
     </div>
   );
 }

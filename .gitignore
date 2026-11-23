@@ -8,3 +8,6 @@ release/
 fixtures/**
 !fixtures/README.md
 selftest-out/
+# Downloaded and built tools (ffmpeg), not committed
+build-deps/
+apps/desktop/resources/ffmpeg/

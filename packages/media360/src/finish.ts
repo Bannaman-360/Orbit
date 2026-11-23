@@ -14,7 +14,7 @@ struct Finish {
   fx0 : vec4f,      // grain, glow, chroma (colour fringing), zoom blur
   fx1 : vec4f,      // light leak, bars, time (s), log / HLG clip (values reach above white)
   lens : vec4f,     // sharpness front, back; clarity front, back (see lensMatch.ts)
-  mark : vec4f,     // which lens to point out (1 front, 2 back); y: exporting, the display curve to undo (0 = none)
+  mark : vec4f,     // which lens to point out (1 front, 2 back); y: exporting, the display curve to undo (0 = none); z: one step of the output (dither)
 };
 
 @group(0) @binding(0) var samp : sampler;
@@ -212,7 +212,7 @@ fn applyLut(c : vec3f) -> vec3f {
   }
 
   // Half a step of noise, so smooth skies stretched out of a log recording don't band.
-  if (f.fx1.w > 0.5) { c += vec3f(hash(vec3f(in.pos.xy, f.fx1.z * 61.0)) + hash(vec3f(in.pos.yx + 31.0, f.fx1.z * 61.0 + 5.0)) - 1.0) / 255.0; }
+  if (f.fx1.w > 0.5) { c += vec3f(hash(vec3f(in.pos.xy, f.fx1.z * 61.0)) + hash(vec3f(in.pos.yx + 31.0, f.fx1.z * 61.0 + 5.0)) - 1.0) * f.mark.z; }
 
   if (f.mark.x > 0.5) {
     let on = select(1.0 - backShare, backShare, f.mark.x > 1.5);

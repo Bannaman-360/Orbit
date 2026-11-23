@@ -148,11 +148,14 @@ export class ReframeRenderer {
     this.lutTex = this.makeLutTexture({ size: 2, data: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1]) });
   }
 
-  static async create(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<ReframeRenderer> {
+  /** Draws at more than 8 bits (half floats), for 10-bit export. */
+  deep = false;
+
+  static async create(canvas: HTMLCanvasElement | OffscreenCanvas, opts: { deep?: boolean } = {}): Promise<ReframeRenderer> {
     const device = await sharedDevice();
     const ctx = canvas.getContext('webgpu') as GPUCanvasContext | null;
     if (!ctx) throw new Error('Could not get a WebGPU canvas context');
-    const format = navigator.gpu.getPreferredCanvasFormat();
+    const format: GPUTextureFormat = opts.deep ? 'rgba16float' : navigator.gpu.getPreferredCanvasFormat();
     ctx.configure({ device, format, alphaMode: 'opaque' });
 
     const rm = device.createShaderModule({ code: REFRAME_WGSL });
@@ -173,7 +176,9 @@ export class ReframeRenderer {
     const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge', addressModeW: 'clamp-to-edge' });
     const ru = device.createBuffer({ size: REFRAME_UNIFORM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const fu = device.createBuffer({ size: FINISH_UNIFORM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    return new ReframeRenderer(device, canvas, ctx, reframePipeline, finishPipeline, sampler, ru, fu);
+    const r = new ReframeRenderer(device, canvas, ctx, reframePipeline, finishPipeline, sampler, ru, fu);
+    r.deep = !!opts.deep;
+    return r;
   }
 
   setLayout(layout: EacLayout | null) {
@@ -321,7 +326,7 @@ export class ReframeRenderer {
       input.fx?.grain ?? 0, input.fx?.glow ?? 0, input.fx?.chroma ?? 0, input.fx?.zoomBlur ?? 0,
       input.fx?.leak ?? 0, input.fx?.bars ?? 0, input.time ?? 0, this.high ? 1 : 0,
       this.lenses?.front?.sharpness ?? 0, this.lenses?.back?.sharpness ?? 0, this.lenses?.front?.clarity ?? 0, this.lenses?.back?.clarity ?? 0,
-      this.highlight === 'front' ? 1 : this.highlight === 'back' ? 2 : 0, this.fileGamma, 0, 0,
+      this.highlight === 'front' ? 1 : this.highlight === 'back' ? 2 : 0, this.fileGamma, this.deep ? 1 / 1023 : 1 / 255, 0,
     ]);
     const buf = new ArrayBuffer(FINISH_UNIFORM_BYTES);
     new Uint32Array(buf, 0, 8).set(u32);

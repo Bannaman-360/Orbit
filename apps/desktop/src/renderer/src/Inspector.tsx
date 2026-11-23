@@ -4,17 +4,18 @@
 import type { ReactNode } from 'react';
 import { effectiveLens, lensK, MIN_FISHEYE } from '@ace/media360';
 import {
-  ANIMATIONS, blurLabel, FONTS, clipStarts, framingAspect, DEFAULT_CROP, DEFAULT_TRACK_EASE_S, DEFAULT_TRACK_LENS, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, mediaToTimeline, NO_EFFECTS, trackActive, trackExtent, lookAt, trackHeld, trackRange, trackWeight, GAUGE_STYLES, GAUGES, GRADE_PRESETS, TEXT_PRESETS, gradeFromPreset, keyframeNear, NEUTRAL_GRADE, timelineDuration, TRANSITION_GROUPS, transitionUs,
+  ANIMATIONS, blurLabel, FONTS, clipStarts, framingAspect, DEFAULT_CROP, DEFAULT_TRACK_EASE_S, DEFAULT_TRACK_LENS, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, mediaToTimeline, NO_EFFECTS, trackActive, trackExtent, lookAt, trackHeld, trackRange, trackWeight, GAUGES, lookPatch, GRADE_PRESETS, TEXT_PRESETS, gradeFromPreset, keyframeNear, NEUTRAL_GRADE, timelineDuration, TRANSITION_GROUPS, transitionUs,
   cleanSpeed, hasRamp, localAt, mediaAt, MAX_SPEED, MIN_SPEED, RAMP_PRESETS, rampPreset, removeSpeedKey, setSpeedEase, setSpeedKey, speedAt, speedKeyNear, speedRange,
   fisheyeForLook,
-  type AudioClip, type ClipTrack, type Easing, type Effects, type GaugeKind, type Grade, type InputChoice, type Look, type Overlay, type Smoothing, type Timeline, type TimelineClip, type Transition,
+  type AudioClip, type ClipTrack, type Easing, type Effects, type GaugeDesign, type Grade, type InputChoice, type Look, type Overlay, type Smoothing, type Timeline, type TimelineClip, type Transition,
 } from '@ace/project';
-import { CUSTOM_SIGMA_RANGE, SMOOTHING_SIGMA_S } from '@ace/telemetry';
+import { airtimeStats, CUSTOM_SIGMA_RANGE, DEFAULT_AIRTIME, SMOOTHING_SIGMA_S } from '@ace/telemetry';
 import { baseName } from './api';
 import { autoInput, INPUT_NAMES, inputName, resolvedInput, wideColor } from './color';
 import { adoptReframe, clipLens, flatShot, lensLookOf, roomFov, shutterDoneInCamera } from './frameRender';
 import type { Media } from './media';
 import { FONT_STACK } from './overlayRender';
+import { GaugeLookPicker } from './GaugeLooks';
 import { LensMatchSection } from './LensMatch';
 import { fmtSpeed } from './SpeedLine';
 import { fmtTime, Lock, Section, SectionList, Seg, Slider, toggleAllSections, type Units } from './ui';
@@ -50,6 +51,12 @@ export interface InspectorProps {
   onSpeed: (patch: Partial<Pick<TimelineClip, 'speed' | 'speedKeys' | 'muteBelow' | 'keepPitch'>>, key: string) => void;
   speedLines: boolean;
   onSpeedLines: () => void;
+  jumpMarks: boolean;
+  onJumpMarks: () => void;
+  /** Moves the playhead to a moment of the selected clip (media time). */
+  onSeekMedia: (mediaUs: number) => void;
+  /** Play from timeline time T (to show an overlay's animation). */
+  onPreviewAt: (T: number) => void;
   /** Works out corrections that make the lenses of a 360 clip alike. */
   onMatchLenses: (which?: 'front' | 'back') => void;
   lensBusy: boolean;
@@ -61,6 +68,8 @@ export interface InspectorProps {
   onDetachAudio: () => void;
   onReattachAudio: (clipId: string) => void;
   onOverlay: (patch: Partial<Overlay>, key: string) => void;
+  /** Gives every gauge this design. */
+  onGaugeDesignAll: (design: GaugeDesign) => void;
   onTransition: (patch: Partial<Transition>, key: string) => void;
   /** Deletes the selected overlay / transition / audio. */
   onRemoveSelected: () => void;
@@ -582,6 +591,43 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
         <label className="check"><input type="checkbox" checked={p.speedLines} onChange={p.onSpeedLines} /> Show speed lines on the timeline</label>
       </Section>
     ),
+    'Airtime': media?.telemetry.hasAccel ? (() => {
+      const set = { ...DEFAULT_AIRTIME, ...clip.airtime };
+      const jumps = media.telemetry.jumps(clip.airtime ?? {}).filter((j) => j.startUs >= clip.inUs && j.startUs < clip.outUs);
+      const st = airtimeStats(jumps);
+      const sec = (ms: number) => `${(ms / 1000).toFixed(2)} s`;
+      // What the length setting leaves out, so moving it visibly does something.
+      const shorter = media.telemetry.jumps({ below: set.below, minMs: 1 }).filter((j) => j.airMs < set.minMs && j.startUs >= clip.inUs && j.startUs < clip.outUs);
+      const longestLeftOut = shorter.reduce((a, j) => Math.max(a, j.airMs), 0);
+      return (
+        <Section title="Airtime" badge={jumps.length ? `${jumps.length} jump${jumps.length === 1 ? '' : 's'}` : undefined}>
+          {jumps.length ? (
+            <>
+              <div className="air-stats">
+                <span><b>{sec(st.longestMs)}</b>longest</span>
+                <span><b>{sec(st.totalMs)}</b>in the air</span>
+                <span><b>{st.hardestG.toFixed(1)} G</b>hardest landing</span>
+              </div>
+              <div className="air-list">
+                {jumps.map((j, i) => (
+                  <button key={j.startUs} className="air-row" title="Go to this jump" onClick={() => p.onSeekMedia(j.startUs)}>
+                    <span>Jump {i + 1}</span><span className="muted">{fmtTime(mediaToTimeline(clipStart, clip, j.startUs))}</span><b>{sec(j.airMs)}</b><span className="muted">{j.landingG.toFixed(1)} G</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : <p className="hint">No jumps found in this clip. If it has some, raise “In the air below” or lower “Ignore jumps shorter than”.</p>}
+          <Slider label="In the air below" value={set.below} min={0.1} max={0.8} step={0.05} reset={DEFAULT_AIRTIME.below} format={(v) => `${v.toFixed(2)} G`} units={{ digits: 2 }} hint="In the air, the camera reads close to 0 G; on the ground about 1 G. Readings below this count as airtime." onChange={(v) => p.onClip({ airtime: { ...clip.airtime, below: +v.toFixed(2) } }, 'air-below')} />
+          <Slider label="Ignore jumps shorter than" value={set.minMs / 1000} min={0.05} max={1} step={0.01} reset={DEFAULT_AIRTIME.minMs / 1000} format={(v) => `${v.toFixed(2)} s`} units={{ digits: 2 }} hint="Moments in the air shorter than this (a bump, a small hop) aren’t counted as jumps. Raise it to keep only the big jumps." onChange={(v) => p.onClip({ airtime: { ...clip.airtime, minMs: Math.round(v * 1000) } }, 'air-min')} />
+          <p className="hint air-left-out">{shorter.length
+            ? `Not counted: ${shorter.length} shorter moment${shorter.length === 1 ? '' : 's'} in the air (up to ${sec(longestLeftOut)}).`
+            : 'Nothing in this clip is left out by this setting.'}</p>
+          <Slider label="Join jumps closer than" value={set.joinMs / 1000} min={0} max={1} step={0.01} reset={DEFAULT_AIRTIME.joinMs / 1000} format={(v) => `${v.toFixed(2)} s`} units={{ digits: 2 }} hint="Moving on the bike mid-air can lift the reading for a moment, splitting one jump in two. Parts of a jump closer together than this count as one jump." onChange={(v) => p.onClip({ airtime: { ...clip.airtime, joinMs: Math.round(v * 1000) } }, 'air-join')} />
+          <label className="check" title="A jump where the reading doesn’t get that low, but drops and then spikes on landing (over 2.5 G), also counts."><input type="checkbox" checked={set.shape} onChange={(e) => p.onClip({ airtime: { ...clip.airtime, shape: e.target.checked } }, 'air-shape')} /> Also count dips that end in a hard landing</label>
+          <label className="check"><input type="checkbox" checked={p.jumpMarks} onChange={p.onJumpMarks} /> Show jumps on the timeline</label>
+        </Section>
+      );
+    })() : null,
     'Audio': (
         <Section title="Audio" badge={!hasSound ? 'No sound' : clip.audioDetached ? 'Detached' : undefined}>
         {!hasSound && <p className="hint">This clip has no sound.</p>}
@@ -692,7 +738,6 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
   const o = p.overlay;
   const isText = o.kind === 'text';
   const gauge = GAUGES.find(([k]) => k === o.kind)?.[1];
-  const styles = isText ? [] : GAUGE_STYLES[o.kind as GaugeKind];
   const hasUnits = o.kind === 'speed' || o.kind === 'altitude' || o.kind === 'distance';
   const total = Math.max(1, timelineDuration(p.timeline) / 1e6);
   const colour = (label: string, key: 'color' | 'accent' | 'bgColor' | 'outlineColor') => (
@@ -751,7 +796,9 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
             ),
             'Look': !isText && (
             <Section title="Look" defaultOpen>
-              {styles.length > 1 && <Seg value={o.style} options={styles} onChange={(v) => p.onOverlay({ style: v }, 'ov-style')} />}
+              <GaugeLookPicker o={o} onPick={(design, style) => p.onOverlay(lookPatch(design, style), 'ov-look')} />
+              <div className="row-buttons"><button title="Gives every gauge this design (each in the closest type it comes in)" onClick={() => p.onGaugeDesignAll(o.design ?? 'classic')}>Use this design for all gauges</button></div>
+              {o.kind === 'airtime' && <Seg value={o.airShow ?? 'best'} options={[['best', 'Best'], ['last', 'Last'], ['total', 'Total']]} onChange={(v) => p.onOverlay({ airShow: v }, 'ov-air')} />}
               {hasUnits && <Seg value={o.units} options={[['metric', 'Metric'], ['imperial', 'Imperial']]} onChange={(v) => p.onOverlay({ units: v }, 'ov-units')} />}
               <div className="field-row">
                 {colour('Text', 'color')}
@@ -773,6 +820,7 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
               <p className="hint">
                 {o.kind === 'timer' ? 'Counts up from when this overlay starts.'
                   : o.kind === 'clock' ? 'Time of day from the camera’s clock.'
+                  : o.kind === 'airtime' ? 'Counts up while in the air and holds each jump for 3 s after landing; between jumps it shows the best (or last, or total) so far. How jumps are found is set per clip, under Airtime.'
                   : 'Shows data from the camera’s GPS / motion sensors for whichever clip is playing. Clips without the data show “--”.'}
               </p>
             </Section>
@@ -786,7 +834,9 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
             ),
             'Overlay timing': (
             <Section title="Timing" id="Overlay timing">
-          <Seg value={o.animation} options={ANIMATIONS} onChange={(v) => p.onOverlay({ animation: v }, 'ov-anim')} />
+          <Seg value={o.animation} options={o.kind === 'text' ? ANIMATIONS : ANIMATIONS.filter(([a]) => a !== 'typewriter')} onChange={(v) => { p.onOverlay({ animation: v }, 'ov-anim'); if (v !== 'none') p.onPreviewAt(o.startUs); }} />
+          <p className="hint">How the {o.kind === 'text' ? 'text' : 'gauge'} appears at its start and leaves at its end. It doesn’t move in between.
+            {o.animation !== 'none' && <> <button className="link" onClick={() => p.onPreviewAt(o.startUs)}>Play it</button></>}</p>
           <Slider label="Start" value={o.startUs / 1e6} min={0} max={total} step={0.05} format={secs} units={SEC} onChange={(v) => p.onOverlay({ startUs: Math.round(v * 1e6), endUs: Math.round(v * 1e6) + (o.endUs - o.startUs) }, 'ov-start')} />
           <Slider label="Duration" value={(o.endUs - o.startUs) / 1e6} min={0.2} max={total} step={0.05} format={secs} units={SEC} onChange={(v) => p.onOverlay({ endUs: o.startUs + Math.round(v * 1e6) }, 'ov-dur')} />
         </Section>

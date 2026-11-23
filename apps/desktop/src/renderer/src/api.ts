@@ -7,9 +7,23 @@ export interface Card { root: string; name: string }
 export type ListedRecording = CardRecording & { imported: boolean; copies: string[] | null };
 export type { ImportEvent };
 
+/** What a set of files and folders held that can be imported. */
+export interface FoundMedia { video: string[]; audio: string[]; skipped: { name: string; why: string }[] }
+
 export interface AceApi {
-  info(): Promise<{ selftest: boolean; selftestMode: string; fixtures: string; versions: Record<string, string> }>;
-  openMediaDialog(): Promise<string[]>;
+  info(): Promise<{ selftest: boolean; selftestMode: string; fixtures: string; packaged?: boolean; name?: string; version?: string; versions: Record<string, string> }>;
+  openMediaDialog(): Promise<FoundMedia>;
+  importPaths(paths: string[]): Promise<FoundMedia>;
+  /** 10-bit HEVC / ProRes: which this computer can write (by encoder name). */
+  encoderAvailable(): Promise<{ hevc10?: string; prores?: string }>;
+  encoderStart(o: { path: string; width: number; height: number; fps: number; kind: 'hevc10' | 'prores'; bitrate: number; layout: 'p010le' | 'p210le'; audio?: Uint8Array }): Promise<number>;
+  encoderFrame(id: number, data: Uint8Array): Promise<void>;
+  encoderFinish(id: number): Promise<void>;
+  encoderCancel(id: number): Promise<void>;
+  pathsOf(files: File[]): string[];
+  /** Files opened with the app from Finder / Explorer. */
+  onOpenProject(f: (p: { path: string; text: string }) => void): void;
+  onOpenMedia(f: (found: FoundMedia) => void): void;
   openAudioDialog(): Promise<string[]>;
   openLutDialog(): Promise<string | null>;
   openProjectDialog(): Promise<{ path: string; text: string } | null>;
@@ -18,7 +32,7 @@ export interface AceApi {
   /** Menu bar choices. */
   onCommand(f: (cmd: string) => void): void;
   onWindowFullscreen(f: (on: boolean) => void): void;
-  saveDialog(kind: 'project' | 'video' | 'image' | 'theme', defaultName: string): Promise<string | null>;
+  saveDialog(kind: 'project' | 'video' | 'mov' | 'image' | 'theme', defaultName: string): Promise<string | null>;
   stat(path: string): Promise<{ path: string; size: number }>;
   /** Files of the same chaptered recording, in order. */
   chapters(path: string): Promise<{ path: string; part: number }[]>;

@@ -1,28 +1,39 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, type MenuItemConstructorOptions } from 'electron';
 import { createHash } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import { copyFile, constants as fsFlags, open, mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { chaptersOf } from '@ace/engine/src/chapters';
 import { extractOrientation, type GpmfRequest } from '@ace/telemetry/node';
 import { setupImporter } from './importer';
+import { setupEncoder } from './encoder';
+import { AUDIO_EXT, findImportable, hasExt, VIDEO_EXT } from './importPaths';
 
 const SELFTEST = process.argv.includes('--selftest');
+/** The app's name, in one place (window title, About box, installer). */
+const APP_NAME = 'Action Cam Editor';
+// (Not app.setName: that would move the data folder of existing installs.)
+app.setAboutPanelOptions({ applicationName: APP_NAME });
 const SELFTEST_MODE = process.argv.find((a) => a.startsWith('--selftest-mode='))?.split('=')[1] ?? 'full';
-// apps/desktop → repo root
-const REPO_ROOT = path.resolve(app.getAppPath(), '..', '..');
-const FIXTURES = path.join(REPO_ROOT, 'fixtures');
-const SELFTEST_OUT = path.join(REPO_ROOT, 'selftest-out');
-const VIDEO_EXT = ['360', 'mp4', 'mov', 'lrv', 'm4v'];
-const AUDIO_EXT = ['mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg'];
-/** Whether a file has one of these extensions, however it is capitalised (cameras write .MP4). */
-const hasExt = (p: string, list: string[]) => list.includes(path.extname(p).slice(1).toLowerCase());
+// The repository (fixtures, self-test output) exists only in development, or for a self-test of the
+// installed app that is told where it is (ACE_REPO_ROOT). An installed app never touches it.
+const REPO_ROOT = !app.isPackaged ? path.resolve(app.getAppPath(), '..', '..') : SELFTEST && process.env.ACE_REPO_ROOT ? path.resolve(process.env.ACE_REPO_ROOT) : '';
+const FIXTURES = REPO_ROOT && path.join(REPO_ROOT, 'fixtures');
+const SELFTEST_OUT = REPO_ROOT ? path.join(REPO_ROOT, 'selftest-out') : path.join(app.getPath('temp'), 'ace-selftest-out');
 
 // Self-tests run in the background: no Dock icon, no visible window, no sound, never in front of
 // what the user is doing, and with their own app data (layout, autosave, proxies).
 // `--selftest-show` brings the window back for watching a test.
 const HIDDEN = SELFTEST && !process.argv.includes('--selftest-show');
 if (SELFTEST) app.setPath('userData', path.join(app.getPath('appData'), 'ace-selftest'));
+else {
+  // Before it had a name, the app kept its data (layout, autosave, previews) under “desktop”:
+  // carry that over once.
+  const now = app.getPath('userData'), before = path.join(app.getPath('appData'), 'desktop');
+  if (now !== before && !existsSync(now) && existsSync(path.join(before, 'Local Storage'))) {
+    try { cpSync(before, now, { recursive: true }); } catch { /* start fresh */ }
+  }
+}
 if (HIDDEN) {
   if (process.platform === 'darwin') app.setActivationPolicy('prohibited');
   // A hidden window must keep drawing at full speed.
@@ -37,9 +48,9 @@ const writable = new Set<string>();
 const handles = new Map<string, FileHandle>();
 let win: BrowserWindow | null = null;
 
-const inside = (p: string, dir: string) => path.resolve(p).startsWith(dir + path.sep);
-const canRead = (p: string) => readable.has(path.resolve(p)) || writable.has(path.resolve(p)) || inside(p, FIXTURES) || inside(p, SELFTEST_OUT);
-const canWrite = (p: string) => writable.has(path.resolve(p)) || inside(p, SELFTEST_OUT) || inside(p, path.join(FIXTURES, 'synthetic'));
+const inside = (p: string, dir: string) => !!dir && path.resolve(p).startsWith(dir + path.sep);
+const canRead = (p: string) => readable.has(path.resolve(p)) || writable.has(path.resolve(p)) || inside(p, FIXTURES) || (SELFTEST && inside(p, SELFTEST_OUT));
+const canWrite = (p: string) => writable.has(path.resolve(p)) || (SELFTEST && inside(p, SELFTEST_OUT)) || (!!FIXTURES && inside(p, path.join(FIXTURES, 'synthetic')));
 const autosavePath = () => path.join(app.getPath('userData'), 'autosave.acproj');
 
 function allowRead(paths: string[]) {
@@ -81,7 +92,7 @@ async function listMedia(dir: string): Promise<string[]> {
 
 const asBytes = (b: Buffer) => new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
 
-ipcMain.handle('app:info', () => ({ selftest: SELFTEST, selftestMode: SELFTEST_MODE, fixtures: FIXTURES, versions: process.versions }));
+ipcMain.handle('app:info', () => ({ selftest: SELFTEST, selftestMode: SELFTEST_MODE, fixtures: SELFTEST ? FIXTURES : '', packaged: app.isPackaged, name: APP_NAME, version: app.getVersion(), versions: process.versions }));
 
 // --- Dialogs -----------------------------------------------------------------
 
@@ -108,9 +119,34 @@ async function pickFiles(name: string, extensions: string[]): Promise<string[]> 
   return good;
 }
 
+/** Where the last import came from: the next one starts there. */
+let lastImportDir: string | undefined;
+/**
+ * Choosing videos to import: files or (on a Mac, where one dialog can do both) whole folders.
+ * Whatever can't be imported comes back as `skipped`, for the window to mention.
+ */
 ipcMain.handle('dialog:open-media', async () => {
-  return pickFiles('Video', VIDEO_EXT);
+  const mac = process.platform === 'darwin';
+  const r = await dialog.showOpenDialog(win!, {
+    properties: ['openFile', 'multiSelections', ...(mac ? (['openDirectory'] as const) : [])],
+    filters: mac ? undefined : [{ name: 'Video and sound', extensions: [...VIDEO_EXT, ...AUDIO_EXT].flatMap((e) => [e, e.toUpperCase()]) }],
+    defaultPath: lastImportDir,
+    buttonLabel: 'Import',
+  });
+  if (r.canceled || !r.filePaths.length) return { video: [], audio: [], skipped: [] };
+  lastImportDir = path.dirname(r.filePaths[0]!);
+  return importable(r.filePaths);
 });
+/** Files dragged onto the window from Finder / Explorer. Only what is importable becomes readable. */
+ipcMain.handle('media:import-paths', async (_e, paths: unknown) => {
+  if (!Array.isArray(paths) || !paths.every((p) => typeof p === 'string' && path.isAbsolute(p))) throw new Error('Bad paths');
+  return importable(paths as string[]);
+});
+async function importable(paths: string[]) {
+  const found = await findImportable(paths);
+  allowRead([...found.video, ...found.audio]);
+  return found;
+}
 
 ipcMain.handle('dialog:open-audio', async () => {
   return pickFiles('Audio', AUDIO_EXT);
@@ -153,10 +189,11 @@ ipcMain.handle('dialog:open-theme', async () => {
   return r.canceled || !r.filePaths[0] ? null : readFile(r.filePaths[0], 'utf8');
 });
 
-ipcMain.handle('dialog:save', async (_e, kind: 'project' | 'video' | 'image' | 'theme', defaultName: string) => {
+ipcMain.handle('dialog:save', async (_e, kind: 'project' | 'video' | 'mov' | 'image' | 'theme', defaultName: string) => {
   const filters = {
     project: [{ name: 'Project', extensions: ['acproj'] }],
     video: [{ name: 'MP4 video', extensions: ['mp4'] }],
+    mov: [{ name: 'QuickTime movie (ProRes)', extensions: ['mov'] }],
     image: [{ name: 'Image', extensions: ['jpg', 'png'] }],
     theme: [{ name: 'Theme or interface settings', extensions: ['acetheme'] }],
   }[kind];
@@ -226,6 +263,9 @@ ipcMain.handle('file:release', async (_e, p: string) => {
   await h?.close();
 });
 
+// --- 10-bit / ProRes export (bundled ffmpeg) ---------------------------------------
+setupEncoder({ canWrite });
+
 // --- Memory cards -----------------------------------------------------------------
 // Self-tests never look at the computer's real drives: a folder of theirs stands in.
 const TEST_DRIVES = path.join(SELFTEST_OUT, 'drives');
@@ -266,7 +306,7 @@ ipcMain.handle('proxy:discard', async (_e, file: string) => {
   await unlink(`${file}.part`).catch(() => {});
 });
 
-ipcMain.handle('media:list-fixtures', () => listMedia(FIXTURES));
+ipcMain.handle('media:list-fixtures', () => (FIXTURES ? listMedia(FIXTURES) : []));
 
 ipcMain.handle('telemetry:orientation', async (_e, p: string, req: GpmfRequest) => extractOrientation((o, l) => readRange(p, o, l), req));
 
@@ -290,6 +330,7 @@ ipcMain.handle('autosave:save', async (_e, text: string) => {
 // --- Self-test -------------------------------------------------------------------
 
 ipcMain.handle('selftest:capture', async (_e, name: string) => {
+  if (!SELFTEST) throw new Error('Only in self-tests');
   await mkdir(SELFTEST_OUT, { recursive: true });
   const img = await win!.webContents.capturePage();
   const p = path.join(SELFTEST_OUT, `${path.basename(name)}.png`);
@@ -300,6 +341,7 @@ ipcMain.handle('selftest:capture', async (_e, name: string) => {
 ipcMain.handle('selftest:gesture', async (_e, code: string) => (SELFTEST ? win!.webContents.executeJavaScript(code, true) : null));
 // Where the window's processor time goes (seconds since start): script, style, layout, all tasks.
 ipcMain.handle('selftest:metrics', async () => {
+  if (!SELFTEST) throw new Error('Only in self-tests');
   const d = win!.webContents.debugger;
   if (!d.isAttached()) { d.attach('1.3'); await d.sendCommand('Performance.enable'); }
   const r = (await d.sendCommand('Performance.getMetrics')) as { metrics: { name: string; value: number }[] };
@@ -334,6 +376,7 @@ ipcMain.handle('selftest:files', async (_e, what: string, a: string, b: string |
   return null;
 });
 ipcMain.handle('selftest:done', async (_e, report: unknown) => {
+  if (!SELFTEST) throw new Error('Only in self-tests');
   await mkdir(SELFTEST_OUT, { recursive: true });
   await writeFile(path.join(SELFTEST_OUT, 'report.json'), JSON.stringify(report, null, 2));
   setTimeout(() => app.quit(), 200);
@@ -359,7 +402,7 @@ function buildMenu() {
     { label: 'Edit', submenu: [it('Undo', 'undo'), it('Redo', 'redo'), sep, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }, sep, it('Split', 'split'), it('Split and Delete Left', 'delLeft'), it('Split and Delete Right', 'delRight'), it('Duplicate Clip', 'duplicate'), it('Delete', 'delete'), sep, it('Add Keyframe', 'keyframe'), it('Add Text', 'text'), it('Track Subject…', 'track')] },
     { label: 'View', submenu: [it('Media', 'toggleMedia'), it('Inspector', 'toggleInspector'), it('Timeline', 'toggleTimeline'), sep, it('Customize…', 'customize'), it('Arrange Interface', 'arrange'), it('Undo Interface Change', 'undoUi'), sep, it('Show Before / After', 'compare'), it('Full-Screen Preview', 'fullscreen'), { role: 'togglefullscreen', label: 'Enter Full Screen Window' }, ...(app.isPackaged ? [] : [sep, { role: 'reload' }, { role: 'toggleDevTools' }] as MenuItemConstructorOptions[])] },
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, ...(MAC ? [sep, { role: 'front' }] as MenuItemConstructorOptions[] : [])] },
-    { label: 'Help', submenu: [it('Keyboard Shortcuts', 'shortcuts')] },
+    { label: 'Help', submenu: [it('Show Tour Again', 'tour'), it('Welcome Screen', 'welcome'), sep, it('Keyboard Shortcuts', 'shortcuts')] },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -374,7 +417,7 @@ function createWindow() {
     // On a Mac the app's toolbar is the title bar, and panels sit on the system material.
     backgroundColor: MAC ? '#00000000' : nativeTheme.shouldUseDarkColors ? '#1c1c1e' : '#ececf0',
     ...(MAC ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 18, y: 19 }, vibrancy: 'under-window' as const, visualEffectState: 'followWindow' as const } : {}),
-    title: 'Action Cam Editor',
+    title: APP_NAME,
     show: !HIDDEN,
     focusable: !HIDDEN,
     // (Full screen then fills the hidden window instead of taking over a display.)
@@ -403,7 +446,40 @@ function createWindow() {
   else void win.loadFile(path.join(__dirname, '../renderer/index.html'));
 }
 
-app.whenReady().then(createWindow);
+// --- Files opened from Finder / Explorer (double-click, Open With, dropped on the Dock icon) ---
+const opened: string[] = [];
+let loaded = false;
+const isOpenable = (p: string) => path.isAbsolute(p) && (hasExt(p, ['acproj']) || hasExt(p, VIDEO_EXT) || hasExt(p, AUDIO_EXT));
+async function deliverOpened() {
+  if (!win || !loaded || !opened.length) return;
+  const paths = opened.splice(0);
+  const project = paths.find((p) => hasExt(p, ['acproj']));
+  if (project) {
+    try {
+      const text = await readFile(project, 'utf8');
+      allowProjectMedia(text);
+      win.webContents.send('open:project', { path: project, text });
+    } catch { /* unreadable: ignore */ }
+  }
+  const media = paths.filter((p) => !hasExt(p, ['acproj']));
+  if (media.length) win.webContents.send('open:media', await importable(media));
+  if (win.isMinimized()) win.restore();
+  win.focus();
+}
+const openPaths = (paths: string[]) => { opened.push(...paths.filter(isOpenable)); void deliverOpened(); };
+app.on('open-file', (e, p) => { e.preventDefault(); openPaths([p]); });
+// One copy of the app: opening it again (or a file with it) goes to the window already open.
+if (!SELFTEST && !app.requestSingleInstanceLock()) app.quit();
+app.on('second-instance', (_e, argv) => {
+  openPaths(argv.slice(1));
+  if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
+});
+openPaths(process.argv.slice(app.isPackaged ? 1 : 2));
+
+app.whenReady().then(() => {
+  createWindow();
+  win!.webContents.on('did-finish-load', () => { loaded = true; setTimeout(() => void deliverOpened(), 1500); });
+});
 app.on('window-all-closed', () => app.quit());
 let closing = false;
 app.on('will-quit', (e) => {

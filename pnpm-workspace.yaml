@@ -4,3 +4,14 @@ packages:
 onlyBuiltDependencies:
   - electron
   - esbuild
+# electron-builder's signing helpers use tslib without declaring it.
+packageExtensions:
+  "@peculiar/utils":
+    dependencies:
+      tslib: "^2.8.1"
+  "webcrypto-core":
+    dependencies:
+      tslib: "^2.8.1"
+  "@peculiar/webcrypto":
+    dependencies:
+      tslib: "^2.8.1"

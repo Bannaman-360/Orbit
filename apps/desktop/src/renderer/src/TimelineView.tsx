@@ -6,11 +6,11 @@ import { useEffect, useRef, useState } from 'react';
 import { usePrefs } from './ui/prefs';
 import {
   assignLanes, audioSpan, clipDuration, clipStarts, GAUGES, hasRamp, localAt, mediaAt, mediaToTimeline, speedRange, timelineDuration, trackExtent, trackRange, transitionUs, TRANSITIONS,
-  type Overlay, type Timeline,
+  type Overlay, type Timeline, type TimelineClip,
 } from '@ace/project';
 import type { Selection } from './App';
 import { baseName } from './api';
-import { mediaNow, musicNow } from './media';
+import { mediaNow, musicNow, type Media } from './media';
 import { fmtSpeed, SpeedLine } from './SpeedLine';
 import { STRIP_H, STRIP_W, stripPicture, useFilmstrip } from './filmstrip';
 import { fmtTime, useDrag } from './ui';
@@ -38,6 +38,8 @@ interface Props {
   onKeyframeMenu: (clipId: string, id: string, x: number, y: number) => void;
   /** Show the speed line on every clip (it always shows on clips with a ramp). */
   speedLines: boolean;
+  /** Mark the jumps (airtime) found in each clip. */
+  jumpMarks: boolean;
   /** The speed point picked on the timeline. */
   speedPoint: { clipId: string; id: string } | null;
   onSpeedPoint: (clipId: string, id: string) => void;
@@ -302,6 +304,7 @@ function ClipBlock(p: Props & { index: number; left: number; widthPx: number; pp
         <span>{baseName(c.mediaPath)}</span>
       </div>
       <TrackBand {...p} />
+      {p.jumpMarks && media?.telemetry.hasAccel && <JumpMarks clip={c} media={media} pps={p.pps} startUs={p.startUs} onSeek={p.onSeek} />}
       {(p.speedLines || hasRamp(c)) && (
         <SpeedLine
           clip={c}
@@ -332,6 +335,29 @@ function ClipBlock(p: Props & { index: number; left: number; widthPx: number; pp
       <div className="trim left" onPointerDown={(e) => { orig.current = c; p.onSelectClip(c.id); trimLeft(e); }} />
       <div className="trim right" onPointerDown={(e) => { orig.current = c; p.onSelectClip(c.id); trimRight(e); }} />
     </div>
+  );
+}
+
+/** Jumps in a clip: an arc over each one's time in the air; click to go to its takeoff. */
+function JumpMarks({ clip: c, media, pps, startUs, onSeek }: { clip: TimelineClip; media: Media; pps: number; startUs: number; onSeek: (T: number) => void }) {
+  const jumps = media.telemetry.jumps(c.airtime ?? {}).filter((j) => j.endUs > c.inUs && j.startUs < c.outUs);
+  return (
+    <>
+      {jumps.map((j) => {
+        const a = localAt(c, Math.max(c.inUs, j.startUs)), b = localAt(c, Math.min(c.outUs, j.endUs));
+        const left = (a / 1e6) * pps, width = Math.max(6, ((b - a) / 1e6) * pps);
+        return (
+          <button
+            key={j.startUs}
+            className="clip-jump"
+            style={{ left, width }}
+            title={`Jump: ${(j.airMs / 1000).toFixed(2)} s in the air, landing ${j.landingG.toFixed(1)} G — click to go there`}
+            aria-label={`Jump, ${(j.airMs / 1000).toFixed(2)} seconds`}
+            onPointerDown={(e) => { e.stopPropagation(); onSeek(startUs + a); }}
+          ><span>{(j.airMs / 1000).toFixed(1)}s</span></button>
+        );
+      })}
+    </>
   );
 }
 

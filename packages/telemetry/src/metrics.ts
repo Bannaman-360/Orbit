@@ -16,6 +16,8 @@ export interface GpsSample {
 
 interface TimedV { t: number; v: [number, number, number] }
 
+import { findJumps, type AirtimeSettings, type Jump } from './airtime';
+
 const G = 9.80665;
 const EARTH_R = 6_371_000;
 
@@ -69,6 +71,9 @@ export class TelemetrySeries {
   private yV: Float64Array<ArrayBuffer> = new Float64Array(0);
   private aT: Float64Array<ArrayBuffer> = new Float64Array(0);
   private gV: Float64Array<ArrayBuffer> = new Float64Array(0);
+  /** G without the readout smoothing (for airtime). */
+  private rawG: Float64Array<ArrayBuffer> = new Float64Array(0);
+  private jumpCache = new Map<string, Jump[]>();
 
   constructor(gps: GpsSample[] = [], accl: TimedV[] = []) {
     // Only real fixes; GoPro writes 0,0 while searching for satellites.
@@ -108,7 +113,8 @@ export class TelemetrySeries {
       this.aT = Float64Array.from(accl, (s) => s.t);
       const rate = (accl.length - 1) / ((accl[accl.length - 1]!.t - accl[0]!.t) / 1e6 || 1);
       // Total acceleration in G (1 G at rest), lightly smoothed so the number is readable.
-      this.gV = smooth(Float64Array.from(accl, (s) => Math.hypot(...s.v) / G), Math.max(1, Math.round(rate * 0.1)));
+      this.rawG = Float64Array.from(accl, (s) => Math.hypot(...s.v) / G);
+      this.gV = smooth(this.rawG, Math.max(1, Math.round(rate * 0.1)));
       this.maxG = Math.max(...this.gV);
     } else {
       this.maxG = 0;
@@ -134,6 +140,14 @@ export class TelemetrySeries {
   distanceAt(t: number) { return this.hasGps ? interp(this.gT, this.distV, t) : NaN; }
   /** G */
   gforceAt(t: number) { return this.hasAccel ? interp(this.aT, this.gV, t) : NaN; }
+  /** Jumps in this file (worked out once per setting). */
+  jumps(s: Partial<AirtimeSettings> = {}): Jump[] {
+    if (!this.hasAccel) return [];
+    const key = `${s.below ?? ''}|${s.minMs ?? ''}|${s.shape ?? ''}|${s.joinMs ?? ''}`;
+    let j = this.jumpCache.get(key);
+    if (!j) { j = findJumps(this.aT, this.rawG, s); this.jumpCache.set(key, j); }
+    return j;
+  }
   /** Position on the fitted map (0–1). */
   positionAt(t: number): { x: number; y: number } | null {
     return this.hasGps ? { x: interp(this.gT, this.xV, t), y: interp(this.gT, this.yV, t) } : null;

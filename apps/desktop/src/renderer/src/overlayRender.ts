@@ -5,8 +5,10 @@ import {
   locate, overlayState, transitionLook,
   type LayerXf, type Overlay, type OverlayFont, type Reveal, type Timeline, type TransitionLook,
 } from '@ace/project';
-import type { TelemetrySeries } from '@ace/telemetry';
+import { TelemetrySeries } from '@ace/telemetry';
 import { mediaNow } from './media';
+import { scrollingGraph, smoothAt, textTime } from './gaugeMath';
+import { carbonPanel, designBox, drawDesigned, setFontStack } from './gaugeDesigns';
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
@@ -33,6 +35,8 @@ export const FONT_STACK: Record<OverlayFont, string> = {
   script: '"Snell Roundhand", "Brush Script MT", "Segoe Script", cursive',
 };
 
+setFontStack(FONT_STACK);
+
 const font = (o: Overlay, px: number, weight?: number) =>
   `${o.italic ? 'italic ' : ''}${weight ?? (o.bold ? (o.font === 'heavy' ? 900 : 700) : 400)} ${Math.max(1, px)}px ${FONT_STACK[o.font]}`;
 
@@ -42,8 +46,12 @@ const rgba = (hex: string, a: number) => {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 };
 
+/** Sample telemetry used instead of the timeline's while drawing a look preview. */
+let forced: { t: TelemetrySeries; mediaUs: number } | null = null;
+
 /** Telemetry of whatever clip is on screen at timeline time T. */
 function telemetryAt(tl: Timeline, T: number): { t: TelemetrySeries; mediaUs: number; created?: Date } | null {
+  if (forced) return { ...forced, created: new Date(2026, 5, 14, 16, 42, 0) };
   const at = locate(tl, T);
   const m = at && mediaNow(at.clip.mediaPath);
   return m ? { t: m.telemetry, mediaUs: at.mediaUs, created: m.info.created } : null;
@@ -85,6 +93,9 @@ function rawAt(o: Overlay, tm: TelemetrySeries, t: number): number {
 
 const pad2 = (n: number) => String(Math.floor(n)).padStart(2, '0');
 
+/** Extra calming (± µs) for needles and numbers; the sensors' own noise makes them shiver. */
+const CALM = { speed: 250_000, gforce: 180_000 };
+
 export function gaugeReading(o: Overlay, tl: Timeline, T: number): GaugeReading {
   const src = telemetryAt(tl, T);
   const imp = o.units === 'imperial';
@@ -95,9 +106,11 @@ export function gaugeReading(o: Overlay, tl: Timeline, T: number): GaugeReading 
   switch (o.kind) {
     case 'speed': {
       const max = Math.max(imp ? 20 : 30, Math.ceil(toDisplay(o, tm?.maxSpeed ?? 0) / 10) * 10);
-      const v = tm ? toDisplay(o, tm.speedAt(t)) : NaN;
+      const f = (x: number) => tm!.speedAt(x);
+      const v = tm ? toDisplay(o, smoothAt(f, t, CALM.speed)) : NaN;
       if (!Number.isFinite(v)) return blank(imp ? 'mph' : 'km/h', 'SPEED', max);
-      return { value: Math.round(v).toString(), unit: imp ? 'mph' : 'km/h', label: label || 'SPEED', fraction: Math.min(1, v / max), available: true, max, num: v };
+      const shown = toDisplay(o, smoothAt(f, textTime(t), CALM.speed));
+      return { value: Math.round(shown).toString(), unit: imp ? 'mph' : 'km/h', label: label || 'SPEED', fraction: Math.min(1, v / max), available: true, max, num: v };
     }
     case 'altitude': {
       const v = tm ? toDisplay(o, tm.altitudeAt(t)) : NaN;
@@ -113,9 +126,27 @@ export function gaugeReading(o: Overlay, tl: Timeline, T: number): GaugeReading 
     }
     case 'gforce': {
       const max = Math.max(2, Math.ceil(tm?.maxG ?? 0));
-      const v = tm?.gforceAt(t) ?? NaN;
+      const f = (x: number) => tm!.gforceAt(x);
+      const v = tm ? smoothAt(f, t, CALM.gforce) : NaN;
       if (!Number.isFinite(v)) return blank('G', 'G-FORCE', max);
-      return { value: v.toFixed(1), unit: 'G', label: label || 'G-FORCE', fraction: Math.min(1, v / max), available: true, max, num: v };
+      return { value: smoothAt(f, textTime(t), CALM.gforce).toFixed(1), unit: 'G', label: label || 'G-FORCE', fraction: Math.min(1, v / max), available: true, max, num: v };
+    }
+    case 'airtime': {
+      const at = forced ? null : locate(tl, T);
+      const jumps = !tm ? [] : at ? tm.jumps(at.clip.airtime ?? {}).filter((j) => j.endUs > at.clip.inUs && j.startUs < at.clip.outUs) : tm.jumps();
+      if (!tm?.hasAccel) return blank('s', 'AIRTIME');
+      const best = jumps.reduce((a, j) => Math.max(a, j.airMs), 0) / 1000 || 1;
+      const now = jumps.find((j) => t >= j.startUs && t < j.endUs);
+      const done = jumps.filter((j) => j.endUs <= t);
+      const last = done[done.length - 1];
+      // In the air: counting up. Just landed: that jump, for 3 s. Otherwise as chosen.
+      let v: number, lab = label || 'AIRTIME';
+      if (now) v = (t - now.startUs) / 1e6;
+      else if (last && t - last.endUs < 3e6) v = last.airMs / 1000;
+      else if (o.airShow === 'total') { v = done.reduce((a, j) => a + j.airMs, 0) / 1000; lab = label || 'TOTAL AIR'; }
+      else if (o.airShow === 'last') v = (last?.airMs ?? 0) / 1000;
+      else { v = done.reduce((a, j) => Math.max(a, j.airMs), 0) / 1000; lab = label || 'BEST AIR'; }
+      return { value: v.toFixed(2), unit: 's', label: lab, fraction: Math.min(1, v / best), available: true, max: best, num: v };
     }
     case 'timer': {
       const s = Math.max(0, (T - o.startUs) / 1e6);
@@ -171,6 +202,8 @@ const isRound = (o: Overlay) => (o.kind === 'speed' || o.kind === 'gforce') && (
 /** Bounding box of an overlay in pixels (for hit-testing and selection outlines). */
 export function overlayBox(o: Overlay, W: number, H: number): { x: number; y: number; w: number; h: number } {
   const s = o.size * H;
+  const d = o.kind !== 'text' && o.kind !== 'map' ? designBox(o) : null;
+  if (d) return { x: o.x * W - (d.w * s) / 2, y: o.y * H - (d.h * s) / 2, w: d.w * s, h: d.h * s };
   if (o.kind === 'map' || isRound(o)) return { x: o.x * W - s / 2, y: o.y * H - s / 2, w: s, h: s };
   if (o.kind === 'text') {
     const lines = (o.text || ' ').split('\n');
@@ -401,35 +434,45 @@ function drawGraph(ctx: Ctx2D, o: Overlay, r: GaugeReading, tl: Timeline, T: num
   const range = o.kind === 'gforce' ? tm.accelRange : tm.gpsRange;
   if (!range) return;
   const profile = o.kind === 'altitude';
-  const t1 = profile ? range[1] : src.mediaUs;
-  const t0 = profile ? range[0] : Math.max(range[0], t1 - 10_000_000);
-  const N = 120;
-  const vals: number[] = [];
-  for (let i = 0; i <= N; i++) vals.push(toDisplay(o, rawAt(o, tm, t0 + ((t1 - t0) * i) / N)));
-  let lo = Math.min(...vals), hi = Math.max(...vals);
+  const gx = x0 + pad, gy = y0 + pad + s * 0.32, gw = w - pad * 2, gh = h - pad * 2 - s * 0.32;
+  // About one point per 3 pixels. Scrolling graphs use a grid fixed in time so the line slides
+  // without wobbling; the profile is the whole file and doesn't move.
+  const N = Math.max(40, Math.min(240, Math.round(gw / 3)));
+  const f = (x: number) => toDisplay(o, rawAt(o, tm, x));
+  const SPAN = 10_000_000;
+  const pts = profile
+    ? Array.from({ length: N + 1 }, (_, i) => ({ x: i / N, v: f(range[0] + ((range[1] - range[0]) * i) / N) })).filter((p) => Number.isFinite(p.v))
+    : scrollingGraph(f, src.mediaUs, SPAN, N, range[0]);
+  if (pts.length < 2) return;
+  let lo = Math.min(...pts.map((p) => p.v)), hi = Math.max(...pts.map((p) => p.v));
   if (o.kind === 'speed' || o.kind === 'gforce') { lo = 0; hi = Math.max(hi, r.max); }
   if (hi - lo < 1e-6) hi = lo + 1;
-  const gx = x0 + pad, gy = y0 + pad + s * 0.32, gw = w - pad * 2, gh = h - pad * 2 - s * 0.32;
-  const P = (i: number, v: number) => [gx + (gw * i) / N, gy + gh - ((v - lo) / (hi - lo)) * gh] as const;
+  const P = (x: number, v: number) => [gx + gw * x, gy + gh - ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) * gh] as const;
   const g = ctx.createLinearGradient(0, gy, 0, gy + gh);
   g.addColorStop(0, rgba(o.accent, 0.55));
   g.addColorStop(1, rgba(o.accent, 0));
+  // Clipped to the graph area: points slide in from the left edge.
+  ctx.save();
   ctx.beginPath();
-  ctx.moveTo(gx, gy + gh);
-  vals.forEach((v, i) => ctx.lineTo(...P(i, v)));
-  ctx.lineTo(gx + gw, gy + gh);
+  ctx.rect(gx, gy - gh, gw, gh * 2);
+  ctx.clip();
+  const first = pts[0]!, last = pts[pts.length - 1]!;
+  ctx.beginPath();
+  ctx.moveTo(P(first.x, lo)[0], gy + gh);
+  pts.forEach((p) => ctx.lineTo(...P(p.x, p.v)));
+  ctx.lineTo(P(last.x, lo)[0], gy + gh);
   ctx.closePath();
   ctx.fillStyle = g;
   ctx.fill();
   ctx.beginPath();
-  vals.forEach((v, i) => (i ? ctx.lineTo(...P(i, v)) : ctx.moveTo(...P(i, v))));
+  pts.forEach((p, i) => (i ? ctx.lineTo(...P(p.x, p.v)) : ctx.moveTo(...P(p.x, p.v))));
   ctx.strokeStyle = o.accent;
   ctx.lineWidth = Math.max(1.5, s * 0.025);
   ctx.lineJoin = 'round';
   ctx.stroke();
+  ctx.restore();
   // Where we are: the right edge for scrolling graphs, a marker on the profile.
-  const fi = profile ? ((src.mediaUs - t0) / (t1 - t0)) * N : N;
-  const [mx, my] = P(fi, toDisplay(o, rawAt(o, tm, profile ? src.mediaUs : t1)));
+  const [mx, my] = profile ? P((src.mediaUs - range[0]) / Math.max(1, range[1] - range[0]), f(src.mediaUs)) : P(1, last.v);
   ctx.fillStyle = o.color;
   ctx.beginPath();
   ctx.arc(mx, my, Math.max(2.5, s * 0.045), 0, Math.PI * 2);
@@ -489,6 +532,57 @@ function drawMap(ctx: Ctx2D, o: Overlay, tl: Timeline, T: number, W: number, H: 
   ctx.restore();
 }
 
+/** One gauge, in its design. */
+function drawGauge(ctx: Ctx2D, o: Overlay, tl: Timeline, T: number, W: number, H: number) {
+  const r = o.kind === 'map' ? null : gaugeReading(o, tl, T);
+  const plain = (oo: Overlay) => {
+    if (oo.kind === 'map') drawMap(ctx, oo, tl, T, W, H);
+    else if (drawDesigned({ ctx, o: oo, r: r!, W, H, around: (dt) => gaugeReading(oo, tl, T + dt).num })) return;
+    else if (isRound(oo) && oo.style === 'needle') drawNeedle(ctx, oo, r!, W, H);
+    else if (isRound(oo)) drawDial(ctx, oo, r!, W, H);
+    else if (oo.style === 'bar') drawBar(ctx, oo, r!, W, H);
+    else if (oo.style === 'graph') drawGraph(ctx, oo, r!, tl, T, W, H);
+    else drawDigital(ctx, oo, r!, W, H);
+  };
+  if (o.design === 'carbon') {
+    // The carbon panel, then the gauge on it without its own background.
+    const b = overlayBox(o, W, H), round = (o.kind === 'map' && o.style === 'round') || isRound(o);
+    const pad = round ? 0 : o.size * H * 0.04;
+    carbonPanel(ctx, o, b.x - pad, b.y - pad, b.w + pad * 2, b.h + pad * 2, round);
+    plain({ ...o, background: o.kind === 'map' ? 'none' : 'shadow', bgOpacity: 0 });
+  } else if (o.design === 'neon') {
+    // A blurred copy underneath makes the lines and numbers glow.
+    ctx.save();
+    ctx.filter = `blur(${Math.max(1, o.size * H * 0.05).toFixed(1)}px)`;
+    ctx.globalAlpha *= 0.9;
+    plain({ ...o, background: 'none', bgOpacity: 0 });
+    ctx.restore();
+    plain(o);
+  } else plain(o);
+}
+
+let sample: TelemetrySeries | null = null;
+/** A made-up ride (a loop with a jump at 5 s) for previews of gauge looks. */
+function sampleRide(): TelemetrySeries {
+  if (sample) return sample;
+  const gps = Array.from({ length: 121 }, (_, i) => {
+    const a = (i / 120) * Math.PI * 2;
+    return { t: i * 100_000, lat: 46.2 + 0.0004 * Math.sin(a), lon: 7.3 + 0.0006 * Math.cos(a) * (1 + 0.3 * Math.sin(a * 3)), alt: 520 + 8 * Math.sin(a * 2), speed: 9 + 3 * Math.sin(a * 2.2), fix: 3 };
+  });
+  const accl = Array.from({ length: 600 }, (_, i) => {
+    const t = i * 20_000, air = t >= 5e6 && t < 5.84e6, land = t >= 5.84e6 && t < 6e6;
+    const g = air ? 0.08 : land ? 3.4 : 1 + 0.5 * Math.sin(i / 9) + 0.2 * Math.sin(i / 2.3);
+    return { t, v: [0, 0, g * 9.80665] as [number, number, number] };
+  });
+  return (sample = new TelemetrySeries(gps, accl));
+}
+const PREVIEW_TL = { clips: [], overlays: [], audio: [] } as unknown as Timeline;
+/** Draws a gauge with sample readings (look pickers, the tour). */
+export function drawGaugePreview(ctx: Ctx2D, o: Overlay, W: number, H: number) {
+  forced = { t: sampleRide(), mediaUs: 7.2e6 };
+  try { ctx.save(); drawGauge(ctx, o, PREVIEW_TL, 83.4e6, W, H); ctx.restore(); } finally { forced = null; }
+}
+
 /** Draws every overlay visible at timeline time T. */
 export function drawOverlays(ctx: Ctx2D, W: number, H: number, tl: Timeline, T: number, selectedId?: string | null) {
   for (const o of tl.overlays) {
@@ -501,15 +595,7 @@ export function drawOverlays(ctx: Ctx2D, W: number, H: number, tl: Timeline, T: 
     ctx.scale(st.scale, st.scale);
     ctx.translate(-cx, -cy);
     if (o.kind === 'text') drawText(ctx, o, W, H, st.reveal);
-    else if (o.kind === 'map') drawMap(ctx, o, tl, T, W, H);
-    else {
-      const r = gaugeReading(o, tl, T);
-      if (isRound(o) && o.style === 'needle') drawNeedle(ctx, o, r, W, H);
-      else if (isRound(o)) drawDial(ctx, o, r, W, H);
-      else if (o.style === 'bar') drawBar(ctx, o, r, W, H);
-      else if (o.style === 'graph') drawGraph(ctx, o, r, tl, T, W, H);
-      else drawDigital(ctx, o, r, W, H);
-    }
+    else drawGauge(ctx, o, tl, T, W, H);
     ctx.restore();
     if (o.id === selectedId) {
       const b = overlayBox(o, W, H);

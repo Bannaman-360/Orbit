@@ -14,6 +14,7 @@ import { getMedia } from './media';
 import { clipLookAt, cropReady, presentLook, pushClipFrame } from './frameRender';
 import { compositeLayers, drawOverlays, transitionLook } from './overlayRender';
 import type { LayerFrame } from './timelinePlayer';
+import { YuvReader, type YuvLayout } from './deepExport';
 
 export type Resolution = 720 | 1080 | 1440 | 2160;
 export type Quality = 'standard' | 'high' | 'max';
@@ -22,7 +23,8 @@ export interface ExportOptions {
   path: string;
   resolution: Resolution;
   fps: number;
-  codec: 'avc' | 'hevc';
+  /** hevc10: 10-bit HEVC (Main10); prores: ProRes 422 HQ in a .mov (both through the bundled ffmpeg). */
+  codec: 'avc' | 'hevc' | 'hevc10' | 'prores';
   quality: Quality;
 }
 
@@ -68,16 +70,19 @@ interface ExportSlot {
 class Compositor {
   readonly out: OffscreenCanvas;
   readonly ctx: OffscreenCanvasRenderingContext2D;
-  private constructor(readonly renderers: [ReframeRenderer, ReframeRenderer], readonly width: number, readonly height: number) {
+  /** 10-bit export: pictures kept in half floats from start to finish, read back as this. */
+  private deep: YuvLayout | null = null;
+  private constructor(readonly renderers: [ReframeRenderer, ReframeRenderer], readonly width: number, readonly height: number, deep: YuvLayout | null) {
     this.out = new OffscreenCanvas(width, height);
-    this.ctx = this.out.getContext('2d')!;
+    this.deep = deep;
+    this.ctx = (deep ? this.out.getContext('2d', { colorType: 'float16' } as CanvasRenderingContext2DSettings) : this.out.getContext('2d'))!;
   }
   /** Exporting a video: the pictures hold the values a video file is read as (not as shown on screen). */
   private toFile: FileValues | null = null;
-  static async create(width: number, height: number, lutPath: string | null, forVideo = false) {
-    const rs = await Promise.all([0, 1].map(() => ReframeRenderer.create(new OffscreenCanvas(width, height))));
+  static async create(width: number, height: number, lutPath: string | null, forVideo = false, deep: YuvLayout | null = null) {
+    const rs = await Promise.all([0, 1].map(() => ReframeRenderer.create(new OffscreenCanvas(width, height), { deep: !!deep })));
     for (const r of rs) await loadLut(r, lutPath);
-    const c = new Compositor(rs as [ReframeRenderer, ReframeRenderer], width, height);
+    const c = new Compositor(rs as [ReframeRenderer, ReframeRenderer], width, height, deep);
     if (forVideo && ordinaryGamma()) {
       for (const r of rs) r.fileGamma = ordinaryGamma();
       c.toFile = await FileValues.create(width, height, ordinaryGamma());
@@ -98,6 +103,14 @@ class Compositor {
     drawOverlays(this.toFile.ctx, this.width, this.height, tl, T);
     this.ctx.drawImage(this.toFile.convert(), 0, 0);
   }
+  private deepReaders: YuvReader[] = [];
+  /** As `sample`, for 10-bit export: the picture as 10-bit Y′CbCr bytes. */
+  async sampleDeep(): Promise<() => Promise<Uint8Array>> {
+    if (this.deepReaders.length < 3) this.deepReaders.push(await YuvReader.create(this.width, this.height, this.deep!));
+    const reader = this.deepReaders[this.turn++ % this.deepReaders.length]!;
+    const pending = reader.read(this.out);
+    return () => pending;
+  }
   private readers: PixelReader[] = [];
   private turn = 0;
   /**
@@ -115,6 +128,7 @@ class Compositor {
     for (const r of this.renderers) r.destroy();
     this.toFile?.destroy();
     this.readers.forEach((x) => x.destroy());
+    this.deepReaders.forEach((x) => x.destroy());
   }
 }
 
@@ -199,17 +213,26 @@ export async function exportTimeline(tl: Timeline, opts: ExportOptions, onProgre
   const total = timelineDuration(tl);
   if (!tl.clips.length || total <= 0) throw new Error('The timeline is empty');
 
-  let codec = opts.codec;
-  if (!(await canEncodeVideo(codec, { width, height }))) codec = 'avc';
-  if (!(await canEncodeVideo(codec, { width, height }))) throw new Error(`This computer cannot encode ${width}×${height} video`);
+  const deepKind = opts.codec === 'hevc10' || opts.codec === 'prores' ? opts.codec : null;
+  let codec: 'avc' | 'hevc' = opts.codec === 'hevc' ? 'hevc' : 'avc';
+  if (deepKind) {
+    const can = await ace.encoderAvailable();
+    if (!can[deepKind]) throw new Error(deepKind === 'prores' ? 'ProRes export isn’t available on this computer.' : '10-bit HEVC export isn’t available on this computer.');
+  } else {
+    if (!(await canEncodeVideo(codec, { width, height }))) codec = 'avc';
+    if (!(await canEncodeVideo(codec, { width, height }))) throw new Error(`This computer cannot encode ${width}×${height} video`);
+  }
+  const layout: YuvLayout | null = deepKind === 'prores' ? 'p210le' : deepKind ? 'p010le' : null;
 
-  const comp = await Compositor.create(width, height, tl.lutPath, true);
+  const comp = await Compositor.create(width, height, tl.lutPath, true, layout);
 
   onProgress({ fraction: 0, stage: 'Analysing stabilization' });
   for (const c of tl.clips) await cropReady(c, await getMedia(c.mediaPath), width / height);
 
   onProgress({ fraction: 0, stage: 'Mixing audio' });
   const mix = await mixTimeline(tl, total);
+
+  if (deepKind) return exportDeep(tl, opts, deepKind, layout!, comp, mix, width, height, total, onProgress, signal);
 
   await ace.createFile(opts.path);
   const writable = new WritableStream<StreamTargetChunk>({
@@ -230,6 +253,69 @@ export async function exportTimeline(tl: Timeline, opts: ExportOptions, onProgre
   }
   await output.start();
 
+  try {
+    await renderFrames(tl, opts, comp, total, onProgress, signal, async (T, step) => {
+      inFlight.push(await comp.sample(T / 1e6, step / 1e6));
+      if (inFlight.length > 2) await handOver();
+    });
+    while (inFlight.length) await handOver();
+    if (mix && audio) {
+      onProgress({ fraction: 0.99, stage: 'Encoding audio' });
+      await audio.add(mix);
+    }
+    onProgress({ fraction: 0.995, stage: 'Finishing file' });
+    await output.finalize();
+    await ace.closeFile(opts.path);
+    onProgress({ fraction: 1, stage: 'Done' });
+  } catch (e) {
+    await output.cancel().catch(() => {});
+    await ace.closeFile(opts.path).catch(() => {});
+    throw e;
+  } finally {
+    comp.destroy();
+  }
+}
+
+/** 10-bit HEVC or ProRes: pictures go to the bundled ffmpeg, which uses the hardware encoder. */
+async function exportDeep(tl: Timeline, opts: ExportOptions, kind: 'hevc10' | 'prores', layout: YuvLayout, comp: Compositor, mix: AudioBuffer | null, width: number, height: number, total: number, onProgress: (p: ExportProgress) => void, signal: AbortSignal) {
+  // About as many bits per picture element as the 8-bit HEVC export, a little more for 10 bits.
+  const bpp = opts.quality === 'max' ? 0.2 : opts.quality === 'high' ? 0.13 : 0.08;
+  const id = await ace.encoderStart({ path: opts.path, width, height, fps: opts.fps, kind, layout, bitrate: width * height * opts.fps * bpp, audio: mix ? wavOf(mix) : undefined });
+  const inFlight: Promise<Uint8Array>[] = [];
+  const handOver = async () => { const px = await inFlight.shift()!; await ace.encoderFrame(id, px); };
+  try {
+    await renderFrames(tl, opts, comp, total, onProgress, signal, async () => {
+      inFlight.push((await comp.sampleDeep())());
+      if (inFlight.length > 2) await handOver();
+    });
+    while (inFlight.length) await handOver();
+    onProgress({ fraction: 0.995, stage: 'Finishing file' });
+    await ace.encoderFinish(id);
+    onProgress({ fraction: 1, stage: 'Done' });
+  } catch (e) {
+    await ace.encoderCancel(id).catch(() => {});
+    throw e;
+  } finally {
+    comp.destroy();
+  }
+}
+
+/** A mixed sound as a WAV file (32-bit float, the mix's own rate). */
+function wavOf(b: AudioBuffer): Uint8Array {
+  const ch = b.numberOfChannels, n = b.length, bytes = n * ch * 4;
+  const out = new ArrayBuffer(44 + bytes), v = new DataView(out);
+  const str = (o: number, t: string) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + bytes, true); str(8, 'WAVE'); str(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 3, true); v.setUint16(22, ch, true); v.setUint32(24, b.sampleRate, true);
+  v.setUint32(28, b.sampleRate * ch * 4, true); v.setUint16(32, ch * 4, true); v.setUint16(34, 32, true);
+  str(36, 'data'); v.setUint32(40, bytes, true);
+  const f = new Float32Array(out, 44), chans = Array.from({ length: ch }, (_, c) => b.getChannelData(c));
+  for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) f[i * ch + c] = chans[c]![i]!;
+  return new Uint8Array(out);
+}
+
+/** Renders every output picture of the edit into the compositor, calling `take` after each. */
+async function renderFrames(tl: Timeline, opts: ExportOptions, comp: Compositor, total: number, onProgress: (p: ExportProgress) => void, signal: AbortSignal, take: (T: number, step: number) => Promise<void>) {
   const step = 1e6 / opts.fps;
   const slots = new Map<string, ExportSlot>();
   const t0 = performance.now();
@@ -291,29 +377,14 @@ export async function exportTimeline(tl: Timeline, opts: ExportOptions, onProgre
       }
       comp.compose(tl, T, L.a.index, L.b ? L.b.index : null, L.b && L.transition ? transitionLook(L.transition.kind, L.progress) : null);
       const r0 = performance.now();
-      inFlight.push(await comp.sample(T / 1e6, step / 1e6));
-      if (inFlight.length > 2) await handOver();
+      await take(T, step);
       exportCost.readMs += performance.now() - r0;
       exportCost.frames++;
       written++;
       onProgress({ fraction: Math.min(0.99, T / total), stage: `Rendering clip ${L.a.index + 1} of ${tl.clips.length}`, fps: written / ((performance.now() - t0) / 1000) });
     }
-    while (inFlight.length) await handOver();
-    if (mix && audio) {
-      onProgress({ fraction: 0.99, stage: 'Encoding audio' });
-      await audio.add(mix);
-    }
-    onProgress({ fraction: 0.995, stage: 'Finishing file' });
-    await output.finalize();
-    await ace.closeFile(opts.path);
-    onProgress({ fraction: 1, stage: 'Done' });
-  } catch (e) {
-    await output.cancel().catch(() => {});
-    await ace.closeFile(opts.path).catch(() => {});
-    throw e;
   } finally {
     for (const s of slots.values()) s.decoders.forEach((d) => d.close());
-    comp.destroy();
   }
 }
 

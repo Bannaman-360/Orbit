@@ -66,6 +66,8 @@ export interface AceApi {
   orientation(path: string, req: unknown): Promise<OrientationData>;
   autosaveLoad(): Promise<string | null>;
   autosaveSave(text: string): Promise<void>;
+  /** Keeps the last session under another name; the app starts fresh next time. */
+  autosaveAside(): Promise<void>;
   capture(name: string): Promise<string>;
   selftestMetrics(): Promise<Record<string, number>>;
   selftestInput(ev: Record<string, unknown>): Promise<void>;

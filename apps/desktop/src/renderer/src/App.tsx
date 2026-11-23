@@ -698,6 +698,9 @@ export function App() {
   const [trackBox, setTrackBox] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [trackJob, setTrackJob] = useState<{ progress: number; abort: AbortController } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Self-test only: make drawing fail, to check the app shows what to do instead of a blank window.
+  const [crashTest, setCrashTest] = useState(false);
+  if (crashTest) throw new Error('Self-test: drawing failed on purpose');
   const startTrackPick = () => {
     if (!clip || !media || !canReframe(media)) return setError('This clip can’t be reframed, so a subject can’t be followed.');
     player.pause();
@@ -802,9 +805,12 @@ export function App() {
 
   // --- Files -------------------------------------------------------------------------------------
   const restore = useCallback(async (text: string) => {
-    const raw = JSON.parse(text) as Partial<SaveFile> & Partial<Timeline>;
+    const raw = JSON.parse(text) as Partial<Omit<SaveFile, 'library' | 'version'>> & { library?: unknown; version?: unknown } & Partial<Timeline>;
     const timeline = loadTimeline(raw.timeline ?? raw);
-    const library = [...new Set([...(raw.library ?? []), ...timeline.clips.map((c) => c.mediaPath)])];
+    // Newer versions list media as { path, rating, … } instead of plain paths: take the paths.
+    const listed = (Array.isArray(raw.library) ? raw.library : []).flatMap((x: unknown) => (typeof x === 'string' ? [x] : x && typeof (x as { path?: unknown }).path === 'string' ? [(x as { path: string }).path] : []));
+    const library = [...new Set([...listed, ...timeline.clips.map((c) => c.mediaPath).filter((p) => typeof p === 'string')])];
+    const newer = (typeof raw.version === 'number' && raw.version > 1) || ((raw.timeline as { version?: unknown } | undefined)?.version ?? 1) as number > 1;
     setBin([]);
     binRef.current = [];
     hist.current = { past: [], future: [], lastKey: '', lastAt: 0 };
@@ -819,6 +825,7 @@ export function App() {
     setSel(null);
     player.seek(0);
     if (ok.length < timeline.clips.length) setError(`${timeline.clips.length - ok.length} clip(s) could not be opened (moved or deleted?)`);
+    else if (newer) setNotice('This project was saved by a newer version of the app. It opened, but what that version added (such as markers, ratings and folders) isn’t shown here.');
   }, [importPaths, player]);
 
   const saveText = () => JSON.stringify({ version: 1, timeline: tlRef.current, library: binRef.current.map((b) => b.path) } satisfies SaveFile);
@@ -850,12 +857,15 @@ export function App() {
           trackBox: (box) => runTrackingRef.current(box),
           run: (cmd) => runRef.current[cmd]?.(),
           dropPaths: async (paths, at) => importFoundRef.current(await ace.importPaths(paths), at),
+          restore: (text) => restoreRef.current(text),
+          crashForTest: () => setCrashTest(true),
         };
         void runSelftest(api);
         return;
       }
       const text = await ace.autosaveLoad();
-      if (text) await restore(text).catch((e) => setError(`Could not restore last session: ${e}`));
+      // A last session that can't be opened is kept aside, so the app always starts.
+      if (text) await restore(text).catch(async (e) => { ace.logError('restore', String(e)); await ace.autosaveAside(); setError('Your last session couldn’t be opened, so the app started fresh. It was kept, not deleted.'); });
       restored.current = true;
     });
   }, [commit, importPaths, player, restore]);

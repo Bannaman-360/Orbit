@@ -324,6 +324,11 @@ ipcMain.handle('autosave:load', async () => {
     return null;
   }
 });
+/** Keeps the last session under another name, so the app starts fresh (nothing is deleted). */
+ipcMain.handle('autosave:aside', async () => {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  await rename(autosavePath(), autosavePath().replace(/\.acproj$/, `-set-aside-${stamp}.acproj`)).catch(() => {});
+});
 ipcMain.handle('autosave:save', async (_e, text: string) => {
   await mkdir(path.dirname(autosavePath()), { recursive: true });
   await writeFile(autosavePath(), text);

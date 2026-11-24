@@ -3,6 +3,8 @@
 # Mac: a .dmg each for Apple Silicon and Intel. Windows: an installer and a portable .exe.
 # Both unsigned for now (see apps/desktop/electron-builder.yml for turning signing on).
 # A tag also puts the installers in a draft GitHub Release, published by hand when ready.
+# Publishing it is what sends the update to everyone's app (it checks GitHub Releases, and uses the
+# zipped Mac apps, the Windows installer and checksums.txt from the release).
 name: Installers
 on:
   push:
@@ -20,6 +22,11 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      - name: The tag matches the app's version (or the update would be offered forever)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          v="$(node -p "require('./apps/desktop/package.json').version")"
+          if [ "${GITHUB_REF_NAME#v}" != "$v" ]; then echo "Tag $GITHUB_REF_NAME doesn't match version $v in apps/desktop/package.json"; exit 1; fi
       - run: pnpm typecheck
       - run: pnpm test
 
@@ -46,8 +53,18 @@ jobs:
           app="$(ls -d apps/desktop/release/mac-arm64/*.app | head -1)"
           perl -e 'alarm 120; exec @ARGV' "$app/Contents/MacOS/Action Cam Editor" --selftest --selftest-mode=startup || true
           cat "$TMPDIR/ace-selftest-out/report.json"
+      - name: Zipped apps (what installed copies update from)
+        run: |
+          v="$(node -p "require('./apps/desktop/package.json').version")"
+          cd apps/desktop/release
+          ditto -c -k --sequesterRsrc --keepParent "mac-arm64/Action Cam Editor.app" "Action-Cam-Editor-$v-mac-arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent "mac/Action Cam Editor.app" "Action-Cam-Editor-$v-mac-x64.zip"
       - uses: actions/upload-artifact@v4
-        with: { name: mac, path: apps/desktop/release/*.dmg }
+        with:
+          name: mac
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
 
   windows:
     needs: checks
@@ -97,6 +114,8 @@ jobs:
           v="${GITHUB_REF_NAME#v}"
           awk -v v="$v" '/^## /{on = index($0, v) > 0; next} on' CHANGELOG.md > notes.md
           cat docs/BETA.md >> notes.md
+      - name: Checksums (the app checks each update against these)
+        run: cd dist && sha512sum mac/* windows/* > checksums.txt && cat checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
@@ -104,4 +123,6 @@ jobs:
           body_path: notes.md
           files: |
             dist/mac/*.dmg
+            dist/mac/*.zip
             dist/windows/*.exe
+            dist/checksums.txt

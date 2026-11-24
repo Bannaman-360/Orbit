@@ -10,6 +10,7 @@ import { deepEncoders, setupEncoder } from './encoder';
 import { log, setupDiagnostics } from './diagnostics';
 import { AUDIO_EXT, findImportable, hasExt, VIDEO_EXT } from './importPaths';
 import { setupProjects } from './projects';
+import { setupUpdater } from './updater';
 
 const SELFTEST = process.argv.includes('--selftest');
 /** The app's name, in one place (window title, About box, installer). */
@@ -401,18 +402,29 @@ ipcMain.handle('ui:window', (_e, o: { mode: 'auto' | 'light' | 'dark'; transluce
   if (MAC && win) win.setVibrancy(o.translucent ? 'under-window' : null);
 });
 
+// --- Updates -------------------------------------------------------------------
+const updater = setupUpdater({
+  enabled: app.isPackaged && !SELFTEST,
+  send: (s) => win?.webContents.send('update:state', s),
+  busy: () => (importer.busy() ? 'Recordings are still being copied from the card. Restart to update once that’s done.' : null),
+});
+ipcMain.handle('update:state', () => updater.state());
+ipcMain.handle('update:check', () => updater.check());
+ipcMain.handle('update:install', () => updater.install());
+ipcMain.handle('update:releases', (_e, url?: string) => updater.openReleases(url));
+
 const send = (cmd: string) => () => win?.webContents.send('menu:command', cmd);
 /** The menu bar. Shortcuts are handled in the window (they can be changed), so none are set here. */
 function buildMenu() {
   const it = (label: string, cmd: string): MenuItemConstructorOptions => ({ label, click: send(cmd) });
   const sep: MenuItemConstructorOptions = { type: 'separator' };
   const template: MenuItemConstructorOptions[] = [
-    ...(MAC ? [{ label: app.name, submenu: [{ role: 'about' }, sep, it('Customize…', 'customize'), sep, { role: 'services' }, sep, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, sep, { role: 'quit' }] as MenuItemConstructorOptions[] }] : []),
+    ...(MAC ? [{ label: app.name, submenu: [{ role: 'about' }, it('Check for Updates…', 'checkUpdates'), sep, it('Customize…', 'customize'), sep, { role: 'services' }, sep, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, sep, { role: 'quit' }] as MenuItemConstructorOptions[] }] : []),
     { label: 'File', submenu: [it('Import Media…', 'import'), it('Import from Memory Card…', 'card'), it('Add Music…', 'music'), sep, it('Projects…', 'projects'), it('New Project', 'newProject'), it('Open Project…', 'open'), sep, it('Save Project', 'save'), it('Save Project As…', 'saveAs'), sep, it('Export Video…', 'export'), it('Save Frame…', 'grab'), sep, MAC ? { role: 'close' } : { role: 'quit' }] },
     { label: 'Edit', submenu: [it('Undo', 'undo'), it('Redo', 'redo'), sep, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }, sep, it('Split', 'split'), it('Split and Delete Left', 'delLeft'), it('Split and Delete Right', 'delRight'), it('Duplicate Clip', 'duplicate'), it('Delete', 'delete'), sep, it('Add Keyframe', 'keyframe'), it('Add Text', 'text'), it('Track Subject…', 'track')] },
     { label: 'View', submenu: [it('Media', 'toggleMedia'), it('Inspector', 'toggleInspector'), it('Timeline', 'toggleTimeline'), sep, it('Customize…', 'customize'), it('Arrange Interface', 'arrange'), it('Undo Interface Change', 'undoUi'), sep, it('Show Before / After', 'compare'), it('Full-Screen Preview', 'fullscreen'), { role: 'togglefullscreen', label: 'Enter Full Screen Window' }, ...(app.isPackaged ? [] : [sep, { role: 'reload' }, { role: 'toggleDevTools' }] as MenuItemConstructorOptions[])] },
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, ...(MAC ? [sep, { role: 'front' }] as MenuItemConstructorOptions[] : [])] },
-    { label: 'Help', submenu: [it('Show Tour Again', 'tour'), it('Welcome Screen', 'welcome'), sep, it('Keyboard Shortcuts', 'shortcuts'), sep, it('Report a Problem…', 'report')] },
+    { label: 'Help', submenu: [...(MAC ? [] : [it('Check for Updates…', 'checkUpdates'), sep]), it('Show Tour Again', 'tour'), it('Welcome Screen', 'welcome'), sep, it('Keyboard Shortcuts', 'shortcuts'), sep, it('Report a Problem…', 'report')] },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }

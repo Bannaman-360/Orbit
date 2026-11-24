@@ -1,8 +1,13 @@
 # Changes
 
-## Unreleased
+## 0.1.0-beta.3
 
 New:
+- **Updates by themselves** (from this version on): the app checks for a new version when it
+  starts and every few hours, downloads it in the background, and shows “Version … is ready”.
+  Click **Restart to update**: your work is saved, the new version is installed and the app opens
+  again. Check by hand with **Check for Updates…** (app menu on Mac, Help on Windows). On a Mac the
+  app must be in the Applications folder; the portable Windows version shows a download link.
 - **Projects page** (toolbar button, File → Projects…, ⌘⇧P / Ctrl+Shift+P): every saved project
   with a picture, when it was last changed, how many clips and how long. Click one to switch to
   it; right-click to rename, duplicate, show it in Finder / File Explorer, or move it to the Trash.

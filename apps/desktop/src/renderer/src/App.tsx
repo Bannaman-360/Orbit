@@ -9,7 +9,7 @@ import {
   COMFORT_FOV, fitSubjectFrac, fracForFov, moveKeyframe, trackWeight, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, setTrackRange, trackActive, trackExtent, trackHeld, trackRange,
   type ClipTrack, type Easing, type GaugeDesign, type GaugeKind, type Grade, type Look, type Overlay, type Timeline, type TimelineClip, type Transition,
 } from '@ace/project';
-import { ace, baseName, type FoundMedia, type ProjectMeta } from './api';
+import { ace, baseName, type FoundMedia, type ProjectMeta, type UpdateState } from './api';
 import { NameSheet, ProjectsPage } from './Projects';
 import { AudioPlayer } from './audioEngine';
 import { hasTwoLenses, lensUi, matchClipLenses, setLensUi } from './lensMatching';
@@ -831,6 +831,8 @@ export function App() {
 
   const saveObject = (): SaveFile => ({ version: 1, timeline: tlRef.current, library: binRef.current.map((b) => b.path) });
   const saveText = () => JSON.stringify(saveObject());
+  /** The last session (with which project it was), so the app reopens where you left off. */
+  const sessionText = () => JSON.stringify({ ...saveObject(), project: projectRef.current ?? undefined });
 
   // --- Projects ----------------------------------------------------------------------------------
   // Once an edit is saved as a project, changes go into that file as you go (with the autosave).
@@ -927,7 +929,7 @@ export function App() {
     if (!restored.current || selftest) return;
     const id = setTimeout(() => {
       const text = saveText(), p = projectRef.current;
-      void ace.autosaveSave(JSON.stringify({ ...saveObject(), project: p ?? undefined }));
+      void ace.autosaveSave(sessionText());
       if (!p || text === lastSaved.current || saveFailed.current) return;
       void ace.projectsSave({ path: p, text, meta: projectMeta() }).then(
         () => { if (projectRef.current === p) lastSaved.current = text; },
@@ -1140,6 +1142,34 @@ export function App() {
   }, []);
   const closeWelcome = () => { setWelcome(false); if (!getPrefs().welcomed) setPrefs({ welcomed: true }); };
 
+  // --- Updates -----------------------------------------------------------------------------------
+  const [update, setUpdate] = useState<UpdateState>({ state: 'idle' });
+  /** Show what a check finds (a check the user asked for, or a newer version found in the background). */
+  const [updateShown, setUpdateShown] = useState(false);
+  useEffect(() => {
+    void ace.updateState().then(setUpdate);
+    ace.onUpdate((s) => { setUpdate(s); if (s.state === 'ready') setUpdateShown(true); });
+  }, []);
+  const checkUpdates = async () => {
+    setUpdateShown(true);
+    const s = await ace.updateCheck();
+    if (s.state === 'current') flash(`You have the newest version (${s.version}).`);
+    else if (s.state === 'error') { setUpdateShown(false); setError(`Couldn’t check for updates: ${s.message} Check the internet connection and try again.`); }
+  };
+  /** Saves everything, then quits and installs the new version (the app opens again by itself). */
+  const restartToUpdate = async () => {
+    try {
+      const p = projectRef.current;
+      if (p && saveText() !== lastSaved.current) await writeProject({ path: p });
+      await ace.autosaveSave(sessionText());
+    } catch (e) {
+      setError(`Your edit couldn’t be saved, so the app didn’t restart: ${e}`);
+      return;
+    }
+    const why = await ace.updateInstall();
+    if (why) setError(why);
+  };
+
   // --- Keyboard ----------------------------------------------------------------------------------
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
@@ -1159,7 +1189,7 @@ export function App() {
     duplicate: () => { if (clip) commit(duplicateClip(tlRef.current, clip.id)); }, delete: deleteCurrent, undo, redo,
     import: () => void importDialog(), card: () => setCardOpen(true), music: () => void addMusic(), open: () => void openProject(), save: () => void saveProject(), saveAs: () => void saveProjectAs(), newProject: () => void newProject(), projects: () => { setWelcome(false); setProjectsOpen((v) => !v); }, export: () => { if (tlRef.current.clips.length) setExportOpen(true); }, grab: () => void frameGrab(),
     customize: () => setCustomize((v) => (v ? null : 'themes')), arrange: () => { setArranging(!isArranging()); setCustomize(null); }, undoUi: undoPrefs, toggleMedia: () => togglePanel(['media']),
-    toggleInspector: () => togglePanel(['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection']), toggleTimeline: () => togglePanel(['timeline']), compare: () => setCompare(true), sections: toggleAllSections, speedline: toggleSpeedLines, jumps: toggleJumpMarks, shortcuts: () => setShortcutsOpen(true), report: () => setReportOpen(true), tour: () => { setWelcome(false); setTourOpen(true); }, welcome: () => { setProjectsOpen(false); setWelcome(true); },
+    toggleInspector: () => togglePanel(['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection']), toggleTimeline: () => togglePanel(['timeline']), compare: () => setCompare(true), sections: toggleAllSections, speedline: toggleSpeedLines, jumps: toggleJumpMarks, shortcuts: () => setShortcutsOpen(true), report: () => setReportOpen(true), tour: () => { setWelcome(false); setTourOpen(true); }, welcome: () => { setProjectsOpen(false); setWelcome(true); }, checkUpdates: () => void checkUpdates(),
   };
   const runRef = useRef(run);
   runRef.current = run;
@@ -1320,8 +1350,29 @@ export function App() {
       {notice && !trackJob && <span className="notice" onClick={() => setNotice(null)} title={`${notice} (click to dismiss)`}>{notice} ✕</span>}
       {busy && <span className="busy">{busy}</span>}
       {error && <span className="error" title={error} onClick={() => setError(null)}>{error} ✕</span>}
+      {updateShown && update.state === 'checking' && <span className="busy">Checking for updates…</span>}
+      {updateShown && update.state === 'downloading' && (
+        <span className="busy track-status">
+          <Icon name="import" size={15} /> Downloading version {update.version}… {Math.round(update.fraction * 100)}%
+          <span className="mini-bar"><span style={{ width: `${update.fraction * 100}%` }} /></span>
+        </span>
+      )}
+      {updateShown && update.state === 'ready' && (
+        <span className="notice track-status">
+          <Icon name="import" size={15} /> Version {update.version} is ready
+          <button className="link" onClick={() => void restartToUpdate()} title="Saves your work, installs the new version and opens the app again">Restart to update</button>
+          <button className="link" aria-label="Later" title="Later: it’s installed next time you restart" onClick={() => setUpdateShown(false)}>✕</button>
+        </span>
+      )}
+      {updateShown && update.state === 'manual' && (
+        <span className="notice track-status" title={update.why}>
+          Version {update.version} is out. {update.why}
+          <button className="link" onClick={() => void ace.openReleases(update.url)}>Download</button>
+          <button className="link" aria-label="Dismiss" onClick={() => setUpdateShown(false)}>✕</button>
+        </span>
+      )}
       {/* Which project this is, when nothing else is being said. */}
-      {!trackJob && !importing && !foundCard && !notice && !busy && !error && (projectName || has) && (
+      {!trackJob && !importing && !foundCard && !notice && !busy && !error && !(updateShown && update.state !== 'idle' && update.state !== 'current') && (projectName || has) && (
         <button className="link project-status" title={projectName ? 'Changes are saved as you go. Click to see all projects.' : 'This edit isn’t saved as a project yet. Click to see all projects.'} onClick={() => setProjectsOpen(true)}>
           {projectName ?? 'Not saved yet'}
         </button>
@@ -1356,6 +1407,7 @@ export function App() {
         ...PREVIEW_LEVELS.map(([l, label, desc]) => ({ label: `Preview quality: ${label}`, hint: l === 1 ? '' : desc.split(' ')[0], checked: level === l, onClick: () => setLevel(l) })),
         'sep',
         { label: 'Keyboard shortcuts', hint: comboLabel(comboOf('shortcuts', shortcuts)), onClick: () => setShortcutsOpen(true) },
+        { label: 'Check for updates…', onClick: run.checkUpdates! },
       ],
     },
     import: cmdItem('import', 'Import', 'import'),
@@ -1427,7 +1479,7 @@ export function App() {
   };
   // A message must never be lost because its toolbar item was removed.
   const statusShown = (['main', 'transport', 'timeline'] as const).some((b) => !bars[b].hidden && bars[b].items.includes('status') && (b === 'main' || openPanels(getPrefs().layout).includes(b === 'transport' ? 'viewer' : 'timeline')));
-  const anyStatus = trackJob || notice || busy || error || ((importing || foundCard) && !cardOpen);
+  const anyStatus = trackJob || notice || busy || error || ((importing || foundCard) && !cardOpen) || (updateShown && (update.state === 'ready' || update.state === 'manual'));
 
   // --- Panels ------------------------------------------------------------------------------------------
   const inspector: InspectorProps = {

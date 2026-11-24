@@ -1,6 +1,8 @@
 import type { ByteReader } from '@ace/engine';
 import type { OrientationData } from '@ace/telemetry';
 import type { CardRecording, ImportEvent } from '../../main/card';
+import type { UpdateState } from '../../main/updater';
+export type { UpdateState };
 
 export interface Card { root: string; name: string }
 /** A saved project, as the Projects page lists it. */
@@ -46,6 +48,13 @@ export interface AceApi {
   /** Moves a Projects-folder project to the Trash; one saved elsewhere just leaves the list. */
   projectsRemove(path: string): Promise<void>;
   projectsReveal(path: string): Promise<void>;
+  /** Updates from GitHub Releases (downloaded in the background, installed on Restart). */
+  updateState(): Promise<UpdateState>;
+  updateCheck(): Promise<UpdateState>;
+  /** Quits and installs; returns why not, if it can't now. */
+  updateInstall(): Promise<string | null>;
+  openReleases(url?: string): Promise<void>;
+  onUpdate(f: (s: UpdateState) => void): void;
   setWindow(o: { mode: 'auto' | 'light' | 'dark'; translucent: boolean }): Promise<void>;
   /** Menu bar choices. */
   onCommand(f: (cmd: string) => void): void;

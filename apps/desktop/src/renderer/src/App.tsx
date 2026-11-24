@@ -854,15 +854,36 @@ export function App() {
   const [naming, setNaming] = useState(false);
   const defaultProjectName = () => `Ride ${new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`;
   /** For the Projects page: a picture, how many clips and how long. */
-  const projectMeta = (): ProjectMeta => {
+  /** A picture that lasts: the media thumbnails are blob: addresses, gone when the app quits. */
+  const thumbCache = useRef(new Map<string, string>());
+  const keptThumb = async (url: string): Promise<string | undefined> => {
+    if (!url.startsWith('blob:')) return url;
+    const hit = thumbCache.current.get(url);
+    if (hit) return hit;
+    try {
+      // (Drawn through a canvas: the page's security rules allow blob: pictures, not fetching them.)
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      const w = Math.min(320, img.naturalWidth), h = Math.round((img.naturalHeight / img.naturalWidth) * w);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d')!.drawImage(img, 0, 0, w, h);
+      const data = c.toDataURL('image/jpeg', 0.82);
+      thumbCache.current.set(url, data);
+      return data;
+    } catch { return undefined; }
+  };
+  const projectMeta = async (): Promise<ProjectMeta> => {
     const t = tlRef.current;
     const first = t.clips[0]?.mediaPath ?? binRef.current.find((b) => b.media)?.path;
-    return { thumb: first ? mediaNow(first)?.thumbnail ?? binRef.current.find((b) => b.path === first)?.media?.thumbnail : undefined, clips: t.clips.length, durationUs: timelineDuration(t) };
+    const live = first ? mediaNow(first)?.thumbnail ?? binRef.current.find((b) => b.path === first)?.media?.thumbnail : undefined;
+    return { thumb: live ? await keptThumb(live) : undefined, clips: t.clips.length, durationUs: timelineDuration(t) };
   };
   /** Writes the edit to a project file (`path`), or to a new one called `name` in Projects. */
   const writeProject = async (o: { path?: string; name?: string }) => {
     const text = saveText();
-    const where = await ace.projectsSave({ ...o, text, meta: projectMeta() });
+    const where = await ace.projectsSave({ ...o, text, meta: await projectMeta() });
     bindProject(where, text);
     return where;
   };
@@ -926,12 +947,13 @@ export function App() {
   const [selftest, setSelftest] = useState(false);
   const restored = useRef(false);
   useEffect(() => {
-    if (!restored.current || selftest) return;
-    const id = setTimeout(() => {
+    // (Self-tests don't keep a session, but do save into an open project, to check it.)
+    if (!restored.current && !selftest) return;
+    const id = setTimeout(async () => {
       const text = saveText(), p = projectRef.current;
-      void ace.autosaveSave(sessionText());
+      if (!selftest) void ace.autosaveSave(sessionText());
       if (!p || text === lastSaved.current || saveFailed.current) return;
-      void ace.projectsSave({ path: p, text, meta: projectMeta() }).then(
+      void ace.projectsSave({ path: p, text, meta: await projectMeta() }).then(
         () => { if (projectRef.current === p) lastSaved.current = text; },
         (e) => { saveFailed.current = true; setError(`Changes to “${baseName(p).replace(/\.acproj$/i, '')}” couldn’t be saved: ${e}. Use Save project as to save it somewhere else.`); },
       );

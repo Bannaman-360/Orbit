@@ -32,14 +32,28 @@ export type UpdateState =
 
 interface Release { tag_name: string; draft: boolean; prerelease: boolean; html_url: string; assets: { name: string; browser_download_url: string }[] }
 
-export function setupUpdater(o: { enabled: boolean; send: (s: UpdateState) => void; busy: () => string | null }) {
+/** For tests: releases from a local server instead of GitHub, and a stand-in for this copy. */
+export interface UpdaterTest {
+  /** Base URL serving releases.json and the files it lists. */
+  feed: string;
+  current: string;
+  platform: 'darwin' | 'win32' | 'linux';
+  arch: 'arm64' | 'x64';
+  /** Where downloads go. */
+  dir: string;
+  /** Why this copy couldn't replace itself (default: it can). */
+  cannotInstall?: () => Promise<string | null>;
+}
+
+export function setupUpdater(o: { enabled: boolean; send: (s: UpdateState) => void; busy: () => string | null; test?: UpdaterTest }) {
   let state: UpdateState = { state: 'idle' };
   let install: (() => void) | null = null;
   let running: Promise<UpdateState> | null = null;
-  const dir = () => path.join(app.getPath('userData'), 'updates');
+  const dir = () => o.test?.dir ?? path.join(app.getPath('userData'), 'updates');
   const set = (s: UpdateState) => { state = s; o.send(s); return s; };
-  const current = app.getVersion();
-  const mac = process.platform === 'darwin', win = process.platform === 'win32';
+  const current = o.test?.current ?? app.getVersion();
+  const platform = o.test?.platform ?? process.platform, arch = o.test?.arch ?? process.arch;
+  const mac = platform === 'darwin', win = platform === 'win32';
 
   const fetchOk = async (url: string, accept?: string) => {
     const r = await net.fetch(url, { headers: { 'User-Agent': 'ActionCamEditor-Updater', ...(accept ? { Accept: accept } : {}) } });
@@ -49,7 +63,7 @@ export function setupUpdater(o: { enabled: boolean; send: (s: UpdateState) => vo
 
   /** The newest published release newer than this one (betas only for people already on a beta). */
   const newest = async (): Promise<Release | null> => {
-    const list = (await (await fetchOk(`https://api.github.com/repos/${REPO}/releases?per_page=20`, 'application/vnd.github+json')).json()) as Release[];
+    const list = (await (await fetchOk(o.test ? `${o.test.feed}/releases.json` : `https://api.github.com/repos/${REPO}/releases?per_page=20`, 'application/vnd.github+json')).json()) as Release[];
     const onBeta = current.includes('-');
     return list
       .filter((r) => !r.draft && isVersion(r.tag_name) && (onBeta || !r.prerelease) && compareVersions(r.tag_name, current) > 0)
@@ -58,6 +72,7 @@ export function setupUpdater(o: { enabled: boolean; send: (s: UpdateState) => vo
 
   /** Why this copy of the app can't replace itself, if it can't. */
   const cannotInstall = async (): Promise<string | null> => {
+    if (o.test) return (await o.test.cannotInstall?.()) ?? null;
     if (!app.isPackaged) return 'This is a development copy.';
     if (win) return process.env.PORTABLE_EXECUTABLE_FILE ? 'The portable version can’t update itself.' : null;
     if (!mac) return 'Updates are only installed on Mac and Windows.';
@@ -68,7 +83,7 @@ export function setupUpdater(o: { enabled: boolean; send: (s: UpdateState) => vo
     return null;
   };
   const macBundle = () => path.resolve(app.getPath('exe'), '..', '..', '..');
-  const assetName = (v: string) => (mac ? `Action-Cam-Editor-${v}-mac-${process.arch === 'arm64' ? 'arm64' : 'x64'}.zip` : `Action-Cam-Editor-${v}-setup.exe`);
+  const assetName = (v: string) => (mac ? `Action-Cam-Editor-${v}-mac-${arch === 'arm64' ? 'arm64' : 'x64'}.zip` : `Action-Cam-Editor-${v}-setup.exe`);
 
   /** Downloads to `to`, reporting progress; returns the file's sha512 (hex). */
   const download = async (url: string, to: string, progress: (f: number) => void) => {
@@ -168,7 +183,7 @@ export function setupUpdater(o: { enabled: boolean; send: (s: UpdateState) => vo
 
 // Waits for the app to quit, swaps in the new one (putting the old one back if that fails), and
 // starts it again.
-const MAC_SCRIPT = `#!/bin/sh
+export const MAC_SCRIPT = `#!/bin/sh
 pid="$1"; new="$2"; dest="$3"
 while kill -0 "$pid" 2>/dev/null; do sleep 0.3; done
 old="$dest.updating-old"

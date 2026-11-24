@@ -17,6 +17,7 @@ An Electron editor for GoPro and action-camera footage (Mac and Windows), meant 
   - `synthetic/` has generated files; `synthetic/odd/` has broken and unusual ones.
 - `scripts/build-ffmpeg-mac.sh`: builds the bundled LGPL ffmpeg into `apps/desktop/resources/ffmpeg/`.
 - `docs/INSTALL.md` (install and build), `docs/BETA.md` (testers' guide), `CHANGELOG.md`.
+- `docs/ROADMAP.md`: the pro-features plan in five milestones (milestone 1 is released; milestone 2 is next), with the user's decisions. Read it before starting milestone work.
 
 ## Commands
 Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:$PATH"; eval "$(fnm env)"`

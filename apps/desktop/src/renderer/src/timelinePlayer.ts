@@ -74,6 +74,8 @@ export class TimelinePlayer {
   static keepBackward = true;
   time = 0;
   playing = false;
+  /** Forward playback speed (JKL shuttle: 1, 2, 4, 8). Sound plays only at 1. */
+  rate = 1;
   stalls = 0;
   private lastTick: number | null = null;
   private stallStart: number | null = null;
@@ -211,7 +213,7 @@ export class TimelinePlayer {
       }
       const slot = this.slotFor(v.clip, media, v.mediaUs);
       for (const d of slot.decoders) {
-        d.pace = this.playing ? speed * this.refreshMs * 1000 : 0;
+        d.pace = this.playing ? speed * this.rate * this.refreshMs * 1000 : 0;
         void d.pump();
       }
       // Paused (scrubbing / stepping): show the nearest decoded frame at or before the target
@@ -271,7 +273,7 @@ export class TimelinePlayer {
         // After a decoder stall the video clock held still while audio kept going: resync audio.
         if (this.stallStart !== null && now - this.stallStart > 80) this.onTransport?.(true, this.time);
         this.stallStart = null;
-        this.time = Math.min(this.time + Math.min(dt, 100_000), this.duration);
+        this.time = Math.min(this.time + Math.min(dt, 100_000) * this.rate, this.duration);
         if (this.time >= this.duration - 1) {
           this.time = Math.max(0, this.duration - 1);
           this.pause();

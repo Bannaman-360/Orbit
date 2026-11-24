@@ -25,6 +25,15 @@ export interface AceApi {
   reportText(gpu: string): Promise<string>;
   reportCopy(text: string): Promise<void>;
   reportReveal(): Promise<void>;
+  /** Puts text on the clipboard. */
+  copyText(text: string): Promise<void>;
+  /** Self-tests: what would have been copied. */
+  selftestCopied(): Promise<string>;
+  proxyUsage(): Promise<{ files: number; bytes: number }>;
+  proxyClear(): Promise<void>;
+  proxyReveal(): Promise<void>;
+  /** Looks for missing files in a folder the user picks (null: they cancelled). */
+  relink(wanted: { path: string; size?: number }[], folder?: string): Promise<{ folder: string; matches: { from: string; to: string; how: string }[] } | null>;
   encoderAvailable(): Promise<{ hevc10?: string; prores?: string }>;
   encoderStart(o: { path: string; width: number; height: number; fps: number; kind: 'hevc10' | 'prores'; bitrate: number; layout: 'p010le' | 'p210le'; audio?: Uint8Array }): Promise<number>;
   encoderFrame(id: number, data: Uint8Array): Promise<void>;

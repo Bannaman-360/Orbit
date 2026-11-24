@@ -4,10 +4,13 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Icon } from './ui/Icon';
+import { MARKER_HEX } from './Markers';
+import { analyseBeats, beatsOf, useBeatsVersion } from './musicBeats';
 import { usePrefs } from './ui/prefs';
 import {
-  assignLanes, audioSpan, clipDuration, clipStarts, GAUGES, hasRamp, localAt, mediaAt, mediaToTimeline, speedRange, timelineDuration, trackExtent, trackRange, transitionUs, TRANSITIONS,
-  type Overlay, type Timeline, type TimelineClip,
+  assignLanes, audioSpan, clipDuration, clipStarts, GAUGES, hasRamp, localAt, mediaAt, mediaToTimeline, speedAt, speedRange, timelineDuration, trackExtent, trackRange, transitionUs, TRANSITIONS,
+  snapSpan, snapTargets, snapTime, type SnapTarget,
+  type Marker, type MarkerColor, type Overlay, type Timeline, type TimelineClip,
 } from '@ace/project';
 import type { Selection } from './App';
 import { baseName } from './api';
@@ -16,6 +19,16 @@ import { fmtSpeed, SpeedLine } from './SpeedLine';
 import { STRIP_H, STRIP_W, stripPicture, useFilmstrip } from './filmstrip';
 import { fmtTime, useDrag } from './ui';
 import { fmtJumpLength } from './gaugeMath';
+
+/** Lines a dragged time up with what's nearby (hold ⌘ / Ctrl to drag freely). */
+interface Snapper {
+  /** `own`: the dragged item's id (it doesn't snap to itself); `noEdges`: ignore clip edges. */
+  time(t: number, e: PointerEvent, own?: string, noEdges?: boolean): number;
+  /** A block from `start` to `end`: returns the new start. */
+  span(start: number, end: number, e: PointerEvent, own?: string): number;
+}
+
+export type EditTool = 'select' | 'roll' | 'slip' | 'slide';
 
 interface Props {
   timeline: Timeline;
@@ -53,6 +66,17 @@ interface Props {
   onMoveAudio: (id: string, startUs: number, inUs: number, outUs: number) => void;
   onMoveOverlay: (id: string, startUs: number, endUs: number) => void;
   onDragEnd: () => void;
+  /** What dragging a clip does: Select (trim = ripple, drag = reorder), Roll, Slip, Slide. */
+  tool: EditTool;
+  /** A roll/slip/slide drag: `d` is µs from where the drag started ('start' first). */
+  onProEdit: (kind: 'roll' | 'slip' | 'slide', clipId: string, d: number, phase: 'start' | 'move') => void;
+  /** Snap drags to edges, the playhead, markers and beats. */
+  snapping: boolean;
+  /** Set inside the timeline: lines drags up with things nearby. */
+  snap?: Snapper;
+  /** Markers: moved (timeline time), changed, removed. */
+  onMarker: (id: string, patch: Partial<Omit<Marker, 'id'>>) => void;
+  onRemoveMarker: (id: string) => void;
   /** Right-click (two-finger click) on a clip at timeline time T. */
   onClipMenu: (clipId: string, T: number, x: number, y: number) => void;
   /** Pixels per second. */
@@ -97,6 +121,34 @@ export function TimelineView(p: Props) {
   const width = Math.max(800, (duration / 1e6) * pps + 300);
   const x = (us: number) => (us / 1e6) * pps;
 
+  // --- Snapping ---
+  const [guide, setGuide] = useState<number | null>(null);
+  const snapRef = useRef<Snapper | null>(null);
+  useBeatsVersion();
+  useEffect(() => { for (const a of tl.audio) if (!a.linkedClipId) analyseBeats(a.path); });
+  const targets: (SnapTarget & { id?: string })[] = [{ t: p.time, kind: 'playhead', id: 'playhead' }];
+  starts.forEach((s0, i) => { const c = tl.clips[i]!; targets.push({ t: s0, kind: 'edge', id: c.id }, { t: s0 + clipDuration(c), kind: 'edge', id: c.id }); });
+  for (const m of tl.markers) targets.push({ t: m.t, kind: 'marker', id: m.id });
+  for (const o of tl.overlays) targets.push({ t: o.startUs, kind: 'item', id: o.id }, { t: o.endUs, kind: 'item', id: o.id });
+  for (const a of tl.audio) {
+    const span = audioSpan(tl, a);
+    targets.push({ t: span.start, kind: 'item', id: a.id }, { t: span.end, kind: 'item', id: a.id });
+    const g = !a.linkedClipId ? beatsOf(a.path) : null;
+    if (g) {
+      const bars = new Set(g.downbeats);
+      g.beats.forEach((b, k) => { const m = b * 1e6; if (m >= a.inUs && m <= a.outUs) targets.push({ t: span.start + localAt(a, m), kind: bars.has(k) ? 'bar' : 'beat', id: a.id }); });
+    }
+  }
+  const reach = (8 / pps) * 1e6;
+  const free = (e: PointerEvent) => !p.snapping || e.metaKey || e.ctrlKey;
+  const pick = (own?: string, noEdges?: boolean) => snapTargets(targets.filter((t) => t.id !== own && !(noEdges && t.kind === 'edge')));
+  const snap: Snapper = {
+    time: (t, e, own, noEdges) => { if (free(e)) { setGuide(null); return t; } const r = snapTime(t, pick(own, noEdges), reach); setGuide(r.to ? r.t : null); return r.t; },
+    span: (s0, e0, e, own) => { if (free(e)) { setGuide(null); return s0; } const r = snapSpan(s0, e0, pick(own), reach); setGuide(r.to ? r.to.t : null); return r.start; },
+  };
+  const q: Props = { ...p, snap, onDragEnd: () => { setGuide(null); p.onDragEnd(); } };
+  snapRef.current = snap;
+
   // Fit the whole edit when clips are first added.
   const fitted = useRef(0);
   useEffect(() => {
@@ -114,10 +166,12 @@ export function TimelineView(p: Props) {
     if (px < el.scrollLeft + 40 || px > el.scrollLeft + el.clientWidth - 40) el.scrollLeft = px - el.clientWidth * 0.3;
   });
 
-  const seekFromEvent = (clientX: number) => {
+  const seekFromEvent = (clientX: number, e?: PointerEvent) => {
     const el = scroller.current!;
     const r = el.getBoundingClientRect();
-    p.onSeek(Math.max(0, Math.min(duration, ((clientX - r.left + el.scrollLeft) / pps) * 1e6)));
+    const t = ((clientX - r.left + el.scrollLeft) / pps) * 1e6;
+    // Scrubbing the ruler stops on beats and markers, so a split (S) lands on the beat.
+    p.onSeek(Math.max(0, Math.min(duration, e ? snapRef.current!.time(t, e, 'playhead', true) : t)));
   };
 
   const rulerStep = RULER_STEPS.find((s) => s * pps >= 70) ?? 600;
@@ -131,19 +185,20 @@ export function TimelineView(p: Props) {
   const sel = p.selection;
 
   return (
-    <div className="timeline">
+    <div className={`timeline tool-${p.tool}`}>
       {p.toolbarAt === 'top' && p.toolbar}
       <div className="timeline-scroll" ref={scroller} onWheel={(e) => {
         if (e.ctrlKey || e.metaKey) { e.preventDefault(); setPps((v) => Math.max(4, Math.min(400, v * Math.exp(-e.deltaY * 0.002)))); }
       }}>
         <div className="timeline-inner" style={{ width }}>
           <div className="ruler" style={{ '--minor': `${(rulerStep * pps) / (rulerStep === 0.25 || rulerStep >= 60 ? 5 : 4)}px` } as CSSProperties} onPointerDown={(e) => {
-            seekFromEvent(e.clientX);
-            const move = (ev: PointerEvent) => seekFromEvent(ev.clientX);
-            const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+            seekFromEvent(e.clientX, e.nativeEvent);
+            const move = (ev: PointerEvent) => seekFromEvent(ev.clientX, ev);
+            const up = () => { setGuide(null); window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
             window.addEventListener('pointermove', move);
             window.addEventListener('pointerup', up);
           }}>
+            {tl.markers.map((m) => <MarkerFlag key={m.id} m={m} x={x(m.t)} usPerPx={1e6 / pps} duration={duration} {...q} />)}
             {ticks.map((s) => (
               <span key={s} className="tick" style={{ left: x(s * 1e6) }}>{fmtTime(s * 1e6).slice(0, rulerStep >= 1 ? -3 : rulerStep === 0.25 ? undefined : -1)}</span>
             ))}
@@ -152,14 +207,14 @@ export function TimelineView(p: Props) {
           <div className="track overlay-track" style={{ height: ovRows * OV_LANE }} onPointerDown={(e) => { if (e.target === e.currentTarget) p.onSelect(null); }}>
             {tl.overlays.length === 0 && <div className="track-empty"><Icon name="text" size={12} />Titles and gauges you add appear here</div>}
             {tl.overlays.map((o) => (
-              <OverlayBlock key={o.id} {...p} o={o} lane={ovLanes.get(o.id) ?? 0} left={x(o.startUs)} widthPx={Math.max(8, x(o.endUs - o.startUs))} pps={pps} duration={duration} />
+              <OverlayBlock key={o.id} {...q} o={o} lane={ovLanes.get(o.id) ?? 0} left={x(o.startUs)} widthPx={Math.max(8, x(o.endUs - o.startUs))} pps={pps} duration={duration} />
             ))}
           </div>
 
           <div className="track video-track" ref={videoTrack} onPointerDown={(e) => { if (e.target === e.currentTarget) seekFromEvent(e.clientX); }}>
             {tl.clips.length === 0 && <div className="track-empty"><Icon name="media" size={14} />Drag clips here from Media, or double-click one</div>}
             {tl.clips.map((c, i) => (
-              <ClipBlock key={c.id} {...p} index={i} left={x(starts[i]!)} widthPx={x(clipDuration(c))} pps={pps} startUs={starts[i]!} trackH={trackH} view={view} />
+              <ClipBlock key={c.id} {...q} index={i} left={x(starts[i]!)} widthPx={x(clipDuration(c))} pps={pps} startUs={starts[i]!} trackH={trackH} view={view} />
             ))}
             {tl.clips.map((c, i) => {
               if (i === 0) return null;
@@ -199,10 +254,11 @@ export function TimelineView(p: Props) {
             {tl.audio.length === 0 && <div className="track-empty"><Icon name="music" size={12} />Music and detached sound go here</div>}
             {tl.audio.map((a) => {
               const span = audioSpan(tl, a);
-              return <AudioBlock key={a.id} {...p} id={a.id} lane={auLanes.get(a.id) ?? 0} left={x(span.start)} widthPx={Math.max(8, x(span.end - span.start))} pps={pps} />;
+              return <AudioBlock key={a.id} {...q} id={a.id} lane={auLanes.get(a.id) ?? 0} left={x(span.start)} widthPx={Math.max(8, x(span.end - span.start))} pps={pps} />;
             })}
           </div>
 
+          {guide !== null && <div className="snap-guide" style={{ left: x(guide) }} />}
           <div className="playhead" style={{ left: x(p.time) }} data-time={fmtTime(p.time)} />
         </div>
       </div>
@@ -243,13 +299,25 @@ function ClipBlock(p: Props & { index: number; left: number; widthPx: number; pp
   const dragRef = useRef<number | null>(null);
   const usPerPx = 1e6 / p.pps;
 
-  const trimLeft = useDrag((dx) => {
+  const prevId = p.timeline.clips[p.index - 1]?.id;
+  const trimLeft = useDrag((dx, _dy, e) => {
     const o = orig.current;
+    // Roll: the cut before this clip moves; the clip before gives or takes.
+    if (p.tool === 'roll' && prevId) { p.onProEdit('roll', prevId, p.snap!.time(p.startUs + dx * usPerPx, e, o.id, true) - p.startUs, 'move'); return; }
     p.onTrimClip(o.id, mediaAt(o, dx * usPerPx), o.outUs);
   }, p.onDragEnd);
-  const trimRight = useDrag((dx) => {
+  const trimRight = useDrag((dx, _dy, e) => {
     const o = orig.current;
-    p.onTrimClip(o.id, o.inUs, mediaAt(o, clipDuration(o) + dx * usPerPx));
+    // (The clips after it move along, so their edges aren't worth lining up with.)
+    const end = p.snap!.time(p.startUs + clipDuration(o) + dx * usPerPx, e, o.id, true);
+    if (p.tool === 'roll') { p.onProEdit('roll', o.id, end - (p.startUs + clipDuration(o)), 'move'); return; }
+    p.onTrimClip(o.id, o.inUs, mediaAt(o, end - p.startUs));
+  }, p.onDragEnd);
+  // Slip and slide drag the clip body.
+  const pro = useDrag((dx, _dy, e) => {
+    const o = orig.current;
+    if (p.tool === 'slip') p.onProEdit('slip', o.id, -dx * usPerPx * speedAt(o, o.inUs), 'move');
+    else p.onProEdit('slide', o.id, p.snap!.time(p.startUs + dx * usPerPx, e, o.id) - p.startUs, 'move');
   }, p.onDragEnd);
   const move = useDrag((dx) => { dragRef.current = dx; setDragX(dx); }, () => {
     const dx = dragRef.current;
@@ -282,12 +350,13 @@ function ClipBlock(p: Props & { index: number; left: number; widthPx: number; pp
 
   return (
     <div
-      className={`clip${p.selectedClipId === c.id ? ' selected' : ''}${dragX !== null ? ' dragging' : ''}${media?.is360 ? ' is360' : ''}`}
-      style={{ left: p.left, width: Math.max(6, p.widthPx), zIndex: p.index + 1, transform: dragX !== null ? `translateX(${dragX}px)` : undefined, ...(media?.thumbnail ? ({ '--thumb': `url(${media.thumbnail})` } as React.CSSProperties) : {}) }}
+      className={`clip${p.selectedClipId === c.id ? ' selected' : ''}${dragX !== null ? ' dragging' : ''}${media?.is360 ? ' is360' : ''}${media ? '' : ' offline'}`}
+      style={{ left: p.left, width: Math.max(6, p.widthPx), zIndex: p.index + 1, transform: dragX !== null ? `translateX(${dragX}px)` : undefined, ...(media?.thumbnail ? ({ '--thumb': `url(${media.thumbnail})` } as CSSProperties) : {}) }}
       onPointerDown={(e) => {
         if (e.button !== 0 || e.ctrlKey) return;
         orig.current = c;
         p.onSelectClip(c.id);
+        if (p.tool === 'slip' || p.tool === 'slide') { p.onProEdit(p.tool, c.id, 0, 'start'); pro(e); return; }
         move(e);
       }}
       onContextMenu={(e) => {
@@ -309,6 +378,7 @@ function ClipBlock(p: Props & { index: number; left: number; widthPx: number; pp
       {p.jumpMarks && media?.telemetry.hasAccel && <JumpMarks clip={c} media={media} pps={p.pps} startUs={p.startUs} onSeek={p.onSeek} />}
       {(p.speedLines || hasRamp(c)) && (
         <SpeedLine
+          snapLocal={(l, e) => p.snap!.time(p.startUs + l, e, c.id, true) - p.startUs}
           clip={c}
           pps={p.pps}
           width={Math.max(6, p.widthPx)}
@@ -334,8 +404,8 @@ function ClipBlock(p: Props & { index: number; left: number; widthPx: number; pp
           onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); p.onKeyframeMenu(c.id, k.id, e.clientX, e.clientY); }}
         />
       ))}
-      <div className="trim left" onPointerDown={(e) => { orig.current = c; p.onSelectClip(c.id); trimLeft(e); }} />
-      <div className="trim right" onPointerDown={(e) => { orig.current = c; p.onSelectClip(c.id); trimRight(e); }} />
+      <div className="trim left" onPointerDown={(e) => { orig.current = c; p.onSelectClip(c.id); if (p.tool === 'roll' && prevId) p.onProEdit('roll', prevId, 0, 'start'); trimLeft(e); }} />
+      <div className="trim right" onPointerDown={(e) => { orig.current = c; p.onSelectClip(c.id); if (p.tool === 'roll') p.onProEdit('roll', c.id, 0, 'start'); trimRight(e); }} />
     </div>
   );
 }
@@ -398,19 +468,20 @@ function OverlayBlock(p: Props & { o: Overlay; lane: number; left: number; width
   const orig = useRef(o);
   const usPerPx = 1e6 / p.pps;
   const min = 200_000;
-  const move = useDrag((dx) => {
+  const move = useDrag((dx, _dy, e) => {
     const v = orig.current;
     const len = v.endUs - v.startUs;
-    const s = Math.max(0, Math.min(p.duration - len, v.startUs + dx * usPerPx));
+    const s0 = p.snap!.span(v.startUs + dx * usPerPx, v.endUs + dx * usPerPx, e, v.id);
+    const s = Math.max(0, Math.min(p.duration - len, s0));
     p.onMoveOverlay(v.id, s, s + len);
   }, p.onDragEnd);
-  const trimLeft = useDrag((dx) => {
+  const trimLeft = useDrag((dx, _dy, e) => {
     const v = orig.current;
-    p.onMoveOverlay(v.id, Math.max(0, Math.min(v.endUs - min, v.startUs + dx * usPerPx)), v.endUs);
+    p.onMoveOverlay(v.id, Math.max(0, Math.min(v.endUs - min, p.snap!.time(v.startUs + dx * usPerPx, e, v.id))), v.endUs);
   }, p.onDragEnd);
-  const trimRight = useDrag((dx) => {
+  const trimRight = useDrag((dx, _dy, e) => {
     const v = orig.current;
-    p.onMoveOverlay(v.id, v.startUs, Math.min(p.duration, Math.max(v.startUs + min, v.endUs + dx * usPerPx)));
+    p.onMoveOverlay(v.id, v.startUs, Math.min(p.duration, Math.max(v.startUs + min, p.snap!.time(v.endUs + dx * usPerPx, e, v.id))));
   }, p.onDragEnd);
   const selected = p.selection?.kind === 'overlay' && p.selection.id === o.id;
   const name = o.kind === 'text' ? o.text.split('\n')[0] || 'Text' : GAUGES.find(([k]) => k === o.kind)?.[1] ?? o.kind;
@@ -434,29 +505,89 @@ function AudioBlock(p: Props & { id: string; lane: number; left: number; widthPx
   const orig = useRef(a);
   const usPerPx = 1e6 / p.pps;
   const max = music?.durationUs ?? a.outUs;
-  const move = useDrag((dx) => {
+  const move = useDrag((dx, _dy, e) => {
     const o = orig.current;
-    p.onMoveAudio(o.id, Math.max(0, o.startUs + dx * usPerPx), o.inUs, o.outUs);
+    const len = localAt(o, o.outUs);
+    p.onMoveAudio(o.id, Math.max(0, p.snap!.span(o.startUs + dx * usPerPx, o.startUs + len + dx * usPerPx, e, o.id)), o.inUs, o.outUs);
   }, p.onDragEnd);
-  const trimLeft = useDrag((dx) => {
+  const trimLeft = useDrag((dx, _dy, e) => {
     const o = orig.current;
-    const d = Math.max(localAt(o, 0), Math.min(dx * usPerPx, localAt(o, o.outUs) - 500_000));
+    const want = p.snap!.time(o.startUs + dx * usPerPx, e, o.id) - o.startUs;
+    const d = Math.max(localAt(o, 0), Math.min(want, localAt(o, o.outUs) - 500_000));
     p.onMoveAudio(o.id, Math.max(0, o.startUs + d), Math.max(0, mediaAt(o, d)), o.outUs);
   }, p.onDragEnd);
-  const trimRight = useDrag((dx) => {
+  const trimRight = useDrag((dx, _dy, e) => {
     const o = orig.current;
-    p.onMoveAudio(o.id, o.startUs, o.inUs, Math.max(o.inUs + 500_000, Math.min(max, mediaAt(o, localAt(o, o.outUs) + dx * usPerPx))));
+    const end = p.snap!.time(o.startUs + localAt(o, o.outUs) + dx * usPerPx, e, o.id) - o.startUs;
+    p.onMoveAudio(o.id, o.startUs, o.inUs, Math.max(o.inUs + 500_000, Math.min(max, mediaAt(o, end))));
   }, p.onDragEnd);
+  // The music's beats, as ticks (bars taller); only when they're far enough apart to read.
+  const grid = !a.linkedClipId ? beatsOf(a.path) : null;
+  const ticks: { x: number; bar: boolean }[] = [];
+  if (grid) {
+    const bars = new Set(grid.downbeats);
+    const spacing = (60 / Math.max(1, grid.bpm)) * p.pps;
+    grid.beats.forEach((b, k) => {
+      const m = b * 1e6;
+      if (m < a.inUs || m > a.outUs || (spacing < 6 && !bars.has(k))) return;
+      ticks.push({ x: (localAt(a, m) / 1e6) * p.pps, bar: bars.has(k) });
+    });
+  }
   const selected = p.selection?.kind === 'audio' && p.selection.id === a.id;
   return (
     <div
       className={`music${a.linkedClipId ? ' linked' : ''}${selected ? ' selected' : ''}`}
       style={{ left: p.left, width: p.widthPx, top: p.lane * LANE + 2, height: LANE - 3 }}
       onPointerDown={(e) => { orig.current = a; p.onSelect({ kind: 'audio', id: a.id }); move(e); }}
+      title={grid ? `${baseName(a.path)} · ${Math.round(grid.bpm)} BPM` : undefined}
     >
+      {ticks.length > 0 && <div className="beat-ticks" aria-hidden>{ticks.map((t, i) => <i key={i} className={t.bar ? 'bar' : ''} style={{ left: t.x }} />)}</div>}
       <Icon name={a.linkedClipId ? 'detach' : 'music'} size={12} /><span>{baseName(a.path)}</span>
       <div className="trim left" onPointerDown={(e) => { orig.current = a; p.onSelect({ kind: 'audio', id: a.id }); trimLeft(e); }} />
       <div className="trim right" onPointerDown={(e) => { orig.current = a; p.onSelect({ kind: 'audio', id: a.id }); trimRight(e); }} />
     </div>
+  );
+}
+
+/** A marker on the ruler: drag to move, click to go there, double-click to write its note. */
+function MarkerFlag(p: Props & { m: Marker; x: number; usPerPx: number; duration: number }) {
+  const { m } = p;
+  const orig = useRef(m.t);
+  const moved = useRef(false);
+  const [editing, setEditing] = useState(false);
+  const drag = useDrag((dx, _dy, e) => {
+    if (Math.abs(dx) > 2) moved.current = true;
+    if (moved.current) p.onMarker(m.id, { t: Math.max(0, Math.min(p.duration, p.snap!.time(orig.current + dx * p.usPerPx, e, m.id))) });
+  }, () => { if (!moved.current) p.onSeek(m.t); p.onDragEnd(); });
+  return (
+    <>
+      <button
+        className="marker-flag"
+        style={{ left: p.x, '--mk': MARKER_HEX[m.color] } as CSSProperties}
+        title={`${m.note || 'Marker'} · ${fmtTime(m.t)} (double-click to edit)`}
+        aria-label={`Marker at ${fmtTime(m.t)}${m.note ? `: ${m.note}` : ''}`}
+        onPointerDown={(e) => { orig.current = m.t; moved.current = false; drag(e); }}
+        onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); }}
+      />
+      {editing && (
+        <div className="marker-pop" style={{ left: p.x }} onPointerDown={(e) => e.stopPropagation()}>
+          <input
+            autoFocus
+            value={m.note}
+            placeholder="Note"
+            aria-label="Marker note"
+            onChange={(e) => p.onMarker(m.id, { note: e.target.value })}
+            onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter' || e.key === 'Escape') setEditing(false); }}
+            onBlur={(e) => { if (!e.currentTarget.parentElement?.contains(e.relatedTarget as Node)) setEditing(false); }}
+          />
+          <div className="marker-swatches">
+            {(Object.keys(MARKER_HEX) as MarkerColor[]).map((c) => (
+              <button key={c} className={c === m.color ? 'on' : ''} style={{ background: MARKER_HEX[c] }} aria-label={c} onClick={() => p.onMarker(m.id, { color: c })} />
+            ))}
+            <button className="marker-pop-del" title="Delete marker" aria-label="Delete marker" onClick={() => { setEditing(false); p.onRemoveMarker(m.id); }}><Icon name="trash" size={12} /></button>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

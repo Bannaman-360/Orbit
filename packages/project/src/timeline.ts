@@ -7,7 +7,7 @@
 import type { Keyframe } from './keyframes';
 import { DEFAULT_LOOK, NEUTRAL_GRADE, NO_EFFECTS, type Look } from './look';
 import { fixOverlay, type Overlay } from './overlays';
-import { fixSpeedKeys, localAt, mediaAt, playLength, type SpeedKey } from './speed';
+import { fixSpeedKeys, localAt, mediaAt, playLength, speedAt, type SpeedKey } from './speed';
 import type { ClipTrack } from './track';
 import type { LensLook } from './lensLook';
 
@@ -141,8 +141,22 @@ export interface AudioClip {
   linkedClipId?: string;
 }
 
+/** A note at a point in time (M key). Colours are a small fixed set, like Finder tags. */
+export interface Marker {
+  id: string;
+  /** Timeline time, µs. */
+  t: number;
+  note: string;
+  color: MarkerColor;
+}
+export type MarkerColor = 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray';
+export const MARKER_COLORS: MarkerColor[] = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'];
+
+/** Project format version written by this app. Older ones are upgraded by `loadTimeline`. */
+export const TIMELINE_VERSION = 2;
+
 export interface Timeline {
-  version: 1;
+  version: typeof TIMELINE_VERSION;
   clips: TimelineClip[];
   audio: AudioClip[];
   framing: string;
@@ -150,6 +164,8 @@ export interface Timeline {
   lutPath: string | null;
   /** Text and telemetry overlays drawn on top of the video. */
   overlays: Overlay[];
+  /** Notes at points in time. */
+  markers: Marker[];
 }
 
 export const MIN_CLIP_US = 100_000;
@@ -157,7 +173,7 @@ export const MIN_CLIP_US = 100_000;
 let counter = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(counter++).toString(36)}`;
 
-export const emptyTimeline = (): Timeline => ({ version: 1, clips: [], audio: [], framing: '16:9', lutPath: null, overlays: [] });
+export const emptyTimeline = (): Timeline => ({ version: TIMELINE_VERSION, clips: [], audio: [], framing: '16:9', lutPath: null, overlays: [], markers: [] });
 
 export function newClip(mediaPath: string, durationUs: number, is360: boolean): TimelineClip {
   return {
@@ -288,6 +304,8 @@ export function rippleItems(before: Timeline, after: Timeline, clipId: string): 
       return st === o.startUs && en === o.endUs ? o : { ...o, startUs: Math.min(st, Math.max(0, total - MIN)), endUs: Math.min(en, Math.max(total, st + MIN)) };
     }),
     audio: after.audio.map((x) => (x.linkedClipId && x.linkedClipId !== clipId && x.startUs >= e0 ? { ...x, startUs: move(x.startUs) } : x)),
+    // Markers stay on the picture they mark.
+    markers: after.markers.map((m) => { const t = Math.max(0, Math.round(move(m.t))); return t === m.t ? m : { ...m, t }; }),
   };
 }
 
@@ -414,7 +432,8 @@ export function loadTimeline(raw: unknown): Timeline {
   return {
     ...base,
     ...p,
-    version: 1,
+    // Version 1 (before markers) has nothing to convert: missing parts get their defaults.
+    version: TIMELINE_VERSION,
     clips: (p.clips ?? []).map((c) => ({
       ...newClip(c.mediaPath, c.outUs ?? 0, true),
       ...c,
@@ -425,5 +444,156 @@ export function loadTimeline(raw: unknown): Timeline {
     })),
     audio: (p.audio ?? []).map((a) => ({ ...newAudioClip(a.path, a.outUs ?? 0), ...a, ...(a.speedKeys ? { speedKeys: fixSpeedKeys(a.speedKeys) } : {}) })),
     overlays: (p.overlays ?? []).map(fixOverlay),
+    markers: (p.markers ?? []).filter((m) => m && Number.isFinite(m.t)).map((m) => ({ id: m.id || newId('m'), t: Math.max(0, m.t), note: String(m.note ?? ''), color: MARKER_COLORS.includes(m.color) ? m.color : 'blue' })).sort((a, b) => a.t - b.t),
   };
+}
+
+// --- Pro trims -----------------------------------------------------------------
+// The main row is magnetic, so a plain trim is always a ripple. These keep the length of the
+// edit (roll, slip) or of the clip (slip, slide) instead. Times in µs; `dur` gives each file's
+// length so nothing runs past the end of its media.
+
+/** Media time `d` of timeline time away from `mediaUs` (before the in point too). */
+function mediaShift(c: TimelineClip, d: number): number {
+  return d >= 0 ? mediaAt(c, d) : c.inUs + d * speedAt(c, c.inUs);
+}
+
+/**
+ * Moves the cut after clip `leftId` by `d` (timeline µs): the clip before it gets longer, the one
+ * after shorter, or the other way round. The edit keeps its length. Returns the new timeline and
+ * how far the cut actually moved (limited by the media either side has).
+ */
+export function rollCut(tl: Timeline, leftId: string, d: number, dur: (path: string) => number): { tl: Timeline; moved: number } {
+  const i = tl.clips.findIndex((c) => c.id === leftId);
+  const a = tl.clips[i], b = tl.clips[i + 1];
+  if (!a || !b) return { tl, moved: 0 };
+  const lenA = playLength(a), lenB = playLength(b);
+  // How far it can go: the left clip has media up to its file's end, the right one back to 0.
+  const maxRight = Math.min(localAt(a, dur(a.mediaPath)) - lenA, lenB - MIN_CLIP_US);
+  const maxLeft = Math.min(lenA - MIN_CLIP_US, b.inUs / Math.max(1e-6, speedAt(b, b.inUs)));
+  const m = Math.max(-maxLeft, Math.min(maxRight, d));
+  if (Math.abs(m) < 1) return { tl, moved: 0 };
+  const out = mediaAt(a, lenA + m);
+  const inn = mediaShift(b, m);
+  const clips = [...tl.clips];
+  clips[i] = { ...a, outUs: Math.round(out) };
+  clips[i + 1] = { ...b, inUs: Math.round(Math.max(0, inn)) };
+  return { tl: { ...tl, clips }, moved: m };
+}
+
+/**
+ * Shows a different part of the same clip: in and out move together by `d` (media µs), so the
+ * clip keeps its place and length. Keyframes and tracking stay on the picture they belong to;
+ * a speed ramp stays where it is in the clip.
+ */
+export function slipClip(tl: Timeline, id: string, d: number, dur: (path: string) => number): Timeline {
+  return replaceClip(tl, id, (c) => {
+    const m = Math.max(-c.inUs, Math.min(dur(c.mediaPath) - c.outUs, d));
+    if (!m) return c;
+    return { ...c, inUs: c.inUs + m, outUs: c.outUs + m, ...(c.speedKeys ? { speedKeys: c.speedKeys.map((k) => ({ ...k, t: k.t + m })) } : {}) };
+  });
+}
+
+/**
+ * Moves a clip along the row by `d` (timeline µs) without changing it: the clip before gets
+ * longer and the one after shorter (or the reverse). The edit keeps its length.
+ */
+export function slideClip(tl: Timeline, id: string, d: number, dur: (path: string) => number): Timeline {
+  const i = tl.clips.findIndex((c) => c.id === id);
+  const prev = tl.clips[i - 1], next = tl.clips[i + 1];
+  if (i < 0 || !prev) return tl;
+  // The clip before has media up to its file's end, and can't get shorter than the minimum…
+  const lenP = playLength(prev);
+  let lo = -(lenP - MIN_CLIP_US), hi = localAt(prev, dur(prev.mediaPath)) - lenP;
+  // …and the clip after starts later (shorter) or earlier (needs media before its in point).
+  if (next) {
+    hi = Math.min(hi, playLength(next) - MIN_CLIP_US);
+    lo = Math.max(lo, -next.inUs / Math.max(1e-6, speedAt(next, next.inUs)));
+  }
+  const m = Math.max(lo, Math.min(hi, d));
+  if (Math.abs(m) < 1) return tl;
+  return {
+    ...tl,
+    clips: tl.clips.map((c, k) => {
+      if (k === i - 1) return { ...c, outUs: Math.round(mediaAt(c, lenP + m)) };
+      if (k === i + 1) return { ...c, inUs: Math.round(Math.max(0, mediaShift(c, m))) };
+      return c;
+    }),
+  };
+}
+
+// --- Three-point editing -------------------------------------------------------
+
+/** Where on the main row a clip placed at T goes (cutting the clip under T in two first). */
+function cutAt(tl: Timeline, T: number): { tl: Timeline; index: number } {
+  const total = timelineDuration(tl);
+  if (T >= total - 1) return { tl, index: tl.clips.length };
+  const cut = splitAt(tl, T);
+  const starts = clipStarts(cut);
+  let index = starts.findIndex((s) => s >= T - 1000);
+  if (index < 0) index = cut.clips.length;
+  return { tl: cut, index };
+}
+
+/**
+ * Insert: the clip goes in at T and everything after moves later to make room (titles, gauges,
+ * markers and a clip's own sound move with their pictures; music stays).
+ */
+export function insertClipAt(tl: Timeline, clip: TimelineClip, T: number): Timeline {
+  const { tl: cut, index } = cutAt(tl, T);
+  const len = playLength(clip);
+  const after = (t: number) => (t >= T - 1000 ? t + len : t);
+  return {
+    ...addClip(cut, clip, index),
+    overlays: cut.overlays.map((o) => (o.startUs >= T - 1000 ? { ...o, startUs: o.startUs + len, endUs: o.endUs + len } : o)),
+    markers: cut.markers.map((m) => ({ ...m, t: after(m.t) })),
+    audio: cut.audio.map((a) => (a.linkedClipId && a.startUs >= T - 1000 ? { ...a, startUs: a.startUs + len } : a)),
+  };
+}
+
+/** Overwrite: the clip replaces whatever is on the main row from T for its length. */
+export function overwriteClipAt(tl: Timeline, clip: TimelineClip, T: number): Timeline {
+  const len = playLength(clip);
+  const first = cutAt(tl, T);
+  const second = cutAt(first.tl, T + len);
+  // The clips between the two cuts are covered by the new one.
+  const keep = second.tl.clips.filter((_, i) => i < first.index || i >= second.index);
+  const removed = new Set(second.tl.clips.filter((_, i) => i >= first.index && i < second.index).map((c) => c.id));
+  const clips = [...keep.slice(0, first.index), clip, ...keep.slice(first.index)];
+  return { ...second.tl, clips, audio: second.tl.audio.filter((a) => !a.linkedClipId || !removed.has(a.linkedClipId)) };
+}
+
+// --- Markers ------------------------------------------------------------------
+
+export function addMarker(tl: Timeline, t: number, note = '', color: MarkerColor = 'blue'): { tl: Timeline; id: string } {
+  const id = newId('m');
+  return { tl: { ...tl, markers: [...tl.markers, { id, t: Math.max(0, Math.round(t)), note, color }].sort((a, b) => a.t - b.t) }, id };
+}
+export const updateMarker = (tl: Timeline, id: string, patch: Partial<Omit<Marker, 'id'>>): Timeline => ({
+  ...tl,
+  markers: tl.markers.map((m) => (m.id === id ? { ...m, ...patch, t: Math.max(0, Math.round(patch.t ?? m.t)) } : m)).sort((a, b) => a.t - b.t),
+});
+export const removeMarker = (tl: Timeline, id: string): Timeline => ({ ...tl, markers: tl.markers.filter((m) => m.id !== id) });
+/** The marker nearest to t within `withinUs`, if any. */
+export function markerNear(tl: Timeline, t: number, withinUs: number): Marker | undefined {
+  let best: Marker | undefined;
+  for (const m of tl.markers) if (Math.abs(m.t - t) <= withinUs && (!best || Math.abs(m.t - t) < Math.abs(best.t - t))) best = m;
+  return best;
+}
+/**
+ * YouTube chapters from the markers: "0:00 Intro" lines. YouTube needs the first at 0:00, at
+ * least three, each 10 s or longer; the result says which rule isn't met.
+ */
+export function youtubeChapters(tl: Timeline): { text: string; problem?: string } {
+  const fmt = (us: number) => {
+    const s = Math.floor(us / 1e6), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+    return h ? `${h}:${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}` : `${m}:${String(r).padStart(2, '0')}`;
+  };
+  const list = [...tl.markers].sort((a, b) => a.t - b.t);
+  const rows = list.map((m, i) => `${fmt(m.t)} ${m.note.split('\n')[0]?.trim() || `Chapter ${i + 1}`}`);
+  let problem: string | undefined;
+  if (!list.length || list[0]!.t >= 1e6) problem = 'YouTube needs the first chapter at 0:00: add a marker at the start.';
+  else if (list.length < 3) problem = 'YouTube needs at least three chapters.';
+  else if (list.some((m, i) => i > 0 && m.t - list[i - 1]!.t < 10e6)) problem = 'YouTube needs chapters at least 10 seconds apart.';
+  return { text: rows.join('\n'), problem };
 }

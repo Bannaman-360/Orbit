@@ -38,6 +38,7 @@ Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:
 
 ## Rules
 - **Tests run hidden.** Never use `--selftest-show` or anything that takes the user's screen, focus or sound.
+- **Work on your own:** do as much as possible without the user. Claude may commit, push, open and merge its own pull requests, start workflows and release without asking; ask only when something truly needs the user (their Mac, a purchase, a decision about the product).
 - **Commits:** Claude may commit without asking. All commits must use the user's GitHub no-reply email (`360384248+Bannaman-360@users.noreply.github.com`), never their personal one. The remote is `github.com/Bannaman-360/Orbit`.
 - **Ask before every download:** packages, runtimes, ffmpeg builds, tools via `npx`.
 - **Licensing:** ffmpeg must stay LGPL; never add x264/x265 or other GPL parts. The app is unsigned for now.

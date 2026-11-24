@@ -59,7 +59,8 @@ export function setupProjects(o: { allowMedia: (text: string) => void; chosen: (
       // Projects deleted or moved outside the app drop off the list.
       if (!s?.isFile()) { if (p in idx) { delete idx[p]; changed = true; } continue; }
       const m = idx[p] ?? {};
-      out.push({ path: p, name: path.basename(p, path.extname(p)), modified: s.mtimeMs, inLibrary: inLibrary(p), thumb: m.thumb, clips: m.clips, durationUs: m.durationUs });
+      // (Thumbnails saved by beta 3 were blob: addresses, which don't outlast the app: left out.)
+      out.push({ path: p, name: path.basename(p, path.extname(p)), modified: s.mtimeMs, inLibrary: inLibrary(p), thumb: m.thumb?.startsWith('data:image/') ? m.thumb : undefined, clips: m.clips, durationUs: m.durationUs });
     }
     if (changed) await persist().catch(() => {});
     return out.sort((a, b) => b.modified - a.modified);

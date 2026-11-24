@@ -57,8 +57,8 @@ are in the app's `Resources` folder.
 - **Signing** (no warnings on first launch): see the top of `apps/desktop/electron-builder.yml`.
   Mac needs an Apple Developer ID ($99/year); Windows a code-signing certificate.
 - **Automatic updates** are built in (`apps/desktop/src/main/updater.ts`): the app reads GitHub
-  Releases; the Installers workflow publishes each release once both installers have built, which sends it to everyone. It downloads the
-  zipped Mac app or the Windows installer, checks it against the release's `checksums.txt`, and
+  Releases. The Installers workflow publishes each release with the Windows files, and `scripts/release-mac.sh`, run on a Mac, adds the Mac half; each platform's apps update once their half (and its `checksums-mac.txt` / `checksums-windows.txt`) is there. It downloads the
+  zipped Mac app or the Windows installer, checks it against the release's checksums, and
   installs on Restart. Testers on a beta get betas; people on a finished version only get
   finished ones. Once the app is signed, `electron-updater` could take over (Squirrel.Mac needs
   a signed app).

@@ -33,7 +33,7 @@ Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:
     - ride data and export: `gauges`, `airtime`, `export`, `tenbitexport`, `rider`
   - A full regression runs all of them and takes about 40 minutes. Timing checks (`gauges`, `scrubback`) can fail once when the machine is busy: rerun before treating it as a bug.
 - Installers: `pnpm --filter action-cam-editor dist:mac`. This builds Apple Silicon and Intel dmgs into `apps/desktop/release/`. Windows is built by `.github/workflows/installers.yml`.
-- Releasing: set the version in `apps/desktop/package.json`, give `CHANGELOG.md` a heading with it, then run Actions → Installers → Run workflow on main (Claude can start it with the GitHub tools). It tags main with the version, builds, and publishes the release, which sends the update to every installed app (`src/main/updater.ts`). Pushing a tag `v<version>` does the same; this session can't push tags.
+- Releasing: set the version in `apps/desktop/package.json`, give `CHANGELOG.md` a heading with it, then run Actions → Installers → Run workflow on main (Claude can start it with the GitHub tools): it tags main, builds Windows and publishes the release. Then, on the Mac: `git fetch origin --tags && git checkout v<version> && scripts/release-mac.sh` builds the Mac half, checks the app starts, and adds it to the release (GitHub's Mac machines often never start, so the Mac half is built locally). Each platform's installed apps update once their half is in the release (`src/main/updater.ts`).
 - Packaged self-test: run `<App>.app/Contents/MacOS/Action Cam Editor --selftest --selftest-mode=<mode>` with `ACE_REPO_ROOT` set to this repo.
 
 ## Rules

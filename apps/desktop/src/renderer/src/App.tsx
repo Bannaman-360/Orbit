@@ -9,7 +9,8 @@ import {
   COMFORT_FOV, fitSubjectFrac, fracForFov, moveKeyframe, trackWeight, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, setTrackRange, trackActive, trackExtent, trackHeld, trackRange,
   type ClipTrack, type Easing, type GaugeDesign, type GaugeKind, type Grade, type Look, type Overlay, type Timeline, type TimelineClip, type Transition,
 } from '@ace/project';
-import { ace, baseName, type FoundMedia } from './api';
+import { ace, baseName, type FoundMedia, type ProjectMeta } from './api';
+import { NameSheet, ProjectsPage } from './Projects';
 import { AudioPlayer } from './audioEngine';
 import { hasTwoLenses, lensUi, matchClipLenses, setLensUi } from './lensMatching';
 import { cardOf, running, startCards, useCards } from './cardImport';
@@ -30,7 +31,7 @@ import { TimelinePlayer, type TickResult } from './timelinePlayer';
 import { TimelineView } from './TimelineView';
 import { fmtTime, openSection, Range, toggleAllSections } from './ui';
 import { Bar, dragItem, type ToolItem } from './ui/Bars';
-import { comboLabel, comboOf, combosOf, COMMANDS, keyOf, KeyMatcher } from './ui/commands';
+import { comboFromEvent, comboLabel, comboOf, combosOf, commandFor, COMMANDS, keyOf, KeyMatcher } from './ui/commands';
 import { ArrangeBar, Customize, reopenPanel, type CustomizePage } from './ui/Customize';
 import { Tour, Welcome } from './Tour';
 import { ReportProblem } from './ReportProblem';
@@ -828,14 +829,111 @@ export function App() {
     else if (newer) setNotice('This project was saved by a newer version of the app. It opened, but what that version added (such as markers, ratings and folders) isn’t shown here.');
   }, [importPaths, player]);
 
-  const saveText = () => JSON.stringify({ version: 1, timeline: tlRef.current, library: binRef.current.map((b) => b.path) } satisfies SaveFile);
+  const saveObject = (): SaveFile => ({ version: 1, timeline: tlRef.current, library: binRef.current.map((b) => b.path) });
+  const saveText = () => JSON.stringify(saveObject());
 
-  // Autosave.
+  // --- Projects ----------------------------------------------------------------------------------
+  // Once an edit is saved as a project, changes go into that file as you go (with the autosave).
+  /** The project file this edit is saved in (null: not saved as a project yet). */
+  const [projectPath, setProjectPath] = useState<string | null>(null);
+  const projectRef = useRef<string | null>(null);
+  /** What was last written to the project file. */
+  const lastSaved = useRef<string | null>(null);
+  /** Saving to the project file failed: stop trying until the user saves again. */
+  const saveFailed = useRef(false);
+  const bindProject = (p: string | null, saved: string | null) => {
+    projectRef.current = p;
+    setProjectPath(p);
+    lastSaved.current = saved;
+    saveFailed.current = false;
+  };
+  const projectName = projectPath ? baseName(projectPath).replace(/\.acproj$/i, '') : null;
+  const [projectsOpen, setProjectsOpen] = useState(false);
+  const [naming, setNaming] = useState(false);
+  const defaultProjectName = () => `Ride ${new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`;
+  /** For the Projects page: a picture, how many clips and how long. */
+  const projectMeta = (): ProjectMeta => {
+    const t = tlRef.current;
+    const first = t.clips[0]?.mediaPath ?? binRef.current.find((b) => b.media)?.path;
+    return { thumb: first ? mediaNow(first)?.thumbnail ?? binRef.current.find((b) => b.path === first)?.media?.thumbnail : undefined, clips: t.clips.length, durationUs: timelineDuration(t) };
+  };
+  /** Writes the edit to a project file (`path`), or to a new one called `name` in Projects. */
+  const writeProject = async (o: { path?: string; name?: string }) => {
+    const text = saveText();
+    const where = await ace.projectsSave({ ...o, text, meta: projectMeta() });
+    bindProject(where, text);
+    return where;
+  };
+  /** A message that goes away by itself. */
+  const flash = (msg: string) => {
+    setNotice(msg);
+    setTimeout(() => setNotice((n) => (n === msg ? null : n)), 2500);
+  };
+  const isEmpty = () => { const t = tlRef.current; return !t.clips.length && !t.audio.length && !t.overlays.length; };
+  /** Before leaving this edit: save it, or keep it in Projects if it was never saved. False if that failed. */
+  const keepCurrent = async (): Promise<boolean> => {
+    try {
+      const p = projectRef.current;
+      if (p) { if (saveText() !== lastSaved.current) await writeProject({ path: p }); return true; }
+      if (isEmpty()) return true;
+      const where = await writeProject({ name: defaultProjectName() });
+      setNotice(`Your last edit was kept in Projects as “${baseName(where).replace(/\.acproj$/i, '')}”.`);
+      return true;
+    } catch (e) {
+      setError(`Your edit couldn’t be saved, so it’s still open: ${e}`);
+      return false;
+    }
+  };
+  /** Swaps the edit for a project's contents and saves into that project from now on. */
+  const loadProject = async (r: { path: string; text: string }) => {
+    // (Unbound first: if opening fails half way, nothing gets written over the other project.)
+    bindProject(null, null);
+    setBusy('Opening project…');
+    try {
+      await restore(r.text);
+      bindProject(r.path, saveText());
+    } catch (e) {
+      setError(`That project couldn’t be opened: ${e}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const openProjectAt = async (path: string) => {
+    if (path === projectRef.current) { setProjectsOpen(false); return; }
+    if (!(await keepCurrent())) return;
+    setProjectsOpen(false);
+    try { await loadProject(await ace.projectsOpen(path)); } catch (e) { setError(`That project couldn’t be opened: ${e}`); }
+  };
+  const newProject = async () => {
+    if (!(await keepCurrent())) return;
+    setProjectsOpen(false);
+    bindProject(null, null);
+    await restore('{}').catch((e) => setError(String(e)));
+  };
+  /** A project was renamed or removed on the Projects page. */
+  const projectMoved = (from: string, to: string | null) => {
+    if (from !== projectRef.current) return;
+    if (to) { projectRef.current = to; setProjectPath(to); } else bindProject(null, null);
+  };
+  const saveNamed = async (name: string) => {
+    setNaming(false);
+    try { await writeProject({ name }); flash(`Saved to Projects.`); } catch (e) { setError(`The project couldn’t be saved: ${e}`); }
+  };
+
+  // Autosave: the session (so the app reopens where you left off) and the open project's file.
   const [selftest, setSelftest] = useState(false);
   const restored = useRef(false);
   useEffect(() => {
     if (!restored.current || selftest) return;
-    const id = setTimeout(() => void ace.autosaveSave(saveText()), 800);
+    const id = setTimeout(() => {
+      const text = saveText(), p = projectRef.current;
+      void ace.autosaveSave(JSON.stringify({ ...saveObject(), project: p ?? undefined }));
+      if (!p || text === lastSaved.current || saveFailed.current) return;
+      void ace.projectsSave({ path: p, text, meta: projectMeta() }).then(
+        () => { if (projectRef.current === p) lastSaved.current = text; },
+        (e) => { saveFailed.current = true; setError(`Changes to “${baseName(p).replace(/\.acproj$/i, '')}” couldn’t be saved: ${e}. Use Save project as to save it somewhere else.`); },
+      );
+    }, 800);
     return () => clearTimeout(id);
   });
 
@@ -865,7 +963,12 @@ export function App() {
       }
       const text = await ace.autosaveLoad();
       // A last session that can't be opened is kept aside, so the app always starts.
-      if (text) await restore(text).catch(async (e) => { ace.logError('restore', String(e)); await ace.autosaveAside(); setError('Your last session couldn’t be opened, so the app started fresh. It was kept, not deleted.'); });
+      if (text) {
+        const ok = await restore(text).then(() => true, async (e) => { ace.logError('restore', String(e)); await ace.autosaveAside(); setError('Your last session couldn’t be opened, so the app started fresh. It was kept, not deleted.'); return false; });
+        // Carry on saving into the project that was open (if it's still there).
+        const p = ok ? (JSON.parse(text) as { project?: unknown }).project : undefined;
+        if (typeof p === 'string' && (await ace.projectsList().catch(() => [])).some((x) => x.path === p)) bindProject(p, saveText());
+      }
       restored.current = true;
     });
   }, [commit, importPaths, player, restore]);
@@ -873,12 +976,22 @@ export function App() {
   const openProject = async () => {
     const r = await ace.openProjectDialog();
     if (!r) return;
-    setBusy('Opening project…');
-    try { await restore(r.text); } catch (e) { setError(String(e)); } finally { setBusy(null); }
+    if (r.path === projectRef.current) return;
+    if (!(await keepCurrent())) return;
+    setProjectsOpen(false);
+    await loadProject(r);
   };
+  /** Saves into the open project; the first time, asks for a name and puts it in Projects. */
   const saveProject = async () => {
-    const path = await ace.saveDialog('project', 'My edit.acproj');
-    if (path) await ace.writeFile(path, saveText());
+    const p = projectRef.current;
+    if (!p) { setNaming(true); return; }
+    try { await writeProject({ path: p }); flash('Saved.'); } catch (e) { setError(`The project couldn’t be saved: ${e}. Use Save project as to save it somewhere else.`); }
+  };
+  /** Saves wherever the user chooses, and keeps saving there. */
+  const saveProjectAs = async () => {
+    const path = await ace.saveDialog('project', `${projectName ?? defaultProjectName()}.acproj`);
+    if (!path) return;
+    try { await writeProject({ path }); flash('Saved.'); } catch (e) { setError(`The project couldn’t be saved: ${e}`); }
   };
   const importDialog = async () => importFound(await ace.openMediaDialog());
   /**
@@ -907,9 +1020,11 @@ export function App() {
   // Opened with the app from Finder / Explorer.
   const restoreRef = useRef(restore);
   restoreRef.current = restore;
+  const openedRef = useRef(async (_p: { path: string; text: string }) => {});
+  openedRef.current = async (p) => { if (p.path !== projectRef.current && (await keepCurrent())) { setProjectsOpen(false); await loadProject(p); } };
   useEffect(() => {
     ace.onOpenMedia((f) => { setWelcome(false); void importFoundRef.current(f); });
-    ace.onOpenProject((p) => { setWelcome(false); setBusy('Opening project…'); void restoreRef.current(p.text).catch((e) => setError(String(e))).finally(() => setBusy(null)); });
+    ace.onOpenProject((p) => { setWelcome(false); void openedRef.current(p); });
   }, []);
   // --- Files dragged in from the desktop ---------------------------------------------------------
   const [dropZone, setDropZone] = useState<null | 'app' | 'timeline'>(null);
@@ -1042,9 +1157,9 @@ export function App() {
     play: togglePlay, prevFrame: () => step(-1), nextFrame: () => step(1), back10: () => step(-10), fwd10: () => step(10), start: () => seek(0), end: () => seek(timelineDuration(tlRef.current)), fullscreen: () => { if (tlRef.current.clips.length) toggleFullscreen(); },
     split, delLeft: () => deleteSide('left'), delRight: () => deleteSide('right'), keyframe: addKeyframe, delKey: deleteKeyframe, prevKey: () => jumpKey(-1), nextKey: () => jumpKey(1), text: addText, track: startTrackPick, detach: toggleDetach,
     duplicate: () => { if (clip) commit(duplicateClip(tlRef.current, clip.id)); }, delete: deleteCurrent, undo, redo,
-    import: () => void importDialog(), card: () => setCardOpen(true), music: () => void addMusic(), open: () => void openProject(), save: () => void saveProject(), export: () => { if (tlRef.current.clips.length) setExportOpen(true); }, grab: () => void frameGrab(),
+    import: () => void importDialog(), card: () => setCardOpen(true), music: () => void addMusic(), open: () => void openProject(), save: () => void saveProject(), saveAs: () => void saveProjectAs(), newProject: () => void newProject(), projects: () => { setWelcome(false); setProjectsOpen((v) => !v); }, export: () => { if (tlRef.current.clips.length) setExportOpen(true); }, grab: () => void frameGrab(),
     customize: () => setCustomize((v) => (v ? null : 'themes')), arrange: () => { setArranging(!isArranging()); setCustomize(null); }, undoUi: undoPrefs, toggleMedia: () => togglePanel(['media']),
-    toggleInspector: () => togglePanel(['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection']), toggleTimeline: () => togglePanel(['timeline']), compare: () => setCompare(true), sections: toggleAllSections, speedline: toggleSpeedLines, jumps: toggleJumpMarks, shortcuts: () => setShortcutsOpen(true), report: () => setReportOpen(true), tour: () => { setWelcome(false); setTourOpen(true); }, welcome: () => setWelcome(true),
+    toggleInspector: () => togglePanel(['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection']), toggleTimeline: () => togglePanel(['timeline']), compare: () => setCompare(true), sections: toggleAllSections, speedline: toggleSpeedLines, jumps: toggleJumpMarks, shortcuts: () => setShortcutsOpen(true), report: () => setReportOpen(true), tour: () => { setWelcome(false); setTourOpen(true); }, welcome: () => { setProjectsOpen(false); setWelcome(true); },
   };
   const runRef = useRef(run);
   runRef.current = run;
@@ -1066,7 +1181,8 @@ export function App() {
     const typing = isTextEntry(el);
     // Space is always play/pause unless you are typing. Handled before anything else so a
     // focused button, checkbox or slider never receives it.
-    if (e.code === 'Space' && !typing && !cardOpen) {
+    const sheet = projectsOpen || naming;
+    if (e.code === 'Space' && !typing && !cardOpen && !sheet) {
       e.preventDefault();
       e.stopPropagation();
       if (e.type === 'keydown' && !e.repeat) togglePlay();
@@ -1076,6 +1192,8 @@ export function App() {
     if (typing) return;
     // Behind the import window, keys must not edit the timeline.
     if (cardOpen) { if (e.key === 'Escape') setCardOpen(false); return; }
+    // (The Projects page and its sheets handle their own keys; ⌘⇧P still closes it.)
+    if (sheet) { if (commandFor(comboFromEvent(e), shortcuts) === 'projects' && !naming) { e.preventDefault(); setProjectsOpen(false); } return; }
     if (e.key === 'Escape') {
       if (isArranging()) { setArranging(false); return; }
       if (customize) { setCustomize(null); return; }
@@ -1202,6 +1320,12 @@ export function App() {
       {notice && !trackJob && <span className="notice" onClick={() => setNotice(null)} title={`${notice} (click to dismiss)`}>{notice} ✕</span>}
       {busy && <span className="busy">{busy}</span>}
       {error && <span className="error" title={error} onClick={() => setError(null)}>{error} ✕</span>}
+      {/* Which project this is, when nothing else is being said. */}
+      {!trackJob && !importing && !foundCard && !notice && !busy && !error && (projectName || has) && (
+        <button className="link project-status" title={projectName ? 'Changes are saved as you go. Click to see all projects.' : 'This edit isn’t saved as a project yet. Click to see all projects.'} onClick={() => setProjectsOpen(true)}>
+          {projectName ?? 'Not saved yet'}
+        </button>
+      )}
     </span>
   );
   // The clip's own rate; while playing, what is really being shown if that is less.
@@ -1216,8 +1340,11 @@ export function App() {
         { label: 'Import media…', hint: comboLabel(comboOf('import', shortcuts)), onClick: run.import! },
         { label: 'Import from memory card…', hint: comboLabel(comboOf('card', shortcuts)), onClick: run.card! },
         { label: 'Add music…', onClick: run.music! },
+        { label: 'Projects…', hint: comboLabel(comboOf('projects', shortcuts)), onClick: run.projects! },
+        { label: 'New project', hint: comboLabel(comboOf('newProject', shortcuts)), onClick: run.newProject! },
         { label: 'Open project…', hint: comboLabel(comboOf('open', shortcuts)), onClick: run.open! },
-        { label: 'Save project…', hint: comboLabel(comboOf('save', shortcuts)), onClick: run.save! },
+        { label: 'Save project', hint: comboLabel(comboOf('save', shortcuts)), onClick: run.save! },
+        { label: 'Save project as…', hint: comboLabel(comboOf('saveAs', shortcuts)), onClick: run.saveAs! },
         { label: 'Export video…', hint: comboLabel(comboOf('export', shortcuts)), onClick: run.export!, disabled: !has },
         'sep',
         { label: 'Customize…', hint: comboLabel(comboOf('customize', shortcuts)), onClick: () => setCustomize('themes') },
@@ -1236,6 +1363,9 @@ export function App() {
     music: cmdItem('music', 'Music', 'music'),
     open: cmdItem('open', 'Open', 'open'),
     save: cmdItem('save', 'Save', 'save'),
+    saveAs: cmdItem('saveAs', 'Save as', 'save'),
+    newProject: cmdItem('newProject', 'New', 'plus'),
+    projects: cmdItem('projects', 'Projects', 'projects', { on: projectsOpen, title: `${projectName ? `Projects — “${projectName}” is open` : 'Projects'}${key('projects')}` }),
     undo: cmdItem('undo', 'Undo', 'undo', { disabled: !hist.current.past.length }),
     redo: cmdItem('redo', 'Redo', 'redo', { disabled: !hist.current.future.length }),
     text: cmdItem('text', 'Text', 'text', { locked: noClips }),
@@ -1594,7 +1724,9 @@ export function App() {
       {cardOpen && <ImportWindow onClose={() => setCardOpen(false)} />}
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
       {reportOpen && <ReportProblem onClose={() => setReportOpen(false)} />}
-      {welcome && <Welcome name={appName} onClose={closeWelcome} onImport={run.import!} onCard={run.card!} onOpen={run.open!} onTour={() => setTourOpen(true)} />}
+      {projectsOpen && <ProjectsPage current={projectPath} onOpen={(p) => void openProjectAt(p)} onNew={() => void newProject()} onOpenOther={() => void openProject()} onMoved={projectMoved} onClose={() => setProjectsOpen(false)} />}
+      {naming && <NameSheet title="Save project" action="Save" initial={defaultProjectName()} onCancel={() => setNaming(false)} onSave={(n) => void saveNamed(n)} />}
+      {welcome && <Welcome name={appName} onClose={closeWelcome} onImport={run.import!} onCard={run.card!} onOpen={run.projects!} onTour={() => setTourOpen(true)} />}
       {tourOpen && <Tour onClose={() => setTourOpen(false)} />}
     </div>
   );

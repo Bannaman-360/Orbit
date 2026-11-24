@@ -6,7 +6,7 @@ import { effectiveLens, lensK, MIN_FISHEYE } from '@ace/media360';
 import {
   ANIMATIONS, blurLabel, FONTS, clipStarts, framingAspect, DEFAULT_CROP, DEFAULT_TRACK_EASE_S, DEFAULT_TRACK_LENS, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, mediaToTimeline, NO_EFFECTS, trackActive, trackExtent, lookAt, trackHeld, trackRange, trackWeight, GAUGES, lookPatch, GRADE_PRESETS, TEXT_PRESETS, gradeFromPreset, keyframeNear, NEUTRAL_GRADE, timelineDuration, TRANSITION_GROUPS, transitionUs,
   cleanSpeed, hasRamp, localAt, mediaAt, MAX_SPEED, MIN_SPEED, RAMP_PRESETS, rampPreset, removeSpeedKey, setSpeedEase, setSpeedKey, speedAt, speedKeyNear, speedRange,
-  fisheyeForLook,
+  fisheyeForLook, cleanXf, isIdentityXf, LAYOUT_TEMPLATES, xfOf, type Transform,
   type AudioClip, type ClipTrack, type Easing, type Effects, type GaugeDesign, type Grade, type InputChoice, type Look, type Overlay, type Smoothing, type Timeline, type TimelineClip, type Transition,
 } from '@ace/project';
 import { airtimeStats, CUSTOM_SIGMA_RANGE, DEFAULT_AIRTIME, SMOOTHING_SIGMA_S } from '@ace/telemetry';
@@ -26,6 +26,14 @@ export interface InspectorProps {
   clip: TimelineClip | null;
   clipIndex: number;
   clipCount: number;
+  /** Timeline time where the clip being edited starts. */
+  clipStartUs: number;
+  /** The clip being edited is on a track above the main row ("V2"…), or null for the main row. */
+  layerTrack: string | null;
+  /** Places what is on screen at the playhead in a layout (picture in picture, split screen…). */
+  onLayout: (id: string) => void;
+  /** Main-row or track clips on screen at the playhead (to say what a layout will place). */
+  layersHere: number;
   media: Media | null;
   mediaUs: number;
   look: Look | null;
@@ -126,7 +134,7 @@ function TrackRangeControls(p: InspectorProps & { clip: TimelineClip; track: Cli
   const { clip, track } = p;
   const r = trackRange(track), e = trackExtent(track);
   if (!r || !e) return null;
-  const start = clipStarts(p.timeline)[p.clipIndex] ?? 0;
+  const start = p.clipStartUs;
   const toT = (t: number) => mediaToTimeline(start, clip, t) / 1e6;
   const toMedia = (s: number) => mediaAt(clip, s * 1e6 - start);
   // Only the part of the path inside this (possibly trimmed) clip can be chosen.
@@ -169,7 +177,7 @@ function ClipStrip({ p, clip }: { p: InspectorProps; clip: TimelineClip }) {
     <div className="clip-title">
       <div className="clip-title-text">
         <b>{p.media?.name ?? baseName(clip.mediaPath)}</b>
-        <span className="muted">Clip {p.clipIndex + 1}/{p.clipCount} · {fmtTime(p.mediaUs)}{p.media?.is360 ? ' · 360°' : ''}</span>
+        <span className="muted">{p.layerTrack ? `${p.layerTrack} · ` : ''}Clip {p.clipIndex + 1}/{p.clipCount} · {fmtTime(p.mediaUs)}{p.media?.is360 ? ' · 360°' : ''}</span>
       </div>
       <button className="ghost" title="Close all sections (or open them all)" onClick={toggleAllSections}><Icon name="collapse" size={16} /></button>
     </div>
@@ -194,6 +202,7 @@ export function SelectionPanel(p: InspectorProps) {
   if (p.overlay) return <OverlayPanel {...p} overlay={p.overlay} />;
   if (p.transitionClip?.transitionIn) return <TransitionPanel {...p} clip={p.transitionClip} transition={p.transitionClip.transitionIn} />;
   if (p.audio) return <AudioPanel {...p} audio={p.audio} />;
+  if (p.layerTrack) return <aside className="inspector"><p className="empty-panel">This clip is on {p.layerTrack}. Edit it in Reframe, Color, Effects and Clip, like any clip.</p></aside>;
   return <aside className="inspector"><p className="empty-panel">Select a text, gauge, transition or sound to edit it here.</p></aside>;
 }
 
@@ -223,7 +232,7 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
   // What subject tracking controls at the playhead, and why it can't be changed there.
   const tr = clip.track;
   const range = tr && trackRange(tr);
-  const clipStart = clipStarts(p.timeline)[p.clipIndex] ?? 0;
+  const clipStart = p.clipStartUs;
   const when = range ? `${fmtTime(mediaToTimeline(clipStart, clip, range[0]))}–${fmtTime(mediaToTimeline(clipStart, clip, range[1]))}` : '';
   const steered = !!tr && trackWeight(tr, p.mediaUs) > 0;
   const heldNow = !!tr && trackHeld(tr, p.mediaUs);
@@ -283,7 +292,7 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
       {keyCount > 0 && <button className="link" title="Delete every keyframe in this clip" onClick={p.onClearKeyframes}>Clear {keyCount}</button>}
     </div>
   );
-  const start = clipStarts(p.timeline)[p.clipIndex] ?? 0;
+  const start = p.clipStartUs;
   const keyList = keyCount > 0 && (
     <div className="kf-list">
       {[...clip.keyframes].sort((a, b) => a.t - b.t).map((k) => (
@@ -649,6 +658,24 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
         )}
       </Section>
     ),
+    'Transform': <TransformSection p={p} look={look} keyed={keyed} />,
+    'Layout': (
+      <Section title="Layout" defaultOpen>
+        <p className="hint">Places the clips on screen at the playhead: the main row first, then V2, V3… {p.layersHere < 2 ? 'Add clips over the main row (Media ▸ layers button, E, or drag onto the row above the main row) to fill the other places.' : `${p.layersHere} clips are on screen here.`}</p>
+        <div className="layout-grid">
+          {LAYOUT_TEMPLATES.map((l) => (
+            <button key={l.id} className="layout-pick" title={l.label} aria-label={l.label} onClick={() => p.onLayout(l.id)}>
+              <svg viewBox="0 0 32 18" aria-hidden>
+                <rect x="0.5" y="0.5" width="31" height="17" rx="1.5" className="layout-frame" />
+                {l.cells.slice(0, l.id === 'full' ? 1 : undefined).map(([x, y, w, h], i) => (
+                  <rect key={i} x={x * 32 + 1} y={y * 18 + 1} width={Math.max(1, w * 32 - 2)} height={Math.max(1, h * 18 - 2)} rx="1" className={i === 0 ? 'layout-main' : 'layout-cell'} />
+                ))}
+              </svg>
+            </button>
+          ))}
+        </div>
+      </Section>
+    ),
     'Trim': (
         <Section title="Trim">
         <p className="hint">Uses {fmtTime(clip.inUs)} → {fmtTime(clip.outUs)} of {fmtTime(media?.durationUs ?? clip.outUs)}. Drag the clip’s edges on the timeline to trim, or split at the playhead.</p>
@@ -657,13 +684,43 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
           <button onClick={p.onDuplicate}>Duplicate</button>
         </div>
         <div className="row-buttons">
-          <button onClick={() => p.onMove(-1)} disabled={p.clipIndex === 0}>← Move earlier</button>
-          <button onClick={() => p.onMove(1)} disabled={p.clipIndex === p.clipCount - 1}>Move later →</button>
+          <button onClick={() => p.onMove(-1)} disabled={!!p.layerTrack || p.clipIndex === 0}>← Move earlier</button>
+          <button onClick={() => p.onMove(1)} disabled={!!p.layerTrack || p.clipIndex === p.clipCount - 1}>Move later →</button>
         </div>
         <div className="row-buttons"><button className="danger" onClick={p.onDelete}>Delete clip (⌫)</button></div>
       </Section>
     ),
   };
+}
+
+/** Where the clip sits in the frame: position, size, crop, turn, opacity, corners, border, shadow. Keyframed with the look. */
+function TransformSection({ p, look, keyed }: { p: InspectorProps; look: Look; keyed: boolean }) {
+  const xf = xfOf(look);
+  const set = (patch: Partial<Transform>, k: string) => p.onLook({ xf: cleanXf({ ...xf, ...patch }) }, `xf-${k}`);
+  const pct = (v: number) => `${Math.round(v * 100)}%`;
+  const crop = (i: number) => (v: number) => { const c = [...xf.crop] as Transform['crop']; c[i] = v; set({ crop: c }, `crop${i}`); };
+  const moved = !isIdentityXf(look.xf);
+  return (
+    <Section title="Transform" badge={moved ? 'On' : undefined} actions={moved ? <button className="link" onClick={() => p.onLook({ xf: undefined }, 'xf-reset')} title="Back to the whole frame">Reset</button> : undefined}>
+      <Slider label="Position across" value={xf.x} min={-1} max={1} step={0.001} reset={0} keyed={keyed} units={PCT} format={pct} hint="Left ← → right, as a share of the frame's width. Double-click to centre." onChange={(v) => set({ x: v }, 'x')} />
+      <Slider label="Position up/down" value={xf.y} min={-1} max={1} step={0.001} reset={0} keyed={keyed} units={PCT} format={pct} hint="Up ← → down, as a share of the frame's height. Double-click to centre." onChange={(v) => set({ y: v }, 'y')} />
+      <Slider label="Size" value={Math.log2(xf.scale)} min={-4} max={2} step={0.005} reset={0} keyed={keyed} format={() => pct(xf.scale)} units={{ to: (v) => 2 ** v * 100, from: (n) => Math.log2(Math.max(2, n) / 100), digits: 0 }} hint="100% fills the frame. Double-click for 100%." onChange={(v) => set({ scale: Math.abs(v) < 0.01 ? 1 : 2 ** v }, 'scale')} />
+      <Slider label="Turn" value={xf.rotate} min={-180} max={180} step={0.1} reset={0} keyed={keyed} units={DEG} format={(v) => `${v.toFixed(1)}°`} hint="Turns the picture (degrees). Double-click for straight." onChange={(v) => set({ rotate: v }, 'rotate')} />
+      <Slider label="Opacity" value={xf.opacity} min={0} max={1} reset={1} keyed={keyed} units={PCT} format={pct} onChange={(v) => set({ opacity: v }, 'opacity')} />
+      <p className="subhead">Crop</p>
+      {(['Left', 'Top', 'Right', 'Bottom'] as const).map((n, i) => (
+        <Slider key={n} label={n} value={xf.crop[i]!} min={0} max={0.9} reset={0} keyed={keyed} units={PCT} format={pct} onChange={crop(i)} />
+      ))}
+      <p className="subhead">Frame</p>
+      <Slider label="Rounded corners" value={xf.radius} min={0} max={0.5} reset={0} keyed={keyed} units={PCT} format={pct} hint="0% = square corners, 50% = fully round (a circle on a square picture)." onChange={(v) => set({ radius: v }, 'radius')} />
+      <Slider label="Border" value={xf.border} min={0} max={0.05} step={0.0005} reset={0} keyed={keyed} units={{ to: (v) => v * 1000, from: (n) => n / 1000, digits: 1 }} format={(v) => (v ? `${(v * 1000).toFixed(1)}‰` : 'None')} hint="Width of the line round the picture, as a share of the frame's height." onChange={(v) => set({ border: v }, 'border')} />
+      {xf.border > 0 && (
+        <label className="field">Border colour <input type="color" value={xf.borderColor} onChange={(e) => set({ borderColor: e.target.value }, 'bcolor')} /></label>
+      )}
+      <Slider label="Shadow" value={xf.shadow} min={0} max={1} reset={0} keyed={keyed} units={PCT} format={pct} onChange={(v) => set({ shadow: v }, 'shadow')} />
+      {!moved && <p className="hint">The clip fills the frame. Use Layout for picture in picture or split screen, or change these to place it yourself. Add a keyframe (K) to animate it.</p>}
+    </Section>
+  );
 }
 
 function PanelHeader({ title, sub, onClose }: { title: string; sub: string; onClose: () => void }) {

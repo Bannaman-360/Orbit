@@ -32,6 +32,7 @@ Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:
     - playback and editing: `perf`, `full`, `speed`, `scrubback`, `strip`, `zoom`, `follow`, `stab`, `flat`, `protrim` (roll/slip/slide, JKL, Source view), `snap` (snapping, beats), `markers` (markers, project v2, missing files)
     - colour, lens and 360: `color`, `lens`, `lenslook`, `equirect`, `seamcheck`
     - files: `chapters`, `card`, `odd`, `long`, `pool` (ratings, folders, relink, preview copies)
+    - layers: `layers` (tracks V2–V6, picture in picture, split screen; preview vs export, 2×4K playback)
     - ride data and export: `gauges`, `airtime`, `export`, `tenbitexport`, `rider`
   - A full regression runs all of them and takes about 45 minutes. Timing checks (`gauges`, `scrubback`) can fail once when the machine is busy: rerun before treating it as a bug.
 - Installers: `pnpm --filter action-cam-editor dist:mac`. This builds Apple Silicon and Intel dmgs into `apps/desktop/release/`. Windows is built by `.github/workflows/installers.yml`.

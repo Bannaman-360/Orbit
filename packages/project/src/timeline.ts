@@ -5,7 +5,7 @@
 // [inUs, outUs) and lasts (outUs − inUs) / speed on the timeline (see speed.ts for ramps).
 
 import type { Keyframe } from './keyframes';
-import { DEFAULT_LOOK, NEUTRAL_GRADE, NO_EFFECTS, type Look } from './look';
+import { DEFAULT_LOOK, IDENTITY_XF, NEUTRAL_GRADE, NO_EFFECTS, type Look } from './look';
 import { fixOverlay, type Overlay } from './overlays';
 import { fixSpeedKeys, localAt, mediaAt, playLength, speedAt, type SpeedKey } from './speed';
 import type { ClipTrack } from './track';
@@ -152,8 +152,32 @@ export interface Marker {
 export type MarkerColor = 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray';
 export const MARKER_COLORS: MarkerColor[] = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'];
 
+/**
+ * A video track above the main row (V2 is the lowest). Clips on it are placed freely in time and
+ * drawn over everything below.
+ */
+export interface VideoTrack {
+  id: string;
+  /** Not drawn (and not heard). */
+  hidden?: boolean;
+  /** Its clips can't be selected, moved or changed. */
+  locked?: boolean;
+  /** Its clips' sound is silent. */
+  muted?: boolean;
+}
+
+/** Tracks V2–V6 at most. */
+export const MAX_TRACKS = 5;
+
+/** A clip on a track above the main row: like a main-row clip, plus where it sits. */
+export interface ConnectedClip extends TimelineClip {
+  trackId: string;
+  /** Timeline time where it starts. */
+  startUs: number;
+}
+
 /** Project format version written by this app. Older ones are upgraded by `loadTimeline`. */
-export const TIMELINE_VERSION = 2;
+export const TIMELINE_VERSION = 3;
 
 export interface Timeline {
   version: typeof TIMELINE_VERSION;
@@ -166,6 +190,10 @@ export interface Timeline {
   overlays: Overlay[];
   /** Notes at points in time. */
   markers: Marker[];
+  /** Video tracks above the main row, lowest (V2) first. */
+  tracks: VideoTrack[];
+  /** Clips on those tracks. */
+  connected: ConnectedClip[];
 }
 
 export const MIN_CLIP_US = 100_000;
@@ -173,7 +201,7 @@ export const MIN_CLIP_US = 100_000;
 let counter = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(counter++).toString(36)}`;
 
-export const emptyTimeline = (): Timeline => ({ version: TIMELINE_VERSION, clips: [], audio: [], framing: '16:9', lutPath: null, overlays: [], markers: [] });
+export const emptyTimeline = (): Timeline => ({ version: TIMELINE_VERSION, clips: [], audio: [], framing: '16:9', lutPath: null, overlays: [], markers: [], tracks: [], connected: [] });
 
 export function newClip(mediaPath: string, durationUs: number, is360: boolean): TimelineClip {
   return {
@@ -270,7 +298,15 @@ const replaceClip = (tl: Timeline, id: string, f: (c: TimelineClip) => TimelineC
   clips: tl.clips.flatMap((c) => (c.id === id ? f(c) : [c])),
 });
 
-export const updateClip = (tl: Timeline, id: string, patch: Partial<TimelineClip>) => replaceClip(tl, id, (c) => ({ ...c, ...patch }));
+/** Changes a clip on the main row or on a track above it. */
+export const updateClip = (tl: Timeline, id: string, patch: Partial<TimelineClip>): Timeline =>
+  tl.connected.some((c) => c.id === id)
+    ? { ...tl, connected: tl.connected.map((c) => (c.id === id ? { ...c, ...patch } : c)) }
+    : replaceClip(tl, id, (c) => ({ ...c, ...patch }));
+
+/** A clip by id, on the main row or a track above it. */
+export const findClip = (tl: Timeline, id: string): TimelineClip | ConnectedClip | undefined =>
+  tl.clips.find((c) => c.id === id) ?? tl.connected.find((c) => c.id === id);
 
 /** Changes a clip's speed or ramp; its sound, if detached, goes along. */
 export function setClipSpeed(tl: Timeline, id: string, patch: Partial<Pick<TimelineClip, 'speed' | 'speedKeys' | 'muteBelow' | 'keepPitch'>>): Timeline {
@@ -304,6 +340,8 @@ export function rippleItems(before: Timeline, after: Timeline, clipId: string): 
       return st === o.startUs && en === o.endUs ? o : { ...o, startUs: Math.min(st, Math.max(0, total - MIN)), endUs: Math.min(en, Math.max(total, st + MIN)) };
     }),
     audio: after.audio.map((x) => (x.linkedClipId && x.linkedClipId !== clipId && x.startUs >= e0 ? { ...x, startUs: move(x.startUs) } : x)),
+    // Clips on the tracks above stay with the picture they start over.
+    connected: after.connected.map((c) => { const t = Math.max(0, Math.round(move(c.startUs))); return t === c.startUs ? c : { ...c, startUs: t }; }),
     // Markers stay on the picture they mark.
     markers: after.markers.map((m) => { const t = Math.max(0, Math.round(move(m.t))); return t === m.t ? m : { ...m, t }; }),
   };
@@ -324,7 +362,7 @@ export function splitAt(tl: Timeline, T: number): Timeline {
   return replaceClip(tl, clip.id, (c) => [{ ...c, outUs: mediaUs }, { ...c, id: newId('c'), inUs: mediaUs }]);
 }
 
-export const removeClip = (tl: Timeline, id: string): Timeline => ({ ...tl, clips: tl.clips.filter((c) => c.id !== id) });
+export const removeClip = (tl: Timeline, id: string): Timeline => ({ ...tl, clips: tl.clips.filter((c) => c.id !== id), connected: tl.connected.filter((c) => c.id !== id) });
 
 /**
  * Splits the clip under timeline time T and deletes the part of that clip on one side
@@ -423,7 +461,19 @@ export function assignLanes<T extends { id: string }>(items: T[], span: (x: T) =
 
 // --- Saving -----------------------------------------------------------------
 
-const fixLook = (l?: Partial<Look>): Look => ({ ...DEFAULT_LOOK, ...l, grade: { ...NEUTRAL_GRADE, ...(l?.grade ?? {}) }, fx: { ...NO_EFFECTS, ...(l?.fx ?? {}) } });
+const fixLook = (l?: Partial<Look>): Look => ({
+  ...DEFAULT_LOOK, ...l, grade: { ...NEUTRAL_GRADE, ...(l?.grade ?? {}) }, fx: { ...NO_EFFECTS, ...(l?.fx ?? {}) },
+  ...(l?.xf ? { xf: { ...IDENTITY_XF, ...l.xf, crop: (Array.isArray(l.xf.crop) && l.xf.crop.length === 4 ? l.xf.crop : IDENTITY_XF.crop) } } : {}),
+});
+
+const fixClip = (c: TimelineClip): TimelineClip => ({
+  ...newClip(c.mediaPath, c.outUs ?? 0, true),
+  ...c,
+  look: fixLook(c.look),
+  keyframes: (c.keyframes ?? []).map((k) => ({ ...k, easing: k.easing ?? 'smooth', look: fixLook(k.look) })),
+  stabilize: { ...{ smoothing: 'off' as const, horizon: false }, ...(c.stabilize ?? {}) },
+  ...(c.speedKeys ? { speedKeys: fixSpeedKeys(c.speedKeys) } : {}),
+});
 
 /** Accepts anything previously saved and returns a complete, current timeline. */
 export function loadTimeline(raw: unknown): Timeline {
@@ -432,19 +482,17 @@ export function loadTimeline(raw: unknown): Timeline {
   return {
     ...base,
     ...p,
-    // Version 1 (before markers) has nothing to convert: missing parts get their defaults.
+    // Versions 1 (before markers) and 2 (before tracks) have nothing to convert: missing parts get their defaults.
     version: TIMELINE_VERSION,
-    clips: (p.clips ?? []).map((c) => ({
-      ...newClip(c.mediaPath, c.outUs ?? 0, true),
-      ...c,
-      look: fixLook(c.look),
-      keyframes: (c.keyframes ?? []).map((k) => ({ ...k, easing: k.easing ?? 'smooth', look: fixLook(k.look) })),
-      stabilize: { ...{ smoothing: 'off' as const, horizon: false }, ...(c.stabilize ?? {}) },
-      ...(c.speedKeys ? { speedKeys: fixSpeedKeys(c.speedKeys) } : {}),
-    })),
+    clips: (p.clips ?? []).map(fixClip),
+    tracks: (p.tracks ?? []).filter((t) => t && t.id).slice(0, MAX_TRACKS).map((t) => ({ id: String(t.id), ...(t.hidden ? { hidden: true } : {}), ...(t.locked ? { locked: true } : {}), ...(t.muted ? { muted: true } : {}) })),
     audio: (p.audio ?? []).map((a) => ({ ...newAudioClip(a.path, a.outUs ?? 0), ...a, ...(a.speedKeys ? { speedKeys: fixSpeedKeys(a.speedKeys) } : {}) })),
     overlays: (p.overlays ?? []).map(fixOverlay),
     markers: (p.markers ?? []).filter((m) => m && Number.isFinite(m.t)).map((m) => ({ id: m.id || newId('m'), t: Math.max(0, m.t), note: String(m.note ?? ''), color: MARKER_COLORS.includes(m.color) ? m.color : 'blue' })).sort((a, b) => a.t - b.t),
+    // Clips on a track that no longer exists are dropped.
+    connected: (p.connected ?? [])
+      .filter((c) => c && (p.tracks ?? []).slice(0, MAX_TRACKS).some((t) => t?.id === c.trackId))
+      .map((c) => ({ ...fixClip(c), trackId: c.trackId, startUs: Math.max(0, Number(c.startUs) || 0) })),
   };
 }
 
@@ -547,6 +595,7 @@ export function insertClipAt(tl: Timeline, clip: TimelineClip, T: number): Timel
     ...addClip(cut, clip, index),
     overlays: cut.overlays.map((o) => (o.startUs >= T - 1000 ? { ...o, startUs: o.startUs + len, endUs: o.endUs + len } : o)),
     markers: cut.markers.map((m) => ({ ...m, t: after(m.t) })),
+    connected: cut.connected.map((c) => ({ ...c, startUs: after(c.startUs) })),
     audio: cut.audio.map((a) => (a.linkedClipId && a.startUs >= T - 1000 ? { ...a, startUs: a.startUs + len } : a)),
   };
 }

@@ -6,3 +6,4 @@ export * from './track';
 export * from './speed';
 export * from './lensLook';
 export * from './snap';
+export * from './layers';

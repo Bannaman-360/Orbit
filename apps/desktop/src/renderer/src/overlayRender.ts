@@ -3,6 +3,7 @@
 
 import {
   locate, overlayState, transitionLook,
+  isIdentityXf, shownRect, type Transform,
   type LayerXf, type Overlay, type OverlayFont, type Reveal, type Timeline, type TransitionLook,
 } from '@ace/project';
 import { TelemetrySeries } from '@ace/telemetry';
@@ -634,15 +635,84 @@ export function hitOverlay(tl: Timeline, T: number, W: number, H: number, px: nu
   return null;
 }
 
-function drawLayer(ctx: Ctx2D, W: number, H: number, src: CanvasImageSource, x: LayerXf) {
+/** Transition movement of a whole main-row layer (about the frame's centre). */
+function withTransition(ctx: Ctx2D, W: number, H: number, x: LayerXf, draw: () => void) {
   if (x.alpha <= 0) return;
   ctx.save();
-  ctx.globalAlpha = x.alpha;
+  ctx.globalAlpha *= x.alpha;
   if (x.blur > 0.0005) ctx.filter = `blur(${(x.blur * W).toFixed(1)}px)`;
   ctx.translate(W / 2 + x.dx * W, H / 2 + x.dy * H);
   if (x.rotate) ctx.rotate((x.rotate * Math.PI) / 180);
   if (x.scale !== 1) ctx.scale(x.scale, x.scale);
-  ctx.drawImage(src, -W / 2, -H / 2, W, H);
+  ctx.translate(-W / 2, -H / 2);
+  draw();
+  ctx.restore();
+}
+
+/** Pixel sizes of a placed layer's frame: corner radius, border and shadow (shared with the preview). */
+export function placedStyle(xf: Transform, W: number, H: number) {
+  const r = shownRect(xf);
+  const w = r.w * W, h = r.h * H;
+  const s = xf.shadow;
+  return {
+    rect: { x: r.x * W, y: r.y * H, w, h },
+    radius: xf.radius * Math.min(w, h),
+    border: xf.border * H,
+    shadow: s > 0.001 ? { blur: 0.05 * H * s, dy: 0.015 * H * s, alpha: Math.min(0.85, 0.65 * s) } : null,
+  };
+}
+
+/** Adds a rectangle (rounded when r > 0) to the current path. */
+function rectPath(ctx: Ctx2D, x: number, y: number, w: number, h: number, r: number) {
+  if (r > 0.01) ctx.roundRect(x, y, w, h, Math.min(r, w / 2, h / 2));
+  else ctx.rect(x, y, w, h);
+}
+
+/** Draws one clip's picture (the size of the frame) where its transform puts it. */
+export function drawPlaced(ctx: Ctx2D, W: number, H: number, src: CanvasImageSource & { width: number; height: number }, xf: Transform | undefined) {
+  if (isIdentityXf(xf)) { ctx.drawImage(src, 0, 0, W, H); return; }
+  const x = xf!;
+  if (x.opacity <= 0.001) return;
+  const st = placedStyle(x, W, H);
+  const { w, h } = st.rect;
+  if (w < 0.5 || h < 0.5) return;
+  ctx.save();
+  ctx.globalAlpha *= x.opacity;
+  ctx.translate(st.rect.x + w / 2, st.rect.y + h / 2);
+  if (x.rotate) ctx.rotate((x.rotate * Math.PI) / 180);
+  const b = st.border, outerR = st.radius > 0.01 ? st.radius + b : 0;
+  if (st.shadow) {
+    // Only outside the picture (as a CSS box shadow): a see-through picture shows no shadow under it.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(-W * 4, -H * 4, W * 8, H * 8);
+    rectPath(ctx, -w / 2 - b, -h / 2 - b, w + 2 * b, h + 2 * b, outerR);
+    ctx.clip('evenodd');
+    ctx.shadowColor = `rgba(0,0,0,${st.shadow.alpha})`;
+    ctx.shadowBlur = st.shadow.blur;
+    ctx.shadowOffsetY = st.shadow.dy;
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    rectPath(ctx, -w / 2 - b, -h / 2 - b, w + 2 * b, h + 2 * b, outerR);
+    ctx.fill();
+    ctx.restore();
+  }
+  if (b > 0.01) {
+    ctx.save();
+    ctx.beginPath();
+    rectPath(ctx, -w / 2 - b, -h / 2 - b, w + 2 * b, h + 2 * b, outerR);
+    rectPath(ctx, -w / 2, -h / 2, w, h, st.radius);
+    ctx.fillStyle = x.borderColor;
+    ctx.fill('evenodd');
+    ctx.restore();
+  }
+  if (st.radius > 0.01) {
+    ctx.beginPath();
+    rectPath(ctx, -w / 2, -h / 2, w, h, st.radius);
+    ctx.clip();
+  }
+  const [l, t, r, bt] = x.crop, sw = src.width, sh = src.height;
+  ctx.drawImage(src, l * sw, t * sh, Math.max(1, (1 - l - r) * sw), Math.max(1, (1 - t - bt) * sh), -w / 2, -h / 2, w, h);
   ctx.restore();
 }
 
@@ -654,29 +724,46 @@ function clipReveal(ctx: Ctx2D, W: number, H: number, r: Reveal) {
   ctx.clip();
 }
 
+/** One picture to composite: a clip's rendered frame (the size of the output) and where it goes. */
+export interface CompLayer {
+  src: CanvasImageSource & { width: number; height: number };
+  xf?: Transform;
+  /** Main row during a transition. */
+  role?: 'out' | 'in';
+  /** 0 = main row. */
+  track: number;
+}
+
 /**
- * Composites one or two rendered clips into ctx: `a` alone, or a transition from a to b.
- * Sources are the per-clip renderer canvases (same size as the output).
+ * Composites what is on screen, bottom first: the main row (a transition from `out` to `in`, with
+ * its colour dip), then the clips on the tracks above, each where its transform puts it.
  */
-export function compositeLayers(ctx: Ctx2D, W: number, H: number, a: CanvasImageSource, b: CanvasImageSource | null, look: TransitionLook | null) {
+export function compositeLayers(ctx: Ctx2D, W: number, H: number, layers: CompLayer[], look: TransitionLook | null) {
   ctx.save();
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
-  if (!b || !look) {
-    ctx.drawImage(a, 0, 0, W, H);
+  let dipped = false;
+  const dip = () => {
+    if (dipped) return;
+    dipped = true;
+    if (look?.dip && look.dipAlpha > 0) {
+      ctx.save();
+      ctx.globalAlpha = look.dipAlpha;
+      ctx.fillStyle = look.dip;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+    }
+  };
+  for (const l of layers) {
+    if (l.track > 0) dip();
+    if (!look || !l.role) { drawPlaced(ctx, W, H, l.src, l.xf); continue; }
+    if (l.role === 'out') { withTransition(ctx, W, H, look.a, () => drawPlaced(ctx, W, H, l.src, l.xf)); continue; }
+    ctx.save();
+    if (look.reveal) clipReveal(ctx, W, H, look.reveal);
+    withTransition(ctx, W, H, look.b, () => drawPlaced(ctx, W, H, l.src, l.xf));
     ctx.restore();
-    return;
   }
-  drawLayer(ctx, W, H, a, look.a);
-  ctx.save();
-  if (look.reveal) clipReveal(ctx, W, H, look.reveal);
-  drawLayer(ctx, W, H, b, look.b);
-  ctx.restore();
-  if (look.dip && look.dipAlpha > 0) {
-    ctx.globalAlpha = look.dipAlpha;
-    ctx.fillStyle = look.dip;
-    ctx.fillRect(0, 0, W, H);
-  }
+  dip();
   ctx.restore();
 }
 
@@ -702,6 +789,41 @@ export function layerCss(x: LayerXf, widthPx: number, reveal: Reveal | null): Pa
     transform,
     filter: x.blur > 0.0005 ? `blur(${(x.blur * widthPx).toFixed(1)}px)` : '',
     clipPath,
+  };
+}
+
+/**
+ * CSS that places a clip in the preview as `drawPlaced` does in export: the box (the shown part of
+ * the picture, with corners, border and shadow) and the canvas inside it (the whole picture,
+ * shifted so the crop lines up). `W`, `H`: the preview frame's size in CSS pixels.
+ */
+export function placedCss(xf: Transform | undefined, W: number, H: number): { box: Partial<CSSStyleDeclaration>; canvas: Partial<CSSStyleDeclaration> } {
+  if (isIdentityXf(xf)) {
+    return {
+      box: { left: '0', top: '0', width: '100%', height: '100%', transform: '', opacity: '', borderRadius: '', overflow: '', boxShadow: '', visibility: '' },
+      canvas: { left: '0', top: '0', width: '100%', height: '100%' },
+    };
+  }
+  const x = xf!, st = placedStyle(x, W, H), r = shownRect(x);
+  const shadows: string[] = [];
+  if (st.border > 0.01) shadows.push(`0 0 0 ${st.border.toFixed(2)}px ${x.borderColor}`);
+  if (st.shadow) shadows.push(`0 ${st.shadow.dy.toFixed(2)}px ${st.shadow.blur.toFixed(2)}px ${st.border.toFixed(2)}px rgba(0,0,0,${st.shadow.alpha})`);
+  const pct = (v: number) => `${(v * 100).toFixed(4)}%`;
+  const [l, t] = x.crop;
+  return {
+    box: {
+      left: pct(r.x), top: pct(r.y), width: pct(r.w), height: pct(r.h),
+      transform: x.rotate ? `rotate(${x.rotate}deg)` : '',
+      opacity: x.opacity < 1 ? String(x.opacity) : '',
+      borderRadius: st.radius > 0.01 ? `${Math.min(st.radius, st.rect.w / 2, st.rect.h / 2).toFixed(2)}px` : '',
+      overflow: 'hidden',
+      boxShadow: shadows.join(', '),
+      visibility: r.w <= 0 || r.h <= 0 || x.opacity <= 0.001 ? 'hidden' : '',
+    },
+    canvas: {
+      left: pct(r.w > 0 ? (-l * x.scale) / r.w : 0), top: pct(r.h > 0 ? (-t * x.scale) / r.h : 0),
+      width: pct(r.w > 0 ? x.scale / r.w : 1), height: pct(r.h > 0 ? x.scale / r.h : 1),
+    },
   };
 }
 

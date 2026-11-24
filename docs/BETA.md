@@ -22,6 +22,13 @@ the first time it opens macOS says it can't check it:
 **Windows:** run the setup file. If “Windows protected your PC” appears, click **More info →
 Run anyway**. It installs for your user only and starts the app.
 
+### Updates
+
+From 0.1.0-beta.3 on, the app updates itself: when a new version is out it downloads it and shows
+**Version … is ready** at the top of the window. Click **Restart to update** (your work is saved
+first). On a Mac, keep the app in the Applications folder so it can replace itself. The portable
+Windows version can't, so it shows a **Download** link instead.
+
 ### Worth trying
 
 1. Drag a few videos (or a whole folder from your card) onto the window.

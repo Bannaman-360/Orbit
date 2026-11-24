@@ -1,5 +1,22 @@
 # Changes
 
+## 0.1.0-beta.3
+
+New:
+- **Updates by themselves** (from this version on): the app checks for a new version when it
+  starts and every few hours, downloads it in the background, and shows “Version … is ready”.
+  Click **Restart to update**: your work is saved, the new version is installed and the app opens
+  again. Check by hand with **Check for Updates…** (app menu on Mac, Help on Windows). On a Mac the
+  app must be in the Applications folder; the portable Windows version shows a download link.
+- **Projects page** (toolbar button, File → Projects…, ⌘⇧P / Ctrl+Shift+P): every saved project
+  with a picture, when it was last changed, how many clips and how long. Click one to switch to
+  it; right-click to rename, duplicate, show it in Finder / File Explorer, or move it to the Trash.
+- **Save without exporting**: Save (⌘S / Ctrl+S) asks for a name the first time and puts the
+  project in Projects; after that, changes are saved as you go. Save Project As… saves anywhere
+  else, and New Project (⌘N / Ctrl+N) starts a clean edit.
+- Switching projects never loses work: the one you leave is saved first, and an edit that was
+  never saved is kept in Projects under the date.
+
 ## 0.1.0-beta.2
 
 Fixes:

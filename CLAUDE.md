@@ -33,11 +33,12 @@ Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:
     - ride data and export: `gauges`, `airtime`, `export`, `tenbitexport`, `rider`
   - A full regression runs all of them and takes about 40 minutes. Timing checks (`gauges`, `scrubback`) can fail once when the machine is busy: rerun before treating it as a bug.
 - Installers: `pnpm --filter action-cam-editor dist:mac`. This builds Apple Silicon and Intel dmgs into `apps/desktop/release/`. Windows is built by `.github/workflows/installers.yml`.
+- Releasing: set the version in `apps/desktop/package.json`, give `CHANGELOG.md` a heading with it, push a tag `v<version>` (the workflow refuses a mismatch), then publish the draft GitHub Release. Publishing sends the update to every installed app (`src/main/updater.ts`); drafts reach no one.
 - Packaged self-test: run `<App>.app/Contents/MacOS/Action Cam Editor --selftest --selftest-mode=<mode>` with `ACE_REPO_ROOT` set to this repo.
 
 ## Rules
 - **Tests run hidden.** Never use `--selftest-show` or anything that takes the user's screen, focus or sound.
-- **Commit only when the user asks.** Before any push, all commits must use the user's GitHub no-reply email, not their personal one; no repo or remote exists yet.
+- **Commits:** Claude may commit without asking. All commits must use the user's GitHub no-reply email (`360384248+Bannaman-360@users.noreply.github.com`), never their personal one. The remote is `github.com/Bannaman-360/Orbit`.
 - **Ask before every download:** packages, runtimes, ffmpeg builds, tools via `npx`.
 - **Licensing:** ffmpeg must stay LGPL; never add x264/x265 or other GPL parts. The app is unsigned for now.
 - **UI:** Apple-like and customizable through the theme tokens in `src/renderer/src/ui/theme.ts`; use the CSS variables, not fixed colours. It must not hurt playback performance (`perf` mode).

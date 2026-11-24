@@ -1,8 +1,13 @@
 import type { ByteReader } from '@ace/engine';
 import type { OrientationData } from '@ace/telemetry';
 import type { CardRecording, ImportEvent } from '../../main/card';
+import type { UpdateState } from '../../main/updater';
+export type { UpdateState };
 
 export interface Card { root: string; name: string }
+/** A saved project, as the Projects page lists it. */
+export interface ProjectEntry { path: string; name: string; modified: number; inLibrary: boolean; thumb?: string; clips?: number; durationUs?: number }
+export interface ProjectMeta { thumb?: string; clips?: number; durationUs?: number }
 /** `copies`: where it was imported to, if those files are still there. */
 export type ListedRecording = CardRecording & { imported: boolean; copies: string[] | null };
 export type { ImportEvent };
@@ -33,6 +38,23 @@ export interface AceApi {
   openLutDialog(): Promise<string | null>;
   openProjectDialog(): Promise<{ path: string; text: string } | null>;
   openThemeDialog(): Promise<string | null>;
+  /** Every saved project, most recently changed first. */
+  projectsList(): Promise<ProjectEntry[]>;
+  projectsOpen(path: string): Promise<{ path: string; text: string }>;
+  /** Saves to `path`, or as a new project called `name` in the Projects folder. Returns where it went. */
+  projectsSave(o: { path?: string; name?: string; text: string; meta?: ProjectMeta }): Promise<string>;
+  projectsRename(path: string, name: string): Promise<string>;
+  projectsDuplicate(path: string): Promise<string>;
+  /** Moves a Projects-folder project to the Trash; one saved elsewhere just leaves the list. */
+  projectsRemove(path: string): Promise<void>;
+  projectsReveal(path: string): Promise<void>;
+  /** Updates from GitHub Releases (downloaded in the background, installed on Restart). */
+  updateState(): Promise<UpdateState>;
+  updateCheck(): Promise<UpdateState>;
+  /** Quits and installs; returns why not, if it can't now. */
+  updateInstall(): Promise<string | null>;
+  openReleases(url?: string): Promise<void>;
+  onUpdate(f: (s: UpdateState) => void): void;
   setWindow(o: { mode: 'auto' | 'light' | 'dark'; translucent: boolean }): Promise<void>;
   /** Menu bar choices. */
   onCommand(f: (cmd: string) => void): void;

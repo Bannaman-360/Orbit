@@ -14,10 +14,10 @@ export async function compatCheck(api: EditorApi) {
   const errors: string[] = [];
   addEventListener('error', (e) => errors.push(String(e.message)));
   const a = (await ace.listFixtures()).find((f) => f.endsWith('GX010133.MP4'))!;
-  // The shape the next version saves: version 2, media as objects, markers, folders.
+  // A project from a version after this one (format 3), with things this version doesn't know.
   const newer = JSON.stringify({
-    version: 2,
-    timeline: { version: 2, clips: [{ id: 'c1', mediaPath: a, inUs: 0, outUs: 5e6 }], audio: [], framing: '16:9', lutPath: null, overlays: [], markers: [{ id: 'm', t: 1e6, note: 'x', color: 'red' }] },
+    version: 3,
+    timeline: { version: 3, futureThing: { x: 1 }, clips: [{ id: 'c1', mediaPath: a, inUs: 0, outUs: 5e6 }], audio: [], framing: '16:9', lutPath: null, overlays: [], markers: [{ id: 'm', t: 1e6, note: 'x', color: 'red' }] },
     library: [{ path: a, rating: 4, flag: 'fav', bin: 'f1', size: 123 }],
     bins: [{ id: 'f1', name: 'Pump track' }],
   });

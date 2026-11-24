@@ -5,3 +5,4 @@ export * from './overlays';
 export * from './track';
 export * from './speed';
 export * from './lensLook';
+export * from './snap';

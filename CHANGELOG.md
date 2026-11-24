@@ -1,5 +1,20 @@
 # Changes
 
+## Next
+
+**Editing**
+- Markers with notes and colours (M); a Markers panel; copy them as YouTube chapters.
+- Snapping (N) to clip edges, the playhead, markers and music beats; hold ⌘ to drag freely.
+- Beats are found in music automatically and shown on it; scrubbing stops on them, so cuts land on the beat.
+- Roll, Slip and Slide tools (Shift+N, Y, U; A for Select).
+- JKL: play backward and forward, faster with each press; K stops.
+- Source view: look at a Media clip on its own, mark in (I) and out (O), then Insert (,) or Overwrite (.) at the playhead.
+
+**Media**
+- Star ratings, favourites and rejects, search and filters, and folders.
+- Missing videos stay in the project (shown as missing) and can be found again in a folder or on a card, even when renamed.
+- See how much room the preview copies take, and delete them.
+
 ## 0.1.0-beta.4
 
 The first version that arrives by itself: copies on beta 3 download it in the background and

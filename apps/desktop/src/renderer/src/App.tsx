@@ -4,7 +4,7 @@ import {
   addClip, designFor, GAUGE_DESIGNS, gaugeSet, clipDuration, clipStarts, localAt, deleteSideAt, detachAudio, duplicateClip, emptyTimeline, FRAMINGS, framingAspect, GAUGES, keyframeNear, loadTimeline, locate,
   mediaToTimeline, moveClip, newAudioClip, newClip, newGaugeOverlay, newTextOverlay, nextKeyTime, prevKeyTime, reattachAudio, removeAudio,
   removeClip, removeKeyframe, removeOverlay, setEasing, setKeyframe, splitAt, timelineDuration, transitionLook, trimClip, updateAudio,
-  updateClip, updateOverlay,
+  updateClip, updateOverlay, addMarker, updateMarker, removeMarker, rollCut, slipClip, slideClip, insertClipAt, overwriteClipAt,
   hasRamp, mediaAt, moveSpeedKey, rippleItems, DEFAULT_LENS_LOOK, fisheyeForLook, lookAt, removeSpeedKey, setClipSpeed, setSpeedEase, setSpeedKey, speedAt, speedKeyNear,
   COMFORT_FOV, fitSubjectFrac, fracForFov, moveKeyframe, trackWeight, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, setTrackRange, trackActive, trackExtent, trackHeld, trackRange,
   type ClipTrack, type Easing, type GaugeDesign, type GaugeKind, type Grade, type Look, type Overlay, type Timeline, type TimelineClip, type Transition,
@@ -23,8 +23,8 @@ import { angleBetween, directionAt, trackSubject } from './tracker';
 import { InspectorPanel, SelectionPanel, type InspectorProps } from './Inspector';
 import { MediaBin, type BinItem } from './MediaBin';
 import { AppMenu, ShortcutsDialog } from './Menu';
-import { getMedia, loadMusic, mediaNow, whyCannotOpen, wholeRecordings } from './media';
-import { ensureProxies, onProxyChange, PREVIEW_LEVELS, setPreviewLevel, type PreviewLevel } from './proxy';
+import { forgetMedia, getMedia, loadMusic, mediaNow, MISSING, whyCannotOpen, wholeRecordings } from './media';
+import { ensureProxies, forgetProxies, onProxyChange, PREVIEW_LEVELS, setPreviewLevel, type PreviewLevel } from './proxy';
 import { drawOverlays, hitOverlay, layerCss } from './overlayRender';
 import { runSelftest, type EditorApi } from './selftest';
 import { TimelinePlayer, type TickResult } from './timelinePlayer';
@@ -35,12 +35,28 @@ import { comboFromEvent, comboLabel, comboOf, combosOf, commandFor, COMMANDS, ke
 import { ArrangeBar, Customize, reopenPanel, type CustomizePage } from './ui/Customize';
 import { Tour, Welcome } from './Tour';
 import { ReportProblem } from './ReportProblem';
+import { MarkersPanel } from './Markers';
+import type { EditTool } from './TimelineView';
+
+/** Edit tools: what dragging a clip on the main row does. */
+const TOOLS: [EditTool, string, string][] = [
+  ['select', 'Select', 'Trim (the rest moves up) or reorder'],
+  ['roll', 'Roll', 'Move a cut: one clip longer, the next shorter'],
+  ['slip', 'Slip', 'Show another part of a clip, same place and length'],
+  ['slide', 'Slide', 'Move a clip between its neighbours'],
+];
 import { Dock, type PanelDef } from './ui/Dock';
 import { closePanel, openPanels } from './ui/dockModel';
 import { Icon } from './ui/Icon';
 import { getPrefs, isArranging, LAYOUTS, onNativeTheme, PANELS, platformMac, setArranging, setPrefs, undoPrefs, useArranging, usePrefs } from './ui/prefs';
 
-interface SaveFile { version: 1; timeline: Timeline; library: string[] }
+/** A media item as saved in the project, with what the user said about it. */
+export interface LibraryEntry { path: string; rating?: number; flag?: 'fav' | 'reject'; bin?: string; /** Bytes: finds the file again if it's renamed. */ size?: number }
+/** A folder in the media pool (nested through `parent`). */
+export interface MediaBinFolder { id: string; name: string; parent?: string }
+interface SaveFile { version: 2; timeline: Timeline; library: LibraryEntry[]; bins: MediaBinFolder[] }
+/** Older projects listed media as plain paths. */
+const libraryOf = (raw: unknown): LibraryEntry[] => (Array.isArray(raw) ? raw : []).flatMap((x): LibraryEntry[] => (typeof x === 'string' ? [{ path: x }] : x && typeof x.path === 'string' ? [{ path: x.path, ...(x.rating ? { rating: Math.max(0, Math.min(5, Math.round(+x.rating))) } : {}), ...(x.flag === 'fav' || x.flag === 'reject' ? { flag: x.flag } : {}), ...(typeof x.bin === 'string' ? { bin: x.bin } : {}), ...(Number.isFinite(x.size) ? { size: +x.size } : {}) }] : []));
 
 /** What is selected besides the clip under the playhead. */
 export type Selection = { kind: 'audio' | 'overlay' | 'transition'; id: string } | null;
@@ -126,6 +142,11 @@ export function App() {
   const [bin, setBin] = useState<BinItem[]>([]);
   const binRef = useRef(bin);
   binRef.current = bin;
+  const [bins, setBins] = useState<MediaBinFolder[]>([]);
+  /** File sizes from the project, for finding missing files again. */
+  const savedSizes = useRef(new Map<string, number>());
+  const binsRef = useRef(bins);
+  binsRef.current = bins;
   const [, bump] = useState(0);
 
   const importPaths = useCallback(async (picked: string[]) => {
@@ -150,9 +171,53 @@ export function App() {
   }, []);
 
   const addToTimeline = useCallback((path: string, index?: number) => {
+    const c = clipFor(path);
+    if (c) commit(addClip(tlRef.current, c, index ?? tlRef.current.clips.length));
+  }, [commit]);
+
+  // --- Source view (three-point editing) ---------------------------------------------------------
+  // The preview can show one Media clip on its own: mark in (I) and out (O), then Insert (,) or
+  // Overwrite (.) at the timeline's playhead. The player simply plays a one-clip timeline meanwhile.
+  const [source, setSource] = useState<{ path: string; inUs: number | null; outUs: number | null } | null>(null);
+  const sourceRef = useRef<{ tl: Timeline; savedTime: number } | null>(null);
+  const openSource = (path: string) => {
+    const c = clipFor(path);
+    if (!c) return;
+    const savedTime = sourceRef.current?.savedTime ?? player.time;
+    player.pause();
+    sourceRef.current = { tl: { ...addClip(emptyTimeline(), c), framing: tlRef.current.framing }, savedTime };
+    setSource({ path, inUs: null, outUs: null });
+    player.invalidate();
+    player.seek(0);
+  };
+  const closeSource = () => {
+    const sv = sourceRef.current;
+    if (!sv) return;
+    player.pause();
+    sourceRef.current = null;
+    setSource(null);
+    player.invalidate();
+    player.seek(sv.savedTime);
+  };
+  const placeSource = (how: 'insert' | 'overwrite') => {
+    const sv = sourceRef.current;
+    if (!sv || !source) return;
+    const base = clipFor(source.path);
+    if (!base) return;
+    const inUs = source.inUs ?? 0, outUs = source.outUs ?? base.outUs;
+    if (outUs - inUs < 100_000) { setNotice('Mark an out point after the in point first.'); return; }
+    const clip = { ...base, inUs, outUs };
+    commit(how === 'insert' ? insertClipAt(tlRef.current, clip, sv.savedTime) : overwriteClipAt(tlRef.current, clip, sv.savedTime));
+    // The next piece goes after this one.
+    sv.savedTime += outUs - inUs;
+    setNotice(`${how === 'insert' ? 'Inserted' : 'Placed'} ${baseName(source.path)} (${fmtTime(outUs - inUs)}) at the timeline playhead.`);
+  };
+  const markSource = (which: 'inUs' | 'outUs') => { if (sourceRef.current) setSource((sv) => sv && { ...sv, [which]: Math.round(player.time) }); };
+
+  /** A clip for a Media item, set up as it should start (lens, stabilization). */
+  function clipFor(path: string) {
     const m = mediaNow(path);
-    if (!m) return;
-    const t = tlRef.current;
+    if (!m) return null;
     const made0 = newClip(path, m.durationUs, m.is360);
     // 360 clips keep their lens look while zooming.
     const made = m.is360 ? { ...made0, lensLook: DEFAULT_LENS_LOOK } : made0;
@@ -161,8 +226,8 @@ export function App() {
     // Regular clips start as recorded, ready to be reframed; steadied when the camera's motion data
     // allows it and the camera didn't steady them itself.
     const steady = m.lens && m.stabilizer.hasOrientation && !m.camera.stabilizedInCamera;
-    commit(addClip(t, m.lens ? { ...c, lensMode: 'source', look: { ...c.look, fov: m.lens.hfov }, ...(steady ? { stabilize: { ...c.stabilize, smoothing: 'medium' as const, crop: 'auto' as const } } : {}) } : c, index ?? t.clips.length));
-  }, [commit]);
+    return m.lens ? { ...c, lensMode: 'source' as const, look: { ...c.look, fov: m.lens.hfov }, ...(steady ? { stabilize: { ...c.stabilize, smoothing: 'medium' as const, crop: 'auto' as const } } : {}) } : c;
+  }
 
   // --- Playback & rendering --------------------------------------------------------------------
   const canvas0 = useRef<HTMLCanvasElement>(null);
@@ -173,7 +238,7 @@ export function App() {
   const frameRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const renderersRef = useRef<ReframeRenderer[]>([]);
-  const player = useMemo(() => new TimelinePlayer(() => tlRef.current), []);
+  const player = useMemo(() => new TimelinePlayer(() => sourceRef.current?.tl ?? tlRef.current), []);
   const audio = useMemo(() => new AudioPlayer(), []);
   const lastResult = useRef<TickResult | null>(null);
   const renderWaiters = useRef<(() => void)[]>([]);
@@ -199,7 +264,8 @@ export function App() {
 
   useEffect(() => {
     player.onTransport = (isPlaying, t) => {
-      if (isPlaying) audio.play(tlRef.current, t);
+      // (Shuttling faster than normal is silent, like a tape deck with the sound off.)
+      if (isPlaying && player.rate === 1) audio.play(tlRef.current, t);
       else audio.stop();
     };
   }, [player, audio]);
@@ -282,10 +348,12 @@ export function App() {
     const c = overlayRef.current;
     if (!c) return;
     // Nothing on it and nothing to draw: leave the (large) layer alone.
-    if (!tlRef.current.overlays.length && !c.dataset.drawn) return;
+    const overlays = sourceRef.current ? [] : tlRef.current.overlays;
+    if (!overlays.length && !c.dataset.drawn) return;
     const ctx = c.getContext('2d')!;
     ctx.clearRect(0, 0, c.width, c.height);
-    if (tlRef.current.overlays.length) c.dataset.drawn = '1'; else delete c.dataset.drawn;
+    if (overlays.length) c.dataset.drawn = '1'; else delete c.dataset.drawn;
+    if (!overlays.length) return;
     const s = selRef.current;
     drawOverlays(ctx, c.width, c.height, tlRef.current, player.time, s?.kind === 'overlay' ? s.id : null);
   };
@@ -389,7 +457,8 @@ export function App() {
   }, [time, playing, tl, audio]);
 
   // --- Current clip & edits --------------------------------------------------------------------
-  const at = locate(tl, time);
+  // (In the Source view nothing on the timeline is being edited.)
+  const at = source ? null : locate(tl, time);
   const clip = at?.clip ?? null;
   const media = clip ? mediaNow(clip.mediaPath) ?? null : null;
   const look = clip && at ? clipLookAt(clip, at.mediaUs) : null;
@@ -397,7 +466,40 @@ export function App() {
   const duration = timelineDuration(tl);
 
   const seek = useCallback((T: number) => player.seek(T), [player]);
-  const togglePlay = useCallback(() => (player.playing ? player.pause() : player.play()), [player]);
+  // JKL shuttle: L plays forward (again: 2×, 4×, 8×), J backward the same way, K stops.
+  const shuttle = useRef<{ dir: -1 | 0 | 1; rate: number; raf: number }>({ dir: 0, rate: 1, raf: 0 });
+  const stopShuttle = useCallback(() => {
+    const sh = shuttle.current;
+    cancelAnimationFrame(sh.raf);
+    sh.dir = 0; sh.rate = 1;
+    player.rate = 1;
+  }, [player]);
+  const shuttleTo = useCallback((dir: -1 | 1) => {
+    const sh = shuttle.current;
+    sh.rate = sh.dir === dir ? Math.min(8, sh.rate * 2) : 1;
+    sh.dir = dir;
+    cancelAnimationFrame(sh.raf);
+    if (dir === 1) {
+      player.rate = sh.rate;
+      if (player.playing) player.pause();
+      player.play();
+      return;
+    }
+    // Backward: step the playhead back each frame; pictures come from the backward-scrub cache.
+    player.pause();
+    player.rate = 1;
+    let last = performance.now();
+    const back = (now: number) => {
+      if (sh.dir !== -1) return;
+      const t = Math.max(0, player.time - (now - last) * 1000 * sh.rate);
+      last = now;
+      player.seek(t);
+      if (t <= 0) { sh.dir = 0; return; }
+      sh.raf = requestAnimationFrame(back);
+    };
+    sh.raf = requestAnimationFrame(back);
+  }, [player]);
+  const togglePlay = useCallback(() => { stopShuttle(); if (player.playing) player.pause(); else player.play(); }, [player, stopShuttle]);
 
   const editClip = (patch: Partial<TimelineClip>, key: string) => clip && commit(updateClip(tlRef.current, clip.id, patch), `${key}:${clip.id}`);
 
@@ -537,6 +639,20 @@ export function App() {
   const [speedLines, setSpeedLines] = useState(() => { try { return localStorage.getItem('ace.speedLines') === 'true'; } catch { return false; } });
   const [jumpMarks, setJumpMarks] = useState(() => { try { return localStorage.getItem('ace.jumpMarks') !== 'false'; } catch { return true; } });
   const toggleJumpMarks = () => setJumpMarks((v) => { try { localStorage.setItem('ace.jumpMarks', String(!v)); } catch { /* private mode */ } return !v; });
+  const [tool, setTool] = useState<EditTool>('select');
+  const proBase = useRef<Timeline | null>(null);
+  /** Roll, slip and slide always start from the timeline as it was when the drag began. */
+  const proEdit = (kind: 'roll' | 'slip' | 'slide', id: string, d: number, phase: 'start' | 'move') => {
+    if (phase === 'start' || !proBase.current) { proBase.current = tlRef.current; return; }
+    const durOf = (path: string) => mediaNow(path)?.durationUs ?? Infinity;
+    const base = proBase.current;
+    const next = kind === 'roll' ? rollCut(base, id, d, durOf).tl : kind === 'slip' ? slipClip(base, id, d, durOf) : slideClip(base, id, d, durOf);
+    commit(next, `${kind}:${id}`);
+    // While slipping, show the frame that's now at the playhead.
+    player.invalidate();
+  };
+  const [snapping, setSnapping] = useState(() => { try { return localStorage.getItem('ace.snap') !== 'false'; } catch { return true; } });
+  const toggleSnapping = () => setSnapping((v) => { try { localStorage.setItem('ace.snap', String(!v)); } catch { /* private mode */ } return !v; });
   const toggleSpeedLines = () => setSpeedLines((v) => { try { localStorage.setItem('ace.speedLines', String(!v)); } catch { /* private mode */ } return !v; });
   const [speedSel, setSpeedSel] = useState<{ clipId: string; id: string } | null>(null);
   const [speedMenu, setSpeedMenu] = useState<{ clipId: string; id: string; x: number; y: number } | null>(null);
@@ -805,31 +921,61 @@ export function App() {
   runTrackingRef.current = runTracking;
 
   // --- Files -------------------------------------------------------------------------------------
+  /** Asks for a folder and points everything that used a missing file at the one found there. */
+  const relinkMissing = async (folder?: string) => {
+    const t = tlRef.current;
+    const gone = [...new Set([...binRef.current.filter((b) => b.error === MISSING).map((b) => b.path), ...t.clips.filter((c) => !mediaNow(c.mediaPath)).map((c) => c.mediaPath)])];
+    if (!gone.length) return;
+    const r = await ace.relink(gone.map((path) => ({ path, size: savedSizes.current.get(path) })), folder);
+    if (!r) return;
+    if (!r.matches.length) { setNotice(`None of the missing videos are in “${r.folder}”. Try another folder or card.`); return; }
+    const to = new Map(r.matches.map((m) => [m.from, m.to]));
+    for (const m of r.matches) forgetMedia(m.from);
+    const meta = new Map(binRef.current.map((b) => [b.path, b]));
+    setBin((b) => b.filter((x) => !to.has(x.path)));
+    binRef.current = binRef.current.filter((x) => !to.has(x.path));
+    await importPaths(r.matches.map((m) => m.to));
+    setBin((b) => b.map((x) => { const from = r.matches.find((m) => m.to === x.path)?.from; const old = from && meta.get(from); return old ? { ...x, rating: old.rating, flag: old.flag, bin: old.bin } : x; }));
+    commit({ ...t, clips: t.clips.map((c) => (to.has(c.mediaPath) ? { ...c, mediaPath: to.get(c.mediaPath)! } : c)), audio: t.audio.map((a) => (to.has(a.path) ? { ...a, path: to.get(a.path)! } : a)) });
+    player.invalidate();
+    const left = gone.length - r.matches.length;
+    setNotice(`Found ${r.matches.length} of ${gone.length} missing video${gone.length === 1 ? '' : 's'} in “${r.folder}”${r.matches.some((m) => m.how === 'size') ? ' (some under new names, recognised by size)' : ''}.${left ? ` ${left} still missing.` : ''}`);
+  };
+  const relinkRef = useRef(relinkMissing);
+  relinkRef.current = relinkMissing;
+
   const restore = useCallback(async (text: string) => {
-    const raw = JSON.parse(text) as Partial<Omit<SaveFile, 'library' | 'version'>> & { library?: unknown; version?: unknown } & Partial<Timeline>;
+    const raw = JSON.parse(text) as Partial<Omit<SaveFile, 'library'>> & { library?: unknown } & Partial<Timeline>;
     const timeline = loadTimeline(raw.timeline ?? raw);
-    // Newer versions list media as { path, rating, … } instead of plain paths: take the paths.
-    const listed = (Array.isArray(raw.library) ? raw.library : []).flatMap((x: unknown) => (typeof x === 'string' ? [x] : x && typeof (x as { path?: unknown }).path === 'string' ? [(x as { path: string }).path] : []));
-    const library = [...new Set([...listed, ...timeline.clips.map((c) => c.mediaPath).filter((p) => typeof p === 'string')])];
-    const newer = (typeof raw.version === 'number' && raw.version > 1) || ((raw.timeline as { version?: unknown } | undefined)?.version ?? 1) as number > 1;
+    const entries = libraryOf(raw.library);
+    const library = [...new Set([...entries.map((e) => e.path), ...timeline.clips.map((c) => c.mediaPath)])];
+    // A file moved or deleted since it was last opened mustn't come back from memory.
+    await Promise.all([...library, ...timeline.audio.map((a) => a.path)].map((p) => ace.stat(p).catch(() => forgetMedia(p))));
+    // Saved by a version newer than this one: opens, but what it added isn't shown.
+    const newer = (typeof (raw as { version?: unknown }).version === 'number' && (raw as { version: number }).version > 2) || (((raw.timeline as { version?: unknown } | undefined)?.version ?? 2) as number) > 2;
     setBin([]);
     binRef.current = [];
+    setBins(Array.isArray(raw.bins) ? raw.bins.filter((b) => b && typeof b.id === 'string' && typeof b.name === 'string') : []);
     hist.current = { past: [], future: [], lastKey: '', lastAt: 0 };
     await importPaths(library);
+    // What the user said about each item comes back with it.
+    const meta = new Map(entries.map((e) => [e.path, e]));
+    savedSizes.current = new Map(entries.flatMap((e) => (e.size ? [[e.path, e.size] as [string, number]] : [])));
+    setBin((b) => b.map((x) => { const e = meta.get(x.path); return e ? { ...x, rating: e.rating, flag: e.flag, bin: e.bin } : x; }));
     // (A clip may use one chapter of a recording the bin now shows as a whole.)
     await Promise.all([...new Set(timeline.clips.map((c) => c.mediaPath))].map((p) => getMedia(p).catch(() => {})));
     await Promise.all(timeline.audio.map((a) => loadMusic(a.path).catch(() => {})));
-    // Only keep clips whose media opened.
-    const ok = timeline.clips.filter((c) => mediaNow(c.mediaPath));
-    tlRef.current = { ...timeline, clips: ok };
+    // Clips whose files are missing stay, shown as offline until relinked.
+    tlRef.current = timeline;
     setTl(tlRef.current);
     setSel(null);
     player.seek(0);
-    if (ok.length < timeline.clips.length) setError(`${timeline.clips.length - ok.length} clip(s) could not be opened (moved or deleted?)`);
-    else if (newer) setNotice('This project was saved by a newer version of the app. It opened, but what that version added (such as markers, ratings and folders) isn’t shown here.');
+    const offline = new Set(timeline.clips.filter((c) => !mediaNow(c.mediaPath)).map((c) => c.mediaPath));
+    if (offline.size) setNotice(offline.size === 1 ? `“${baseName([...offline][0]!)}” is missing: it was moved, renamed or deleted. Choose Relink in Media to find it.` : `${offline.size} videos are missing: they were moved, renamed or deleted. Choose Relink in Media to find them.`);
+    if (!offline.size && newer) setNotice('This project was saved by a newer version of the app. It opened, but what that version added isn’t shown here.');
   }, [importPaths, player]);
 
-  const saveObject = (): SaveFile => ({ version: 1, timeline: tlRef.current, library: binRef.current.map((b) => b.path) });
+  const saveObject = (): SaveFile => ({ version: 2, timeline: tlRef.current, library: binRef.current.map((b) => ({ path: b.path, ...(b.rating ? { rating: b.rating } : {}), ...(b.flag ? { flag: b.flag } : {}), ...(b.bin ? { bin: b.bin } : {}), ...((b.media?.size ?? savedSizes.current.get(b.path)) ? { size: b.media?.size ?? savedSizes.current.get(b.path) } : {}) })), bins: binsRef.current });
   const saveText = () => JSON.stringify(saveObject());
   /** The last session (with which project it was), so the app reopens where you left off. */
   const sessionText = () => JSON.stringify({ ...saveObject(), project: projectRef.current ?? undefined });
@@ -979,7 +1125,9 @@ export function App() {
           trackBox: (box) => runTrackingRef.current(box),
           run: (cmd) => runRef.current[cmd]?.(),
           dropPaths: async (paths, at) => importFoundRef.current(await ace.importPaths(paths), at),
+          saveText: () => saveTextRef.current(),
           restore: (text) => restoreRef.current(text),
+          relink: (folder) => relinkRef.current(folder),
           crashForTest: () => setCrashTest(true),
         };
         void runSelftest(api);
@@ -1043,6 +1191,8 @@ export function App() {
   importFoundRef.current = importFound;
   // Opened with the app from Finder / Explorer.
   const restoreRef = useRef(restore);
+  const saveTextRef = useRef(saveText);
+  saveTextRef.current = saveText;
   restoreRef.current = restore;
   const openedRef = useRef(async (_p: { path: string; text: string }) => {});
   openedRef.current = async (p) => { if (p.path !== projectRef.current && (await keepCurrent())) { setProjectsOpen(false); await loadProject(p); } };
@@ -1206,12 +1356,22 @@ export function App() {
   const toggleDetach = () => (clip?.audioDetached ? commit(reattachAudio(tlRef.current, clip.id)) : clip && detach());
   /** What each command does (menu bar, toolbars and shortcuts all use these). */
   const run: Record<string, () => void> = {
+    shuttleBack: () => shuttleTo(-1), shuttleStop: () => { stopShuttle(); player.pause(); }, shuttleFwd: () => shuttleTo(1),
     play: togglePlay, prevFrame: () => step(-1), nextFrame: () => step(1), back10: () => step(-10), fwd10: () => step(10), start: () => seek(0), end: () => seek(timelineDuration(tlRef.current)), fullscreen: () => { if (tlRef.current.clips.length) toggleFullscreen(); },
-    split, delLeft: () => deleteSide('left'), delRight: () => deleteSide('right'), keyframe: addKeyframe, delKey: deleteKeyframe, prevKey: () => jumpKey(-1), nextKey: () => jumpKey(1), text: addText, track: startTrackPick, detach: toggleDetach,
+    split, delLeft: () => deleteSide('left'), delRight: () => deleteSide('right'), keyframe: () => { if (player.playing || shuttle.current.dir) { stopShuttle(); player.pause(); } else addKeyframe(); }, delKey: deleteKeyframe, prevKey: () => jumpKey(-1), nextKey: () => jumpKey(1), text: addText, track: startTrackPick, detach: toggleDetach,
     duplicate: () => { if (clip) commit(duplicateClip(tlRef.current, clip.id)); }, delete: deleteCurrent, undo, redo,
-    import: () => void importDialog(), card: () => setCardOpen(true), music: () => void addMusic(), open: () => void openProject(), save: () => void saveProject(), saveAs: () => void saveProjectAs(), newProject: () => void newProject(), projects: () => { setWelcome(false); setProjectsOpen((v) => !v); }, export: () => { if (tlRef.current.clips.length) setExportOpen(true); }, grab: () => void frameGrab(),
+    import: () => void importDialog(), card: () => setCardOpen(true), music: () => void addMusic(), open: () => void openProject(), save: () => void saveProject(), saveAs: () => void saveProjectAs(), newProject: () => void newProject(), projects: () => { setWelcome(false); setProjectsOpen((v) => !v); }, export: () => {
+      if (!tlRef.current.clips.length) return;
+      const missing = [...new Set(tlRef.current.clips.filter((c) => !mediaNow(c.mediaPath)).map((c) => baseName(c.mediaPath)))];
+      if (missing.length) { setError(`Can’t export yet: ${missing.length === 1 ? `“${missing[0]}” is` : `${missing.length} videos are`} missing. Relink ${missing.length === 1 ? 'it' : 'them'} in Media first.`); return; }
+      setExportOpen(true);
+    }, grab: () => void frameGrab(),
     customize: () => setCustomize((v) => (v ? null : 'themes')), arrange: () => { setArranging(!isArranging()); setCustomize(null); }, undoUi: undoPrefs, toggleMedia: () => togglePanel(['media']),
-    toggleInspector: () => togglePanel(['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection']), toggleTimeline: () => togglePanel(['timeline']), compare: () => setCompare(true), sections: toggleAllSections, speedline: toggleSpeedLines, jumps: toggleJumpMarks, shortcuts: () => setShortcutsOpen(true), report: () => setReportOpen(true), tour: () => { setWelcome(false); setTourOpen(true); }, welcome: () => { setProjectsOpen(false); setWelcome(true); }, checkUpdates: () => void checkUpdates(),
+    toggleInspector: () => togglePanel(['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection']), toggleTimeline: () => togglePanel(['timeline']), compare: () => setCompare(true), sections: toggleAllSections, speedline: toggleSpeedLines, jumps: toggleJumpMarks, snap: toggleSnapping, source: () => { const p = binRef.current.find((b) => b.media)?.path; if (sourceRef.current) closeSource(); else if (p) openSource(p); }, markIn: () => markSource('inUs'), markOut: () => markSource('outUs'), insertEdit: () => placeSource('insert'), overwriteEdit: () => placeSource('overwrite'), toolSelect: () => setTool('select'), toolRoll: () => setTool('roll'), toolSlip: () => setTool('slip'), toolSlide: () => setTool('slide'), shortcuts: () => setShortcutsOpen(true), report: () => setReportOpen(true), tour: () => { setWelcome(false); setTourOpen(true); }, welcome: () => { setProjectsOpen(false); setWelcome(true); }, checkUpdates: () => void checkUpdates(),
+    marker: () => { const r = addMarker(tlRef.current, player.time); commit(r.tl); },
+    prevMarker: () => { const m = [...tlRef.current.markers].reverse().find((x) => x.t < player.time - 1000); if (m) seek(m.t); },
+    nextMarker: () => { const m = tlRef.current.markers.find((x) => x.t > player.time + 1000); if (m) seek(m.t); },
+    markersPanel: () => togglePanel(['markers']),
   };
   const runRef = useRef(run);
   runRef.current = run;
@@ -1496,6 +1656,11 @@ export function App() {
     shortcuts: cmdItem('shortcuts', 'Shortcuts', 'keyboard'),
     speedline: cmdItem('speedline', 'Speed line', 'speedline', { on: speedLines, locked: noClips }),
     jumps: cmdItem('jumps', 'Jumps', 'jumps', { on: jumpMarks, locked: noClips }),
+    snap: cmdItem('snap', 'Snapping', 'snap', { on: snapping }),
+    tool: {
+      label: TOOLS.find(([t]) => t === tool)![1], icon: `tool-${tool}`, title: 'What dragging a clip does', locked: noClips,
+      menu: TOOLS.map(([t, label, hint]) => ({ label, hint: `${comboLabel(comboOf(`tool${t[0]!.toUpperCase()}${t.slice(1)}`, shortcuts))}  ${hint}`, checked: tool === t, onClick: () => setTool(t) })),
+    },
     tlinfo: { label: 'Clip count', control: <span className="muted">{tl.clips.length} clip{tl.clips.length === 1 ? '' : 's'} · {fmtTime(duration)}</span> },
     tlzoom: { label: 'Timeline zoom', title: 'Timeline zoom', control: <label className="inline zoom"><Icon name="zoom" /><Range label="Timeline zoom" min={Math.log(4)} max={Math.log(400)} step={0.01} value={Math.log(pps)} onChange={(v) => setPps(Math.exp(v))} /></label> },
   };
@@ -1582,6 +1747,24 @@ export function App() {
   const viewerPanel = () => (
     <main className={`viewer${fullscreen ? ' is-fullscreen' : ''}`} ref={viewerRef} onDoubleClick={(e) => { if ((e.target as HTMLElement).closest('.frame') && !selectedOverlay) toggleFullscreen(); }}>
       {bars.transport.position === 'top' && transport}
+      {source && (() => {
+        const m = mediaNow(source.path), d = m?.durationUs ?? 1;
+        const pct = (us: number | null, dflt: number) => `${((us ?? dflt) / d) * 100}%`;
+        return (
+          <div className="source-bar" role="toolbar" aria-label="Source clip">
+            <span className="source-name"><b>Source</b> {baseName(source.path)}</span>
+            <div className="source-scrub" style={{ '--in': pct(source.inUs, 0), '--out': pct(source.outUs, d) } as React.CSSProperties}>
+              <input type="range" min={0} max={d} step={1000} value={Math.min(d, time)} aria-label="Position in the source clip" onChange={(e) => seek(+e.target.value)} />
+            </div>
+            <span className="source-marks">{fmtTime(source.inUs ?? 0)} – {fmtTime(source.outUs ?? d)}</span>
+            <button onClick={() => markSource('inUs')} title={`Mark in${key('markIn')}`}>In</button>
+            <button onClick={() => markSource('outUs')} title={`Mark out${key('markOut')}`}>Out</button>
+            <button onClick={() => placeSource('insert')} title={`Put it in at the timeline playhead; the rest moves later${key('insertEdit')}`}>Insert</button>
+            <button onClick={() => placeSource('overwrite')} title={`Put it over what's at the timeline playhead${key('overwriteEdit')}`}>Overwrite</button>
+            <button className="primary" onClick={closeSource} title="Back to the timeline">Done</button>
+          </div>
+        );
+      })()}
       <div className="stage" ref={stageRef}>
           <div
             style={{ visibility: tl.clips.length ? 'visible' : 'hidden' }}
@@ -1614,6 +1797,7 @@ export function App() {
             {compare && has && <span className="compare-tag">Before</span>}
             {trackBox && <div className="track-box" style={{ left: trackBox.x0, top: trackBox.y0, width: trackBox.x1 - trackBox.x0, height: trackBox.y1 - trackBox.y0 }} />}
           </div>
+        {has && clip && !media && <div className="empty offline"><div><Icon name="media" size={42} /><p><b>“{baseName(clip.mediaPath)}” is missing</b><br />It was moved, renamed or deleted. Relink it in Media to see it again.</p></div></div>}
         {!has && <div className="empty"><div><Icon name="media" size={42} /><p>Drag videos or folders here,<br />or import them:</p><button className="primary" onClick={run.import}>Import media…</button> <button onClick={run.card}>From memory card…</button></div></div>}
       </div>
       {bars.transport.position === 'bottom' && transport}
@@ -1654,11 +1838,11 @@ export function App() {
       >
         <TimelineView
           timeline={tl}
-          time={time}
+          time={source && sourceRef.current ? sourceRef.current.savedTime : time}
           playing={playing}
           selectedClipId={sel ? null : clip?.id ?? null}
           selection={sel}
-          onSeek={seek}
+          onSeek={(t) => { if (sourceRef.current) closeSource(); seek(t); }}
           onSelectClip={selectClip}
           onSelect={setSel}
           onTransition={openTransition}
@@ -1674,6 +1858,9 @@ export function App() {
           onKeyframeMenu={(clipId, id, x, y) => { pickKeyframe(clipId, id); setKfMenu({ clipId, id, x, y }); }}
           speedLines={speedLines}
           jumpMarks={jumpMarks}
+          snapping={snapping}
+          tool={tool}
+          onProEdit={proEdit}
           speedPoint={pickedSpeed}
           onSpeedPoint={pickSpeedPoint}
           onMoveSpeedPoint={moveSpeedPoint}
@@ -1684,6 +1871,8 @@ export function App() {
           onMoveAudio={(id, startUs, inUs, outUs) => commit(updateAudio(tlRef.current, id, { startUs, inUs, outUs }), `music:${id}`)}
           onMoveOverlay={(id, startUs, endUs) => commit(updateOverlay(tlRef.current, id, { startUs, endUs }), `ov-time:${id}`)}
           onDragEnd={() => { endGesture(); bump((n) => n + 1); }}
+          onMarker={(id, patch) => commit(updateMarker(tlRef.current, id, patch), `marker:${id}`)}
+          onRemoveMarker={(id) => commit(removeMarker(tlRef.current, id))}
           onClipMenu={(clipId, T, x, y) => setCtxMenu({ clipId, T, x, y })}
           pps={pps}
           onPps={setPps}
@@ -1693,11 +1882,12 @@ export function App() {
       </div>
   );
   const panels: Record<string, PanelDef> = {
-    media: { title: 'Media', icon: 'media', render: () => <MediaBin level={level} items={bin} onImport={importDialog} onAdd={(p) => addToTimeline(p)} onRemove={(p) => setBin((b) => b.filter((x) => x.path !== p))} /> },
+    media: { title: 'Media', icon: 'media', render: () => <MediaBin level={level} items={bin} folders={bins} onFolders={setBins} onItem={(path, patch) => setBin((b) => b.map((x) => (x.path === path ? { ...x, ...patch } : x)))} onRelink={() => void relinkMissing()} onProxiesCleared={() => { forgetProxies(); ensureProxies(binMedia()); }} onImport={importDialog} onAdd={(p) => addToTimeline(p)} onSource={openSource} onRemove={(p) => setBin((b) => b.filter((x) => x.path !== p))} /> },
     viewer: { title: 'Preview', icon: 'viewer', bare: true, keep: true, render: viewerPanel },
     timeline: { title: 'Timeline', icon: 'timeline', bare: true, render: timelinePanel },
     ...Object.fromEntries((['reframe', 'stabilize', 'color', 'effects', 'clip'] as const).map((id) => [id, { title: PANELS[id], icon: id, render: () => <InspectorPanel {...inspector} panel={id} /> }])),
     selection: { title: PANELS.selection, icon: 'selection', idle: !sel, render: () => <SelectionPanel {...inspector} /> },
+    markers: { title: PANELS.markers, icon: 'marker', render: () => <MarkersPanel timeline={tl} time={time} onSeek={seek} onAdd={run.marker!} onChange={(id, patch) => commit(updateMarker(tlRef.current, id, patch), `marker:${id}`)} onRemove={(id) => commit(removeMarker(tlRef.current, id))} /> },
     ...Object.fromEntries(customPanels.map((c) => [c.id, { title: c.title, icon: 'custom', render: () => <InspectorPanel {...inspector} panel={c.id} /> }])),
   };
   const mainBar = !bars.main.hidden && <Bar id="main" items={items} />;

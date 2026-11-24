@@ -23,15 +23,16 @@ Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:
 
 - Checks: `pnpm typecheck` and `pnpm test` (Vitest, no footage needed).
 - Build the renderer: `cd apps/desktop && npx electron-vite build`
-- Hidden self-test: `cd apps/desktop && npx electron . --selftest --selftest-mode=<mode>`
+- **Self-tests (use these):** `scripts/selftest.sh <mode>...` runs modes hidden, rebuilding only when sources changed (`--build` forces a build); it prints `<mode> pass` or the fails, and keeps `selftest-out/report-<mode>.json`. `scripts/regress.sh --quick` runs about 5 minutes of checks; `scripts/regress.sh` runs everything (about 45 minutes) and retries a failed mode once.
+- Underlying command: `cd apps/desktop && npx electron . --selftest --selftest-mode=<mode>`
   - It writes `selftest-out/report.json`; `fails: []` means it passed. Screenshots land in `selftest-out/`.
   - Modes:
     - interface and app: `ui`, `tour`, `drop`, `report`, `startup`
-    - playback and editing: `perf`, `full`, `speed`, `scrubback`, `strip`, `zoom`, `follow`, `stab`, `flat`
+    - playback and editing: `perf`, `full`, `speed`, `scrubback`, `strip`, `zoom`, `follow`, `stab`, `flat`, `protrim` (roll/slip/slide, JKL, Source view), `snap` (snapping, beats), `markers` (markers, project v2, missing files)
     - colour, lens and 360: `color`, `lens`, `lenslook`, `equirect`, `seamcheck`
-    - files: `chapters`, `card`, `odd`, `long`
+    - files: `chapters`, `card`, `odd`, `long`, `pool` (ratings, folders, relink, preview copies)
     - ride data and export: `gauges`, `airtime`, `export`, `tenbitexport`, `rider`
-  - A full regression runs all of them and takes about 40 minutes. Timing checks (`gauges`, `scrubback`) can fail once when the machine is busy: rerun before treating it as a bug.
+  - A full regression runs all of them and takes about 45 minutes. Timing checks (`gauges`, `scrubback`) can fail once when the machine is busy: rerun before treating it as a bug.
 - Installers: `pnpm --filter action-cam-editor dist:mac`. This builds Apple Silicon and Intel dmgs into `apps/desktop/release/`. Windows is built by `.github/workflows/installers.yml`.
 - Releasing: set the version in `apps/desktop/package.json`, give `CHANGELOG.md` a heading with it, then run Actions → Installers → Run workflow on main (Claude can start it with the GitHub tools): it tags main, builds Windows and publishes the release. Then, on the Mac: `git fetch origin --tags && git checkout v<version> && scripts/release-mac.sh` builds the Mac half, checks the app starts, and adds it to the release (GitHub's Mac machines often never start, so the Mac half is built locally). Each platform's installed apps update once their half is in the release (`src/main/updater.ts`).
 - Packaged self-test: run `<App>.app/Contents/MacOS/Action Cam Editor --selftest --selftest-mode=<mode>` with `ACE_REPO_ROOT` set to this repo.

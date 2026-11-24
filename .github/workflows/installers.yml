@@ -1,5 +1,7 @@
 # Checks every push; builds the installers on a version tag (v0.1.0-beta.1 …) or by hand from the
-# Actions tab (Run workflow).
+# Actions tab (Installers → Run workflow).
+# Releasing without the Terminal: Run workflow on main. It reads the version from
+# apps/desktop/package.json, tags main with it, builds, and makes the draft release.
 # Mac: a .dmg each for Apple Silicon and Intel. Windows: an installer and a portable .exe.
 # Both unsigned for now (see apps/desktop/electron-builder.yml for turning signing on).
 # A tag also puts the installers in a draft GitHub Release, published by hand when ready.
@@ -27,6 +29,11 @@ jobs:
         run: |
           v="$(node -p "require('./apps/desktop/package.json').version")"
           if [ "${GITHUB_REF_NAME#v}" != "$v" ]; then echo "Tag $GITHUB_REF_NAME doesn't match version $v in apps/desktop/package.json"; exit 1; fi
+      - name: This version hasn't been released yet (Run workflow on main makes a release)
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        run: |
+          v="$(node -p "require('./apps/desktop/package.json').version")"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null; then echo "v$v already exists: raise the version in apps/desktop/package.json (and CHANGELOG.md) first"; exit 1; fi
       - run: pnpm typecheck
       - run: pnpm test
 
@@ -101,7 +108,7 @@ jobs:
 
   release:
     needs: [mac, windows]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -109,17 +116,29 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { path: dist }
+      - name: Version
+        id: version
+        run: |
+          v="$(node -p "require('./apps/desktop/package.json').version")"
+          echo "v=$v" >> "$GITHUB_OUTPUT"
+      - name: Tag main with the version (Run workflow; a tag pushed here doesn't start another build)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git tag "v${{ steps.version.outputs.v }}"
+          git push origin "v${{ steps.version.outputs.v }}"
       - name: Release notes (this version's part of CHANGELOG.md)
         run: |
-          v="${GITHUB_REF_NAME#v}"
+          v="${{ steps.version.outputs.v }}"
           awk -v v="$v" '/^## /{on = index($0, v) > 0; next} on' CHANGELOG.md > notes.md
           cat docs/BETA.md >> notes.md
       - name: Checksums (the app checks each update against these)
         run: cd dist && sha512sum mac/* windows/* > checksums.txt && cat checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version.outputs.v }}
+          name: Action Cam Editor ${{ steps.version.outputs.v }}
           draft: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(steps.version.outputs.v, '-') }}
           body_path: notes.md
           files: |
             dist/mac/*.dmg

@@ -1154,7 +1154,7 @@ export function App() {
     setUpdateShown(true);
     const s = await ace.updateCheck();
     if (s.state === 'current') flash(`You have the newest version (${s.version}).`);
-    else if (s.state === 'error') { setUpdateShown(false); setError(`Couldn’t check for updates: ${s.message} Check the internet connection and try again.`); }
+    else if (s.state === 'error') { setUpdateShown(false); setError(s.message); }
   };
   /** Saves everything, then quits and installs the new version (the app opens again by itself). */
   const restartToUpdate = async () => {

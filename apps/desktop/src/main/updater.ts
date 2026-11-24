@@ -2,7 +2,8 @@
 //
 // The app isn't signed yet, and the standard Electron updater only installs into signed Mac apps,
 // so this does it itself: it finds the newest published release, downloads this computer's file
-// in the background, checks it against the release's checksums.txt, and installs when the user
+// in the background, checks it against the release's checksums file (checksums-mac.txt or
+// checksums-windows.txt: each half of a release is built separately), and installs when the user
 // chooses Restart (Mac: swaps the app bundle once the app has quit; Windows: runs the installer
 // silently). Drafts are never offered: a release reaches testers when it's published.
 import { app, net, shell } from 'electron';
@@ -102,10 +103,12 @@ export function setupUpdater(o: { enabled: boolean; send: (s: UpdateState) => vo
       const manual = (why: string) => set({ state: 'manual', version: v, url: rel.html_url, why });
       const why = await cannotInstall();
       if (why) return manual(why);
-      const file = rel.assets.find((a) => a.name === assetName(v)), sums = rel.assets.find((a) => a.name === 'checksums.txt');
-      if (!file || !sums) return manual('This release can’t be installed automatically.');
+      const sumsName = mac ? 'checksums-mac.txt' : 'checksums-windows.txt';
+      const file = rel.assets.find((a) => a.name === assetName(v)), sums = rel.assets.find((a) => a.name === sumsName) ?? rel.assets.find((a) => a.name === 'checksums.txt');
+      // (Each computer's half of a release is added separately: wait for this one's, checking again later.)
+      if (!file || !sums) return set(byHand ? { state: 'error', message: `Version ${v} is still being prepared for this computer. Try again in a little while.` } : { state: 'idle' });
       const want = checksumFor(await (await fetchOk(sums.browser_download_url)).text(), file.name);
-      if (!want) return manual('This release can’t be installed automatically.');
+      if (!want) return set(byHand ? { state: 'error', message: `Version ${v} is still being prepared for this computer. Try again in a little while.` } : { state: 'idle' });
 
       // Earlier downloads are no longer needed.
       await rm(dir(), { recursive: true, force: true });
@@ -134,7 +137,7 @@ export function setupUpdater(o: { enabled: boolean; send: (s: UpdateState) => vo
       const message = String(e).replace(/^(Type)?Error: /, '');
       log('error', 'update', message);
       // Checks in the background fail quietly (offline, GitHub busy…); they're tried again later.
-      return set(byHand ? { state: 'error', message } : { state: 'idle' });
+      return set(byHand ? { state: 'error', message: `The update check didn’t work: ${message.replace(/\.?$/, '.')} Check the internet connection and try again.` } : { state: 'idle' });
     }
   };
   const check = (byHand: boolean) => (running ??= run(byHand).finally(() => { running = null; }));

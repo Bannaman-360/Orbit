@@ -51,6 +51,19 @@ export function setupUpdater(o: { enabled: boolean; send: (s: UpdateState) => vo
   let running: Promise<UpdateState> | null = null;
   const dir = () => o.test?.dir ?? path.join(app.getPath('userData'), 'updates');
   const set = (s: UpdateState) => { state = s; o.send(s); return s; };
+  // Clears earlier downloads. The folder is first moved aside (instant, so a new download can start
+  // right away) and deleted after; deletes run one at a time, since two at once over a big .app fail
+  // with ENOTEMPTY.
+  let clearing: Promise<void> = Promise.resolve();
+  const clear = () => (clearing = clearing.catch(() => {}).then(async () => {
+    const d = dir(), parent = path.dirname(d), base = path.basename(d);
+    const old = (await readdir(parent).catch(() => [] as string[])).filter((n) => n.startsWith(`${base}-old-`)).map((n) => path.join(parent, n));
+    if (existsSync(d)) {
+      const aside = `${d}-old-${Date.now()}`;
+      try { await rename(d, aside); old.push(aside); } catch { await rm(d, { recursive: true, force: true, maxRetries: 5 }); }
+    }
+    for (const o of old) await rm(o, { recursive: true, force: true, maxRetries: 5 }).catch(() => {});
+  }));
   const current = o.test?.current ?? app.getVersion();
   const platform = o.test?.platform ?? process.platform, arch = o.test?.arch ?? process.arch;
   const mac = platform === 'darwin', win = platform === 'win32';
@@ -126,7 +139,7 @@ export function setupUpdater(o: { enabled: boolean; send: (s: UpdateState) => vo
       if (!want) return set(byHand ? { state: 'error', message: `Version ${v} is still being prepared for this computer. Try again in a little while.` } : { state: 'idle' });
 
       // Earlier downloads are no longer needed.
-      await rm(dir(), { recursive: true, force: true });
+      await clear();
       await mkdir(dir(), { recursive: true });
       const to = path.join(dir(), file.name);
       set({ state: 'downloading', version: v, fraction: 0 });
@@ -152,14 +165,17 @@ export function setupUpdater(o: { enabled: boolean; send: (s: UpdateState) => vo
       const message = String(e).replace(/^(Type)?Error: /, '');
       log('error', 'update', message);
       // Checks in the background fail quietly (offline, GitHub busy…); they're tried again later.
-      return set(byHand ? { state: 'error', message: `The update check didn’t work: ${message.replace(/\.?$/, '.')} Check the internet connection and try again.` } : { state: 'idle' });
+      // (Errors with a code like ENOTEMPTY come from the disk, not the network.)
+      const disk = typeof (e as { code?: unknown })?.code === 'string' && /^E[A-Z]+$/.test((e as { code: string }).code) && !/^E(CONN|HOST|NET|AI_|TIMEDOUT|PIPE)/.test((e as { code: string }).code);
+      const hint = disk ? 'Restart the app and try again.' : 'Check the internet connection and try again.';
+      return set(byHand ? { state: 'error', message: `The update check didn’t work: ${message.replace(/\.?$/, '.')} ${hint}` } : { state: 'idle' });
     }
   };
   const check = (byHand: boolean) => (running ??= run(byHand).finally(() => { running = null; }));
 
   if (o.enabled) {
     // Leftovers from an update that was installed.
-    if (existsSync(dir())) void rm(dir(), { recursive: true, force: true }).catch(() => {});
+    void clear().catch(() => {});
     setTimeout(() => void check(false), FIRST_CHECK_MS);
     setInterval(() => void check(false), EVERY_MS);
   }

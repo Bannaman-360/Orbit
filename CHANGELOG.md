@@ -1,5 +1,10 @@
 # Changes
 
+## 0.1.0-beta.6
+
+- Checking for updates right after an update had installed could fail with “directory not empty”. The old download is now cleared safely, and a check no longer trips over it.
+- When an update fails because of the disk rather than the internet, the message says to restart the app instead of checking the connection.
+
 ## 0.1.0-beta.5
 
 **Editing**

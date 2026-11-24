@@ -1,12 +1,12 @@
 # Checks every push; builds the installers on a version tag (v0.1.0-beta.1 …) or by hand from the
 # Actions tab (Installers → Run workflow).
 # Releasing without the Terminal: Run workflow on main. It reads the version from
-# apps/desktop/package.json, tags main with it, builds, and makes the draft release.
+# apps/desktop/package.json, tags main with it, builds, and publishes the release (a tag does too).
 # Mac: a .dmg each for Apple Silicon and Intel. Windows: an installer and a portable .exe.
 # Both unsigned for now (see apps/desktop/electron-builder.yml for turning signing on).
-# A tag also puts the installers in a draft GitHub Release, published by hand when ready.
-# Publishing it is what sends the update to everyone's app (it checks GitHub Releases, and uses the
-# zipped Mac apps, the Windows installer and checksums.txt from the release).
+# Publishing is what sends the update to everyone's app (it checks GitHub Releases, and uses the
+# zipped Mac apps, the Windows installer and checksums.txt from the release). It only happens once
+# both installers have built; if anything before it fails, nothing is published.
 name: Installers
 on:
   push:
@@ -137,7 +137,7 @@ jobs:
         with:
           tag_name: v${{ steps.version.outputs.v }}
           name: Action Cam Editor ${{ steps.version.outputs.v }}
-          draft: true
+          draft: false
           prerelease: ${{ contains(steps.version.outputs.v, '-') }}
           body_path: notes.md
           files: |

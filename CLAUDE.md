@@ -33,11 +33,12 @@ Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:
     - ride data and export: `gauges`, `airtime`, `export`, `tenbitexport`, `rider`
   - A full regression runs all of them and takes about 40 minutes. Timing checks (`gauges`, `scrubback`) can fail once when the machine is busy: rerun before treating it as a bug.
 - Installers: `pnpm --filter action-cam-editor dist:mac`. This builds Apple Silicon and Intel dmgs into `apps/desktop/release/`. Windows is built by `.github/workflows/installers.yml`.
-- Releasing: set the version in `apps/desktop/package.json`, give `CHANGELOG.md` a heading with it, then on GitHub: Actions → Installers → Run workflow on main (it tags main with the version, builds, and makes a draft release; pushing a tag `v<version>` does the same), then publish the draft. This session can't push tags, so use Run workflow. Publishing sends the update to every installed app (`src/main/updater.ts`); drafts reach no one.
+- Releasing: set the version in `apps/desktop/package.json`, give `CHANGELOG.md` a heading with it, then run Actions → Installers → Run workflow on main (Claude can start it with the GitHub tools). It tags main with the version, builds, and publishes the release, which sends the update to every installed app (`src/main/updater.ts`). Pushing a tag `v<version>` does the same; this session can't push tags.
 - Packaged self-test: run `<App>.app/Contents/MacOS/Action Cam Editor --selftest --selftest-mode=<mode>` with `ACE_REPO_ROOT` set to this repo.
 
 ## Rules
 - **Tests run hidden.** Never use `--selftest-show` or anything that takes the user's screen, focus or sound.
+- **Work on your own:** do as much as possible without the user. Claude may commit, push, open and merge its own pull requests, start workflows and release without asking; ask only when something truly needs the user (their Mac, a purchase, a decision about the product).
 - **Commits:** Claude may commit without asking. All commits must use the user's GitHub no-reply email (`360384248+Bannaman-360@users.noreply.github.com`), never their personal one. The remote is `github.com/Bannaman-360/Orbit`.
 - **Ask before every download:** packages, runtimes, ffmpeg builds, tools via `npx`.
 - **Licensing:** ffmpeg must stay LGPL; never add x264/x265 or other GPL parts. The app is unsigned for now.

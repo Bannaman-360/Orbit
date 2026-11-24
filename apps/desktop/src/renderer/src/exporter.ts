@@ -1,18 +1,18 @@
 // Exports the edit to an MP4: every output frame composited from the clips on screen
-// (two during a transition) plus overlays; every source frame is reframed so motion blur
+// (the main row, two during a transition, and the tracks above it) plus overlays; every source frame is reframed so motion blur
 // matches the preview; encoded in hardware, with the mixed audio.
 
 import { AudioBufferSource, canEncodeAudio, canEncodeVideo, Mp4OutputFormat, Output, QUALITY_HIGH, QUALITY_MEDIUM, QUALITY_VERY_HIGH, StreamTarget, VideoSample, VideoSampleSource, type StreamTargetChunk } from 'mediabunny';
 import { TrackDecoder } from '@ace/engine';
 import { parseCube, ReframeRenderer, sharedDevice } from '@ace/media360';
-import { framingAspect, layersAt, overlayState, timelineDuration, type Timeline, type TransitionLook } from '@ace/project';
+import { framingAspect, overlayState, stackAt, timelineDuration, type Look, type Timeline, type TimelineClip, type TransitionLook } from '@ace/project';
 import { ace } from './api';
 import { mixTimeline } from './audioEngine';
 import { ordinaryGamma } from './color';
 import { framesAt } from './calib';
 import { getMedia } from './media';
 import { clipLookAt, cropReady, presentLook, pushClipFrame } from './frameRender';
-import { compositeLayers, drawOverlays, transitionLook } from './overlayRender';
+import { compositeLayers, drawOverlays, transitionLook, type CompLayer } from './overlayRender';
 import type { LayerFrame } from './timelinePlayer';
 import { YuvReader, type YuvLayout } from './deepExport';
 
@@ -49,6 +49,9 @@ export async function loadLut(r: ReframeRenderer, path: string | null) {
   r.setLut(parseCube(text));
 }
 
+/** Most pictures on screen at once: the main row in a transition (2) plus tracks V2–V6. */
+export const MAX_LAYERS = 7;
+
 /** Time spent handing finished pictures to the encoder (ms), for measuring. */
 export const exportCost = { readMs: 0, encodeMs: 0, frames: 0 };
 
@@ -62,17 +65,27 @@ interface ExportSlot {
   pushedAny: boolean;
 }
 
+/** One picture of a composite: the clip, its look at that moment, and its place in the stack. */
+export interface ComposeLayer {
+  clip: TimelineClip;
+  look: Look;
+  track: number;
+  role?: 'out' | 'in';
+}
+
 /**
- * Two reframe renderers (one per clip on screen; clips alternate between them so a clip keeps
- * its motion-blur history through a transition) plus a 2D canvas that composites them and
- * draws overlays. Used for export and frame grabs.
+ * Reframe renderers, one per clip on screen (a clip keeps its renderer, and so its motion-blur
+ * history, for its whole time on screen), plus a 2D canvas that composites them and draws
+ * overlays. Renderers are made as needed and reused once their clip has left. Used for export
+ * and frame grabs.
  */
 class Compositor {
   readonly out: OffscreenCanvas;
   readonly ctx: OffscreenCanvasRenderingContext2D;
   /** 10-bit export: pictures kept in half floats from start to finish, read back as this. */
   private deep: YuvLayout | null = null;
-  private constructor(readonly renderers: [ReframeRenderer, ReframeRenderer], readonly width: number, readonly height: number, deep: YuvLayout | null) {
+  private pool: { r: ReframeRenderer; clipId: string | null }[] = [];
+  private constructor(readonly width: number, readonly height: number, deep: YuvLayout | null, private lutText: string | null) {
     this.out = new OffscreenCanvas(width, height);
     this.deep = deep;
     this.ctx = (deep ? this.out.getContext('2d', { colorType: 'float16' } as CanvasRenderingContext2DSettings) : this.out.getContext('2d'))!;
@@ -80,22 +93,37 @@ class Compositor {
   /** Exporting a video: the pictures hold the values a video file is read as (not as shown on screen). */
   private toFile: FileValues | null = null;
   static async create(width: number, height: number, lutPath: string | null, forVideo = false, deep: YuvLayout | null = null) {
-    const rs = await Promise.all([0, 1].map(() => ReframeRenderer.create(new OffscreenCanvas(width, height), { deep: !!deep })));
-    for (const r of rs) await loadLut(r, lutPath);
-    const c = new Compositor(rs as [ReframeRenderer, ReframeRenderer], width, height, deep);
-    if (forVideo && ordinaryGamma()) {
-      for (const r of rs) r.fileGamma = ordinaryGamma();
-      c.toFile = await FileValues.create(width, height, ordinaryGamma());
-    }
+    const lutText = lutPath ? new TextDecoder().decode(await ace.readAll(lutPath)) : null;
+    const c = new Compositor(width, height, deep, lutText);
+    if (forVideo && ordinaryGamma()) c.toFile = await FileValues.create(width, height, ordinaryGamma());
+    // One is always needed.
+    await c.rendererFor('');
+    c.pool[0]!.clipId = null;
     return c;
   }
-  rendererFor(clipIndex: number) {
-    return this.renderers[clipIndex % 2]!;
+  /** The renderer that draws this clip (a free one, or a new one). */
+  async rendererFor(clipId: string): Promise<ReframeRenderer> {
+    const own = this.pool.find((p) => p.clipId === clipId);
+    if (own) return own.r;
+    const free = this.pool.find((p) => p.clipId === null);
+    if (free) { free.clipId = clipId; free.r.resetHistory(); return free.r; }
+    if (this.pool.length >= MAX_LAYERS) throw new Error('Too many pictures on screen at once');
+    const r = await ReframeRenderer.create(new OffscreenCanvas(this.width, this.height), { deep: !!this.deep });
+    r.setLut(this.lutText ? parseCube(this.lutText) : null);
+    if (this.toFile) r.fileGamma = ordinaryGamma();
+    this.pool.push({ r, clipId });
+    return r;
   }
-  compose(tl: Timeline, T: number, aIndex: number, bIndex: number | null, look: TransitionLook | null) {
-    const a = this.rendererFor(aIndex).canvas as OffscreenCanvas;
-    const b = bIndex === null ? null : (this.rendererFor(bIndex).canvas as OffscreenCanvas);
-    compositeLayers(this.ctx, this.width, this.height, a, b, look);
+  /** Lets the renderers of clips that are no longer on screen draw others. */
+  release(keep: Set<string>) {
+    for (const p of this.pool) if (p.clipId !== null && !keep.has(p.clipId)) p.clipId = null;
+  }
+  /** How many renderers were made (for checking). */
+  get renderers() { return this.pool.length; }
+  async compose(tl: Timeline, T: number, layers: ComposeLayer[], look: TransitionLook | null) {
+    const comp: CompLayer[] = [];
+    for (const l of layers) comp.push({ src: (await this.rendererFor(l.clip.id)).canvas as OffscreenCanvas, xf: l.look.xf, role: l.role, track: l.track });
+    compositeLayers(this.ctx, this.width, this.height, comp, look);
     if (!this.toFile) { drawOverlays(this.ctx, this.width, this.height, tl, T); return; }
     // Text and gauges are drawn as they should look on screen, then turned into file values too.
     if (!tl.overlays.some((o) => overlayState(o, T))) return;
@@ -125,7 +153,7 @@ class Compositor {
     return async () => new VideoSample(await pending, { format: 'RGBX', codedWidth: this.width, codedHeight: this.height, timestamp: t, duration: d, colorSpace: { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false } });
   }
   destroy() {
-    for (const r of this.renderers) r.destroy();
+    for (const p of this.pool) p.r.destroy();
     this.toFile?.destroy();
     this.readers.forEach((x) => x.destroy());
     this.deepReaders.forEach((x) => x.destroy());
@@ -227,7 +255,7 @@ export async function exportTimeline(tl: Timeline, opts: ExportOptions, onProgre
   const comp = await Compositor.create(width, height, tl.lutPath, true, layout);
 
   onProgress({ fraction: 0, stage: 'Analysing stabilization' });
-  for (const c of tl.clips) await cropReady(c, await getMedia(c.mediaPath), width / height);
+  for (const c of [...tl.clips, ...tl.connected]) await cropReady(c, await getMedia(c.mediaPath), width / height);
 
   onProgress({ fraction: 0, stage: 'Mixing audio' });
   const mix = await mixTimeline(tl, total);
@@ -322,8 +350,7 @@ async function renderFrames(tl: Timeline, opts: ExportOptions, comp: Compositor,
   let written = 0;
 
   /** Pushes every source frame of a clip up to media time `upTo` (so motion blur sees them all). */
-  const feed = async (index: number, upTo: number) => {
-    const clip = tl.clips[index]!;
+  const feed = async (clip: TimelineClip, upTo: number) => {
     const media = await getMedia(clip.mediaPath);
     let slot = slots.get(clip.id);
     if (!slot) {
@@ -333,7 +360,7 @@ async function renderFrames(tl: Timeline, opts: ExportOptions, comp: Compositor,
       slot = { clipId: clip.id, decoders, times, next: 0, pushedAny: false };
       slots.set(clip.id, slot);
     }
-    const r = comp.rendererFor(index);
+    const r = await comp.rendererFor(clip.id);
     r.setLayout(media.layout);
     let look = null;
     // Times are whole microseconds: a picture due right now may be stamped a hair later.
@@ -362,26 +389,30 @@ async function renderFrames(tl: Timeline, opts: ExportOptions, comp: Compositor,
     for (let n = 0; n * step < total - step * 0.01; n++) {
       const T = n * step;
       if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
-      const L = layersAt(tl, T)!;
-      const visible = L.b ? [L.a, L.b] : [L.a];
-      for (const v of visible) {
-        const look = await feed(v.index, v.mediaUs);
-        presentLook(comp.rendererFor(v.index), look, { time: v.mediaUs });
-      }
-      // Clips that are finished free their decoders.
+      const L = stackAt(tl, T)!;
+      const visible = L.layers;
+      // Clips that are finished free their decoders and renderers.
       for (const [id, s] of slots) {
         if (!visible.some((v) => v.clip.id === id)) {
           s.decoders.forEach((d) => d.close());
           slots.delete(id);
         }
       }
-      comp.compose(tl, T, L.a.index, L.b ? L.b.index : null, L.b && L.transition ? transitionLook(L.transition.kind, L.progress) : null);
+      comp.release(new Set(visible.map((v) => v.clip.id)));
+      const looks: ComposeLayer[] = [];
+      for (const v of visible) {
+        const look = await feed(v.clip, v.mediaUs);
+        presentLook(await comp.rendererFor(v.clip.id), look, { time: v.mediaUs });
+        looks.push({ clip: v.clip, look, track: v.track, role: v.role });
+      }
+      const inTransition = visible.some((v) => v.role === 'in');
+      await comp.compose(tl, T, looks, inTransition && L.transition ? transitionLook(L.transition.kind, L.progress) : null);
       const r0 = performance.now();
       await take(T, step);
       exportCost.readMs += performance.now() - r0;
       exportCost.frames++;
       written++;
-      onProgress({ fraction: Math.min(0.99, T / total), stage: `Rendering clip ${L.a.index + 1} of ${tl.clips.length}`, fps: written / ((performance.now() - t0) / 1000) });
+      onProgress({ fraction: Math.min(0.99, T / total), stage: `Rendering clip ${visible[0]!.index + 1} of ${tl.clips.length}`, fps: written / ((performance.now() - t0) / 1000) });
     }
   } finally {
     for (const s of slots.values()) s.decoders.forEach((d) => d.close());
@@ -399,8 +430,9 @@ export async function grabFrame(tl: Timeline, T: number, layers: LayerFrame[], p
   const times = layers.map((l) => l.frames[0]!.timestamp);
   const comp = await Compositor.create(width, height, tl.lutPath);
   try {
+    const looks: ComposeLayer[] = [];
     for (const [i, l] of layers.entries()) {
-      const r = comp.rendererFor(l.index);
+      const r = await comp.rendererFor(l.clip.id);
       const ts = times[i]!;
       await cropReady(l.clip, l.media, width / height);
       // The preview may be showing a low-res proxy: grab from the original file.
@@ -410,14 +442,15 @@ export async function grabFrame(tl: Timeline, T: number, layers: LayerFrame[], p
         r.setLayout(l.media.layout);
         const look = pushClipFrame(r, l.clip, l.media, ts, orig.frames);
         presentLook(r, { ...look, motionBlur: 0 }, { time: ts });
+        looks.push({ clip: l.clip, look, track: l.track, role: l.role });
         await r.idle();
       } finally {
         orig.close();
       }
     }
-    const L = layersAt(tl, T);
-    const b = layers[1];
-    comp.compose(tl, T, layers[0]!.index, b ? b.index : null, b && L?.transition ? transitionLook(L.transition.kind, L.progress) : null);
+    const L = stackAt(tl, T);
+    const inTransition = layers.some((l) => l.role === 'in');
+    await comp.compose(tl, T, looks, inTransition && L?.transition ? transitionLook(L.transition.kind, L.progress) : null);
     const png = path.toLowerCase().endsWith('.png');
     const blob = await comp.out.convertToBlob({ type: png ? 'image/png' : 'image/jpeg', quality: 0.95 });
     await ace.writeFile(path, new Uint8Array(await blob.arrayBuffer()));

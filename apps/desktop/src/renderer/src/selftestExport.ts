@@ -62,7 +62,7 @@ export async function exportCheck() {
   pushClipFrame(r, c, m, f.frames[0]!.timestamp, f.frames);
   presentLook(r, c.look as Look, { time: f.frames[0]!.timestamp });
   const ref = new OffscreenCanvas(W, H), rc = ref.getContext('2d', { willReadFrequently: true })!;
-  compositeLayers(rc, W, H, cv, null, null);
+  compositeLayers(rc, W, H, [{ src: cv, track: 0 }], null);
   drawOverlays(rc, W, H, tl, f.frames[0]!.timestamp);
   f.close();
   const a = rc.getImageData(0, 0, W, H).data;

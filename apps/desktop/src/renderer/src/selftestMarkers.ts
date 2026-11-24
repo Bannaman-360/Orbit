@@ -56,7 +56,7 @@ export async function markersCheck(api: EditorApi) {
   // Saved as version 2, and opened again with the markers.
   const text = api.saveText!();
   const saved = JSON.parse(text);
-  ok('saves as version 2', saved.version === 2 && saved.timeline.version === 2 && Array.isArray(saved.bins) && typeof saved.library[0] === 'object', { version: saved.version, library0: saved.library[0] });
+  ok('saves as version 2 (timeline format 3)', saved.version === 2 && saved.timeline.version === 3 && Array.isArray(saved.bins) && typeof saved.library[0] === 'object', { version: saved.version, library0: saved.library[0] });
   await api.restore!(text);
   await sleep(500);
   ok('opens again with its markers', api.getTimeline().markers.length === 3 && api.getTimeline().markers[1]!.note === 'First jump');

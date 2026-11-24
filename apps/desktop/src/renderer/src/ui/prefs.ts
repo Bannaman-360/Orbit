@@ -60,7 +60,7 @@ export const DEFAULT_SECTIONS: Record<string, string[]> = {
   stabilize: ['Stabilization', 'Crop', 'Horizon'],
   color: ['Input color', 'Presets', 'Light', 'Color', 'Detail', 'LUT', 'Lens match', 'Match clips'],
   effects: ['Motion blur (ND filter)', 'Speed & lens', 'Film & light', 'Quick looks'],
-  clip: ['Speed', 'Airtime', 'Audio', 'Trim'],
+  clip: ['Transform', 'Layout', 'Speed', 'Airtime', 'Audio', 'Trim'],
   'sel:text': ['Text', 'Font', 'Colour & effect', 'Position', 'Overlay timing'],
   'sel:gauge': ['Look', 'Position', 'Overlay timing'],
   'sel:transition': [...TRANSITION_GROUPS.map(([g]) => g), 'Transition timing'],

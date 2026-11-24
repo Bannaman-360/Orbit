@@ -24,10 +24,12 @@ type Show = 'all' | 'fav' | 'rated' | 'notRejected';
 const SHOWS: [Show, string][] = [['all', 'All'], ['notRejected', 'Hide rejected'], ['fav', 'Favourites'], ['rated', '3 stars or more']];
 const fmtBytes = (b: number) => (b > 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
 
-export function MediaBin({ items, folders = [], onAdd, onImport, onRemove, onSource, onItem, onFolders, onRelink, onProxiesCleared, level }: {
+export function MediaBin({ items, folders = [], onAdd, onConnect, onImport, onRemove, onSource, onItem, onFolders, onRelink, onProxiesCleared, level }: {
   items: BinItem[];
   folders?: MediaFolder[];
   onAdd: (path: string) => void;
+  /** Put it over the main row at the playhead (on the lowest free track above). */
+  onConnect?: (path: string) => void;
   onImport: () => void;
   onRemove: (path: string) => void;
   onSource?: (path: string) => void;
@@ -113,6 +115,7 @@ export function MediaBin({ items, folders = [], onAdd, onImport, onRemove, onSou
     <div className="bin-actions">
         {it.media && onSource && <button title="View on its own: mark in and out, then insert at the playhead" onClick={() => onSource(it.path)}>View</button>}
         {it.media && <button title="Add to timeline" onClick={() => onAdd(it.path)}>＋</button>}
+        {it.media && onConnect && <button title="Add over the main row at the playhead (picture in picture, split screen)" aria-label="Add over the main row" onClick={() => onConnect(it.path)}><Icon name="layers" size={13} /></button>}
         <button title="Remove from bin" onClick={() => onRemove(it.path)}>✕</button>
       </div>
     </div>

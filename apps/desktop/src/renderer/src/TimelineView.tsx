@@ -1,5 +1,6 @@
-// The timeline: ruler, overlay track (text & gauges), video track (clips and the
-// transitions between them), audio track (music and detached clip audio), playhead.
+// The timeline: ruler, overlay track (text & gauges), video tracks V6…V2 (clips placed freely,
+// drawn over the main row), the main row V1 (clips and the transitions between them), audio
+// track (music and detached clip audio), playhead.
 // Drag clip edges to trim, drag a clip to reorder, drag overlays/audio to move them.
 
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
@@ -9,8 +10,8 @@ import { analyseBeats, beatsOf, useBeatsVersion } from './musicBeats';
 import { usePrefs } from './ui/prefs';
 import {
   assignLanes, audioSpan, clipDuration, clipStarts, GAUGES, hasRamp, localAt, mediaAt, mediaToTimeline, speedAt, speedRange, timelineDuration, trackExtent, trackRange, transitionUs, TRANSITIONS,
-  snapSpan, snapTargets, snapTime, type SnapTarget,
-  type Marker, type MarkerColor, type Overlay, type Timeline, type TimelineClip,
+  snapSpan, snapTargets, snapTime, type SnapTarget, connectedSpan, MAX_TRACKS, trackName, playLength,
+  type ConnectedClip, type Marker, type VideoTrack, type MarkerColor, type Overlay, type Timeline, type TimelineClip,
 } from '@ace/project';
 import type { Selection } from './App';
 import { baseName } from './api';
@@ -65,6 +66,11 @@ interface Props {
   onReorderClip: (id: string, toIndex: number) => void;
   onMoveAudio: (id: string, startUs: number, inUs: number, outUs: number) => void;
   onMoveOverlay: (id: string, startUs: number, endUs: number) => void;
+  /** A clip on a track above the main row: moved (and maybe to another track), or trimmed. */
+  onMoveConnected: (id: string, startUs: number, trackId: string) => void;
+  onTrimConnected: (id: string, startUs: number, inUs: number, outUs: number) => void;
+  /** Show, lock or mute a track. */
+  onTrack: (id: string, patch: Partial<Omit<VideoTrack, 'id'>>) => void;
   onDragEnd: () => void;
   /** What dragging a clip does: Select (trim = ripple, drag = reorder), Roll, Slip, Slide. */
   tool: EditTool;
@@ -91,6 +97,8 @@ const RULER_STEPS = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300];
 const LANE = 26;
 /** Overlay rows are slimmer: gauges usually span the whole edit, one row each. */
 const OV_LANE = 18;
+/** Height of a video track above the main row. */
+const VT_H = 40;
 
 export function TimelineView(p: Props) {
   const { timeline: tl } = p;
@@ -130,6 +138,7 @@ export function TimelineView(p: Props) {
   starts.forEach((s0, i) => { const c = tl.clips[i]!; targets.push({ t: s0, kind: 'edge', id: c.id }, { t: s0 + clipDuration(c), kind: 'edge', id: c.id }); });
   for (const m of tl.markers) targets.push({ t: m.t, kind: 'marker', id: m.id });
   for (const o of tl.overlays) targets.push({ t: o.startUs, kind: 'item', id: o.id }, { t: o.endUs, kind: 'item', id: o.id });
+  for (const c of tl.connected) { const sp = connectedSpan(c); targets.push({ t: sp.start, kind: 'edge', id: c.id }, { t: sp.end, kind: 'edge', id: c.id }); }
   for (const a of tl.audio) {
     const span = audioSpan(tl, a);
     targets.push({ t: span.start, kind: 'item', id: a.id }, { t: span.end, kind: 'item', id: a.id });
@@ -210,6 +219,26 @@ export function TimelineView(p: Props) {
               <OverlayBlock key={o.id} {...q} o={o} lane={ovLanes.get(o.id) ?? 0} left={x(o.startUs)} widthPx={Math.max(8, x(o.endUs - o.startUs))} pps={pps} duration={duration} />
             ))}
           </div>
+
+          {tl.clips.length > 0 && tl.tracks.length < MAX_TRACKS && (
+            <div className="track vtrack-add" data-track="new" title="Drag a clip from Media here to put it over the main row (or press E to add the selected one at the playhead)">
+              <Icon name="layers" size={11} />{tl.tracks.length ? 'Drop here for a new track' : 'Drag clips here to layer them over the main row (picture in picture, split screen)'}
+            </div>
+          )}
+          {[...tl.tracks].reverse().map((t) => (
+            <div key={t.id} className={`track vtrack${t.hidden ? ' is-hidden' : ''}${t.locked ? ' is-locked' : ''}`} data-track={t.id} style={{ height: VT_H }} onPointerDown={(e) => { if (e.target === e.currentTarget) p.onSelect(null); }}>
+              <div className="vtrack-head" onPointerDown={(e) => e.stopPropagation()}>
+                <b>{trackName(tl, t.id)}</b>
+                <button className={t.hidden ? 'off' : ''} title={t.hidden ? 'Show this track' : 'Hide this track'} aria-label={t.hidden ? `Show ${trackName(tl, t.id)}` : `Hide ${trackName(tl, t.id)}`} onClick={() => p.onTrack(t.id, { hidden: !t.hidden })}><Icon name={t.hidden ? 'eyeoff' : 'eye'} size={12} /></button>
+                <button className={t.locked ? 'on' : ''} title={t.locked ? 'Unlock this track' : 'Lock this track (its clips can’t be changed)'} aria-label={t.locked ? `Unlock ${trackName(tl, t.id)}` : `Lock ${trackName(tl, t.id)}`} onClick={() => p.onTrack(t.id, { locked: !t.locked })}><Icon name={t.locked ? 'lock' : 'unlock'} size={12} /></button>
+                <button className={t.muted ? 'off' : ''} title={t.muted ? 'Turn this track’s sound on' : 'Mute this track'} aria-label={t.muted ? `Unmute ${trackName(tl, t.id)}` : `Mute ${trackName(tl, t.id)}`} onClick={() => p.onTrack(t.id, { muted: !t.muted })}><Icon name={t.muted ? 'speakeroff' : 'speaker'} size={12} /></button>
+              </div>
+              {tl.connected.filter((c) => c.trackId === t.id).map((c) => {
+                const sp = connectedSpan(c);
+                return <ConnectedBlock key={c.id} {...q} c={c} track={t} left={x(sp.start)} widthPx={Math.max(6, x(sp.end - sp.start))} pps={pps} trackH={VT_H} view={view} />;
+              })}
+            </div>
+          ))}
 
           <div className="track video-track" ref={videoTrack} onPointerDown={(e) => { if (e.target === e.currentTarget) seekFromEvent(e.clientX); }}>
             {tl.clips.length === 0 && <div className="track-empty"><Icon name="media" size={14} />Drag clips here from Media, or double-click one</div>}
@@ -406,6 +435,63 @@ function ClipBlock(p: Props & { index: number; left: number; widthPx: number; pp
       ))}
       <div className="trim left" onPointerDown={(e) => { orig.current = c; p.onSelectClip(c.id); if (p.tool === 'roll' && prevId) p.onProEdit('roll', prevId, 0, 'start'); trimLeft(e); }} />
       <div className="trim right" onPointerDown={(e) => { orig.current = c; p.onSelectClip(c.id); if (p.tool === 'roll') p.onProEdit('roll', c.id, 0, 'start'); trimRight(e); }} />
+    </div>
+  );
+}
+
+/** A clip on a track above the main row: drag to move it (up or down to change track), drag its edges to trim. */
+function ConnectedBlock(p: Props & { c: ConnectedClip; track: VideoTrack; left: number; widthPx: number; pps: number; trackH: number; view: { from: number; to: number } }) {
+  const { c } = p;
+  const media = mediaNow(c.mediaPath);
+  const orig = useRef(c);
+  const usPerPx = 1e6 / p.pps;
+  const locked = !!p.track.locked;
+  const tracks = p.timeline.tracks;
+  const move = useDrag((dx, dy, e) => {
+    const o = orig.current;
+    const len = playLength(o);
+    const start = Math.max(0, p.snap!.span(o.startUs + dx * usPerPx, o.startUs + len + dx * usPerPx, e, o.id));
+    // Rows are drawn top track first: dragging up goes to a higher track.
+    const from = tracks.findIndex((t) => t.id === o.trackId);
+    const to = Math.max(0, Math.min(tracks.length - 1, from - Math.round(dy / (VT_H + 6))));
+    p.onMoveConnected(o.id, start, tracks[to]!.id);
+  }, p.onDragEnd);
+  const trimLeft = useDrag((dx, _dy, e) => {
+    const o = orig.current;
+    const want = p.snap!.time(o.startUs + dx * usPerPx, e, o.id) - o.startUs;
+    // Not before the start of the recording, nor past the end of the clip.
+    const d = Math.max(localAt(o, 0), Math.min(want, playLength(o) - 200_000));
+    p.onTrimConnected(o.id, Math.max(0, o.startUs + d), Math.max(0, Math.round(mediaAt(o, d))), o.outUs);
+  }, p.onDragEnd);
+  const trimRight = useDrag((dx, _dy, e) => {
+    const o = orig.current;
+    const end = p.snap!.time(o.startUs + playLength(o) + dx * usPerPx, e, o.id) - o.startUs;
+    const max = media?.durationUs ?? o.outUs;
+    p.onTrimConnected(o.id, o.startUs, o.inUs, Math.max(o.inUs + 200_000, Math.min(max, Math.round(mediaAt(o, Math.max(0, end))))));
+  }, p.onDragEnd);
+  const selected = p.selection?.kind === 'layer' && p.selection.id === c.id;
+  const pick = () => { orig.current = c; p.onSelect({ kind: 'layer', id: c.id }); };
+  return (
+    <div
+      className={`clip vclip${selected ? ' selected' : ''}${media?.is360 ? ' is360' : ''}${media ? '' : ' offline'}${locked ? ' locked' : ''}`}
+      style={{ left: p.left, width: p.widthPx, ...(media?.thumbnail ? ({ '--thumb': `url(${media.thumbnail})` } as CSSProperties) : {}) }}
+      onPointerDown={(e) => { if (e.button !== 0 || e.ctrlKey) return; pick(); if (!locked) move(e); }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        pick();
+        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        p.onClipMenu(c.id, c.startUs + Math.max(0, Math.min(playLength(c) - 1, ((e.clientX - r.left) / p.pps) * 1e6)), e.clientX, e.clientY);
+      }}
+      title={`${trackName(p.timeline, c.trackId)} · ${baseName(c.mediaPath)} · ${fmtTime(c.inUs)}–${fmtTime(c.outUs)}${locked ? ' · locked' : ''}`}
+    >
+      <Strip clip={c} left={p.left} widthPx={p.widthPx} pps={p.pps} height={p.trackH} view={p.view} playhead={(p.time / 1e6) * p.pps} />
+      <div className="clip-label">
+        {media?.is360 && <b className="badge">360</b>}
+        {speedText(c) && <b className="badge">{speedText(c)}</b>}
+        <span>{baseName(c.mediaPath)}</span>
+      </div>
+      {!locked && <div className="trim left" onPointerDown={(e) => { pick(); trimLeft(e); }} />}
+      {!locked && <div className="trim right" onPointerDown={(e) => { pick(); trimRight(e); }} />}
     </div>
   );
 }

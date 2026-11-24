@@ -44,7 +44,45 @@ export interface Effects {
 
 export const NO_EFFECTS: Effects = { grain: 0, glow: 0, chroma: 0, zoomBlur: 0, leak: 0, bars: 0 };
 
+/**
+ * Where a clip sits in the frame (picture-in-picture, split screen). Fractions of the output
+ * frame; a missing transform is the whole frame. Keyframed with the rest of the look.
+ */
+export interface Transform {
+  /** Centre offset from the frame's centre, fractions of the frame's width / height. */
+  x: number;
+  y: number;
+  /** 1 = the size of the frame. */
+  scale: number;
+  /** Cut from each side of the clip's picture: left, top, right, bottom, 0–0.9. */
+  crop: [number, number, number, number];
+  /** Degrees, clockwise. */
+  rotate: number;
+  /** 0–1 */
+  opacity: number;
+  /** Rounded corners, a share of the shorter side of the shown picture, 0–0.5. */
+  radius: number;
+  /** Border width, a share of the frame's height, 0–0.05. */
+  border: number;
+  borderColor: string;
+  /** Drop shadow, 0 (none) … 1 (strong). */
+  shadow: number;
+}
+
+export const IDENTITY_XF: Transform = { x: 0, y: 0, scale: 1, crop: [0, 0, 0, 0], rotate: 0, opacity: 1, radius: 0, border: 0, borderColor: '#ffffff', shadow: 0 };
+
+export const xfOf = (l: { xf?: Transform }): Transform => l.xf ?? IDENTITY_XF;
+
+/** Whether a transform leaves the picture exactly as it is (full frame, nothing drawn round it). */
+export function isIdentityXf(x: Transform | undefined): boolean {
+  if (!x) return true;
+  return Math.abs(x.x) < 1e-6 && Math.abs(x.y) < 1e-6 && Math.abs(x.scale - 1) < 1e-6 && x.crop.every((c) => c < 1e-6)
+    && Math.abs(x.rotate) < 1e-6 && x.opacity >= 1 - 1e-6 && x.radius < 1e-6 && x.border < 1e-6 && x.shadow < 1e-6;
+}
+
 export interface Look {
+  /** Placement in the frame (missing = full frame). */
+  xf?: Transform;
   yaw: number;
   pitch: number;
   roll: number;

@@ -1,7 +1,7 @@
 // Audio for the edit: each clip's own sound (at its speed and volume) plus music,
 // with fades. The same scheduling drives live playback and the offline export mix.
 
-import { audioSpan, clipDuration, clipStarts, hasRamp, localAt, mediaAt, playLength, slowSpans, speedAt, speedBreaks, transitionUs, type Timed, type Timeline } from '@ace/project';
+import { audioSpan, clipDuration, clipStarts, hasRamp, localAt, mediaAt, playLength, slowSpans, speedAt, speedBreaks, timelineDuration, transitionUs, type ConnectedClip, type Timed, type Timeline } from '@ace/project';
 import { keepsPitch, stretchedSound } from './stretch';
 import { BLOCK_PAD_S, clipSound, getMedia, getMusic, mediaNow, musicNow, type Sound } from './media';
 
@@ -90,6 +90,20 @@ function voices(ctx: Ctx, dest: AudioNode, tl: Timeline, T: number, when: number
     add(sound, g, at, c, skip, d - skip, c.muteBelow, c.mediaPath);
   });
 
+  // Clips on the tracks above the main row (not on muted or hidden tracks), cut at the end of the edit.
+  const total = timelineDuration(tl);
+  for (const c of heardConnected(tl)) {
+    const sound = sounds.get(c.mediaPath);
+    const s = c.startUs, d = Math.min(playLength(c), total - s);
+    if (!sound || c.volume <= 0 || d <= 0 || s + d <= T) continue;
+    const skip = Math.max(0, T - s);
+    const g = ctx.createGain();
+    g.connect(dest);
+    const at = when + Math.max(0, s - T) / 1e6;
+    g.gain.setValueAtTime(c.volume, at);
+    add(sound, g, at, c, skip, d - skip, c.muteBelow, c.mediaPath);
+  }
+
   for (const a of tl.audio) {
     const m = musicNow.get(a.path);
     if (!m) continue;
@@ -115,6 +129,10 @@ function voices(ctx: Ctx, dest: AudioNode, tl: Timeline, T: number, when: number
   }
   return out;
 }
+
+/** Track clips whose sound is heard. */
+const heardConnected = (tl: Timeline): ConnectedClip[] =>
+  tl.connected.filter((c) => { const t = tl.tracks.find((x) => x.id === c.trackId); return !!t && !t.muted && !t.hidden; });
 
 /** Makes a source's speed follow the ramp from media time `a` to `b`, starting at context time `at`. */
 function follow(rate: AudioParam, v: Voice, a: number, b: number, at: number) {
@@ -176,7 +194,7 @@ function feed(ctx: Ctx, v: Voice, until: number, now: number, nodes: AudioSchedu
 /** Everything with sound that the timeline needs. */
 export async function loadTimelineAudio(tl: Timeline): Promise<Map<string, Sound | null>> {
   const out = new Map<string, Sound | null>();
-  for (const c of tl.clips) {
+  for (const c of [...tl.clips, ...heardConnected(tl)]) {
     if (out.has(c.mediaPath)) continue;
     const m = mediaNow(c.mediaPath) ?? (await getMedia(c.mediaPath).catch(() => null));
     out.set(c.mediaPath, m ? clipSound(m) : null);
@@ -218,6 +236,13 @@ export class AudioPlayer {
       const block = (l: number) => Math.max(0, Math.floor(mediaAt(c, l) / 1e6 / s.blockS));
       void s.fetch(block(local)); void s.fetch(block(local + 3e6));
     });
+    for (const c of heardConnected(tl)) {
+      const s = this.sounds.get(c.mediaPath);
+      if (!s || s.blockS === Infinity || c.startUs + playLength(c) <= T || c.startUs > T + 2e6) continue;
+      const local = Math.max(0, T - c.startUs);
+      if (keepsPitch(c)) { const st = stretchedSound(s, c, c.mediaPath); void st.fetch(Math.floor(local / 1e6 / st.blockS)); continue; }
+      void s.fetch(Math.max(0, Math.floor(mediaAt(c, local) / 1e6 / s.blockS)));
+    }
     for (const a of tl.audio) {
       const s = musicNow.get(a.path)?.sound;
       const { start, end } = audioSpan(tl, a);

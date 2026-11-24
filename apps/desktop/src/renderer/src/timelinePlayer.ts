@@ -3,7 +3,7 @@
 // it is needed so cuts and transitions are seamless.
 
 import { TrackDecoder } from '@ace/engine';
-import { clipStarts, layersAt, speedAt, timelineDuration, type Located, type Timeline, type TimelineClip, type Transition } from '@ace/project';
+import { clipStarts, connectedSpan, speedAt, stackAt, timelineDuration, type StackLayer, type Timeline, type TimelineClip, type Transition } from '@ace/project';
 import type { EacLayout } from '@ace/media360';
 import { mediaNow, type Media } from './media';
 import { previewSource, type PreviewSource } from './proxy';
@@ -38,7 +38,12 @@ interface Slot {
 
 export interface LayerFrame {
   clip: TimelineClip;
+  /** Index in the main row (track 0) or in the track clips (`tl.connected`). */
   index: number;
+  /** 0 = main row, 1 = V2, … */
+  track: number;
+  /** Main row during a transition: the outgoing or the incoming clip. */
+  role?: 'out' | 'in';
   media: Media;
   /** 360 layout of the frames (proxies are smaller than the original). */
   layout: EacLayout | null;
@@ -55,7 +60,7 @@ export interface TickResult {
   media: Media;
   mediaUs: number;
   frames: VideoFrame[] | null;
-  /** Everything to draw, bottom first: [clip] or [outgoing, incoming]. Null while decoding. */
+  /** Everything to draw, bottom first: the main row ([clip] or [outgoing, incoming]), then V2, V3… Null while decoding. */
   layers: LayerFrame[] | null;
   transition?: Transition;
   progress: number;
@@ -177,25 +182,30 @@ export class TimelinePlayer {
 
   tick(now: number): TickResult | null {
     const tl = this.getTimeline();
-    const L = layersAt(tl, this.time);
-    if (!L) {
+    const st = stackAt(tl, this.time);
+    if (!st) {
       for (const id of [...this.slots.keys()]) this.drop(id);
       return null;
     }
-    const visible: Located[] = L.b ? [L.a, L.b] : [L.a];
+    const visible: StackLayer[] = st.layers;
+    const main = visible.filter((v) => v.track === 0);
+    const L = { a: main[0]!, transition: st.transition, progress: st.progress };
     const keep = new Set(visible.map((v) => v.clip.id));
 
-    // Pre-roll the clip that comes on screen next.
-    const last = visible[visible.length - 1]!;
-    const next = tl.clips[last.index + 1];
-    let preroll: { clip: TimelineClip; media: Media } | null = null;
-    if (this.playing && next) {
-      const startNext = clipStarts(tl)[last.index + 1]!;
-      const nm = mediaNow(next.mediaPath);
-      if (nm && startNext - this.time < PREROLL_US) {
-        preroll = { clip: next, media: nm };
-        keep.add(next.id);
-      }
+    // Pre-roll the clips that come on screen next: on the main row, and on the tracks above.
+    const prerolls: { clip: TimelineClip; media: Media }[] = [];
+    if (this.playing) {
+      const last = main[main.length - 1]!;
+      const next = tl.clips[last.index + 1];
+      const soon = (clip: TimelineClip, start: number) => {
+        const nm = mediaNow(clip.mediaPath);
+        if (nm && !keep.has(clip.id) && start > this.time && start - this.time < PREROLL_US) {
+          prerolls.push({ clip, media: nm });
+          keep.add(clip.id);
+        }
+      };
+      if (next) soon(next, clipStarts(tl)[last.index + 1]!);
+      for (const c of tl.connected) if (!tl.tracks.find((t) => t.id === c.trackId)?.hidden) soon(c, connectedSpan(c).start);
     }
     for (const id of [...this.slots.keys()]) if (!keep.has(id)) this.drop(id);
 
@@ -231,7 +241,7 @@ export class TimelinePlayer {
         if (kept && (slot.shownTs < 0 || kept[0]!.timestamp <= slot.shownTs + 500)) {
           slot.shownTs = kept[0]!.timestamp;
           slot.backSince = 0;
-          return { clip: v.clip, index: v.index, media, mediaUs: v.mediaUs, frames: kept, layout: slot.reverse.layout, level: slot.reverse.level };
+          return { clip: v.clip, index: v.index, track: v.track, role: v.role, media, mediaUs: v.mediaUs, frames: kept, layout: slot.reverse.layout, level: slot.reverse.level };
         }
         // Not made yet: keep what is up for a moment rather than jump to the keyframe.
         slot.backSince ||= performance.now();
@@ -254,11 +264,11 @@ export class TimelinePlayer {
       // With pictures left out, the halves of a 360 picture can be a moment apart: hold the last one.
       if (frames.length > 1 && frames.every(Boolean) && frames.some((f) => Math.abs(f!.timestamp - frames[0]!.timestamp) > 2000)) { holding = true; return null; }
       return frames.every((f): f is VideoFrame => f !== null)
-        ? { clip: v.clip, index: v.index, media, mediaUs: v.mediaUs, frames, layout: slot.source.layout, level: slot.source.level }
+        ? { clip: v.clip, index: v.index, track: v.track, role: v.role, media, mediaUs: v.mediaUs, frames, layout: slot.source.layout, level: slot.source.level }
         : null;
     });
-    if (preroll) {
-      const slot = this.slotFor(preroll.clip, preroll.media, preroll.clip.inUs);
+    for (const pre of prerolls) {
+      const slot = this.slotFor(pre.clip, pre.media, pre.clip.inUs);
       for (const d of slot.decoders) void d.pump();
     }
     const mainMedia = mediaNow(L.a.clip.mediaPath);

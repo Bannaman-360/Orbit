@@ -1,6 +1,6 @@
 // Keyframed looks with per-segment easing.
 
-import { NO_EFFECTS, type Effects, type Grade, type Look } from './look';
+import { IDENTITY_XF, NO_EFFECTS, type Effects, type Grade, type Look, type Transform } from './look';
 
 export type Easing = 'smooth' | 'linear' | 'hold';
 
@@ -34,12 +34,29 @@ function lerpAngle(a: number, b: number, f: number) {
 /** FOV zooms feel even when interpolated in log space. */
 const lerpFov = (a: number, b: number, f: number) => Math.exp(lerp(Math.log(a), Math.log(b), f));
 
+export function mixTransform(a: Transform, b: Transform, f: number): Transform {
+  return {
+    x: lerp(a.x, b.x, f),
+    y: lerp(a.y, b.y, f),
+    // Zooms feel even in log space.
+    scale: Math.exp(lerp(Math.log(Math.max(1e-3, a.scale)), Math.log(Math.max(1e-3, b.scale)), f)),
+    crop: a.crop.map((c, i) => lerp(c, b.crop[i]!, f)) as Transform['crop'],
+    rotate: lerp(a.rotate, b.rotate, f),
+    opacity: lerp(a.opacity, b.opacity, f),
+    radius: lerp(a.radius, b.radius, f),
+    border: lerp(a.border, b.border, f),
+    borderColor: f < 0.5 ? a.borderColor : b.borderColor,
+    shadow: lerp(a.shadow, b.shadow, f),
+  };
+}
+
 export function mixLook(a: Look, b: Look, f: number): Look {
   const grade = {} as Grade;
   for (const k of Object.keys(a.grade) as (keyof Grade)[]) grade[k] = lerp(a.grade[k], b.grade[k], f);
   const fx = { ...NO_EFFECTS };
   for (const k of Object.keys(fx) as (keyof Effects)[]) fx[k] = lerp(a.fx?.[k] ?? 0, b.fx?.[k] ?? 0, f);
   return {
+    ...(a.xf || b.xf ? { xf: mixTransform(a.xf ?? IDENTITY_XF, b.xf ?? IDENTITY_XF, f) } : {}),
     yaw: lerpAngle(a.yaw, b.yaw, f),
     pitch: lerp(a.pitch, b.pitch, f),
     roll: lerp(a.roll, b.roll, f),

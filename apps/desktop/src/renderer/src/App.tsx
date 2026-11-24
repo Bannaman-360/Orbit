@@ -3,11 +3,12 @@ import { MIN_FISHEYE, parseCube, ReframeRenderer } from '@ace/media360';
 import {
   addClip, designFor, GAUGE_DESIGNS, gaugeSet, clipDuration, clipStarts, localAt, deleteSideAt, detachAudio, duplicateClip, emptyTimeline, FRAMINGS, framingAspect, GAUGES, keyframeNear, loadTimeline, locate,
   mediaToTimeline, moveClip, newAudioClip, newClip, newGaugeOverlay, newTextOverlay, nextKeyTime, prevKeyTime, reattachAudio, removeAudio,
-  removeClip, removeKeyframe, removeOverlay, setEasing, setKeyframe, splitAt, timelineDuration, transitionLook, trimClip, updateAudio,
+  removeClip, removeKeyframe, removeOverlay, setEasing, setKeyframe, splitAt, timelineDuration, transitionLook, trimClip, updateAudio, type Transform,
   updateClip, updateOverlay, addMarker, updateMarker, removeMarker, rollCut, slipClip, slideClip, insertClipAt, overwriteClipAt,
   hasRamp, mediaAt, moveSpeedKey, rippleItems, DEFAULT_LENS_LOOK, fisheyeForLook, lookAt, removeSpeedKey, setClipSpeed, setSpeedEase, setSpeedKey, speedAt, speedKeyNear,
   COMFORT_FOV, fitSubjectFrac, fracForFov, moveKeyframe, trackWeight, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, setTrackRange, trackActive, trackExtent, trackHeld, trackRange,
   type ClipTrack, type Easing, type GaugeDesign, type GaugeKind, type Grade, type Look, type Overlay, type Timeline, type TimelineClip, type Transition,
+  TIMELINE_VERSION, addTrack, applyLayout, cellTransform, LAYOUT_TEMPLATES, cleanXf, hitsLayer, stackAt, xfOf, layerLocated, moveConnected, newId, placeConnected, playLength, removeConnected, splitConnected, trackFree, trackName, trimEmptyTracks, updateTrack, type Located,
 } from '@ace/project';
 import { ace, baseName, type FoundMedia, type ProjectMeta, type UpdateState } from './api';
 import { NameSheet, ProjectsPage } from './Projects';
@@ -17,7 +18,7 @@ import { cardOf, running, startCards, useCards } from './cardImport';
 import { ExportDialog } from './ExportDialog';
 import { pauseFilmstrip } from './filmstrip';
 import { ImportWindow } from './ImportWindow';
-import { grabFrame, loadLut } from './exporter';
+import { grabFrame, loadLut, MAX_LAYERS } from './exporter';
 import { adoptReframe, canReframe, lensLookOf, clipLens, clipLookAt, flatDirection, flatShot, FOLLOW_ROOM, ownLookAt, roomFov, shareOf, shownFov, withoutEffects, presentLook, pushClipFrame, reframeSignature } from './frameRender';
 import { angleBetween, directionAt, trackSubject } from './tracker';
 import { InspectorPanel, SelectionPanel, type InspectorProps } from './Inspector';
@@ -25,7 +26,7 @@ import { MediaBin, type BinItem } from './MediaBin';
 import { AppMenu, ShortcutsDialog } from './Menu';
 import { forgetMedia, getMedia, loadMusic, mediaNow, MISSING, whyCannotOpen, wholeRecordings } from './media';
 import { ensureProxies, forgetProxies, onProxyChange, PREVIEW_LEVELS, setPreviewLevel, type PreviewLevel } from './proxy';
-import { drawOverlays, hitOverlay, layerCss } from './overlayRender';
+import { drawOverlays, hitOverlay, layerCss, placedCss } from './overlayRender';
 import { runSelftest, type EditorApi } from './selftest';
 import { TimelinePlayer, type TickResult } from './timelinePlayer';
 import { TimelineView } from './TimelineView';
@@ -59,7 +60,8 @@ interface SaveFile { version: 2; timeline: Timeline; library: LibraryEntry[]; bi
 const libraryOf = (raw: unknown): LibraryEntry[] => (Array.isArray(raw) ? raw : []).flatMap((x): LibraryEntry[] => (typeof x === 'string' ? [{ path: x }] : x && typeof x.path === 'string' ? [{ path: x.path, ...(x.rating ? { rating: Math.max(0, Math.min(5, Math.round(+x.rating))) } : {}), ...(x.flag === 'fav' || x.flag === 'reject' ? { flag: x.flag } : {}), ...(typeof x.bin === 'string' ? { bin: x.bin } : {}), ...(Number.isFinite(x.size) ? { size: +x.size } : {}) }] : []));
 
 /** What is selected besides the clip under the playhead. */
-export type Selection = { kind: 'audio' | 'overlay' | 'transition'; id: string } | null;
+/** What is selected besides the clip at the playhead: a sound, text or gauge, transition, or a clip on a track above the main row. */
+export type Selection = { kind: 'audio' | 'overlay' | 'transition' | 'layer'; id: string } | null;
 
 /** True when the element takes typed text (so shortcuts must not fire). */
 function isTextEntry(el: HTMLElement | null): boolean {
@@ -73,9 +75,10 @@ function isTextEntry(el: HTMLElement | null): boolean {
 const speedId = (c: { speed?: number; speedKeys?: { t: number; speed: number; ease?: string }[] }) => c.speedKeys?.map((k) => `${k.t}@${k.speed}${k.ease ?? ''}`).join() ?? c.speed;
 /** Clips' media paths, in/out, order, speed and transitions: changes that need the player to re-seek. */
 const structureKey = (tl: Timeline) =>
-  tl.clips.map((c) => `${c.id}:${c.mediaPath}:${c.inUs}:${c.outUs}:${speedId(c)}:${c.transitionIn?.durationUs ?? 0}`).join('|');
+  tl.clips.map((c) => `${c.id}:${c.mediaPath}:${c.inUs}:${c.outUs}:${speedId(c)}:${c.transitionIn?.durationUs ?? 0}`).join('|')
+  + `#${tl.connected.map((c) => `${c.id}:${c.mediaPath}:${c.inUs}:${c.outUs}:${speedId(c)}:${c.startUs}:${c.trackId}`).join('|')}#${tl.tracks.map((t) => `${t.id}${t.hidden ? 'h' : ''}`).join(',')}`;
 const audioKey = (tl: Timeline) =>
-  `${structureKey(tl)}#${tl.clips.map((c) => `${c.volume}${c.audioDetached ? 'd' : ''}${c.muteBelow ?? ''}${c.keepPitch === false ? 'p' : ''}`).join(',')}#${tl.audio
+  `${structureKey(tl)}#${tl.connected.map((c) => `${c.volume}${c.muteBelow ?? ''}${c.keepPitch === false ? 'p' : ''}`).join(',')}#${tl.tracks.map((t) => (t.muted ? 'm' : '-')).join('')}#${tl.clips.map((c) => `${c.volume}${c.audioDetached ? 'd' : ''}${c.muteBelow ?? ''}${c.keepPitch === false ? 'p' : ''}`).join(',')}#${tl.audio
     .map((a) => `${a.path}:${a.startUs}:${a.inUs}:${a.outUs}:${a.volume}:${a.fadeInUs}:${a.fadeOutUs}:${speedId(a)}:${a.muteBelow ?? ''}:${a.keepPitch === false ? 'p' : ''}`)
     .join('|')}`;
 
@@ -230,14 +233,18 @@ export function App() {
   }
 
   // --- Playback & rendering --------------------------------------------------------------------
-  const canvas0 = useRef<HTMLCanvasElement>(null);
-  const canvas1 = useRef<HTMLCanvasElement>(null);
-  const canvasRefs = [canvas0, canvas1];
+  // One slot per picture on screen (main row, two in a transition, then the tracks above): the
+  // slot moves with a transition, the box inside it places the clip, the canvas is its picture.
+  const slotEls = useRef<(HTMLDivElement | null)[]>([]);
+  const boxEls = useRef<(HTMLDivElement | null)[]>([]);
+  const canvasEls = useRef<(HTMLCanvasElement | null)[]>([]);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const dipRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
-  const renderersRef = useRef<ReframeRenderer[]>([]);
+  /** Renderer per slot (made when first needed), and the clip each one draws. */
+  const renderersRef = useRef<(ReframeRenderer | null)[]>([]);
+  const slotClip = useRef<(string | null)[]>(Array.from({ length: MAX_LAYERS }, () => null));
   const player = useMemo(() => new TimelinePlayer(() => sourceRef.current?.tl ?? tlRef.current), []);
   const audio = useMemo(() => new AudioPlayer(), []);
   const lastResult = useRef<TickResult | null>(null);
@@ -284,7 +291,7 @@ export function App() {
 
   // LUT.
   useEffect(() => {
-    for (const r of renderersRef.current) loadLut(r, tl.lutPath).catch((e) => setError(`LUT: ${e}`));
+    for (const r of renderersRef.current) if (r) loadLut(r, tl.lutPath).catch((e) => setError(`LUT: ${e}`));
   }, [tl.lutPath]);
 
   // Size the preview to the output framing, as large as fits.
@@ -305,7 +312,8 @@ export function App() {
       // More pixels than the footage has only costs speed (a full-screen Retina preview would be
       // drawn at twice the detail of the 360 source).
       const cap = Math.min(dpr, 2048 / Math.max(w, h));
-      for (const c of [canvas0.current!, canvas1.current!]) {
+      for (const c of canvasEls.current) {
+        if (!c) continue;
         c.width = Math.max(2, Math.round(w * cap));
         c.height = Math.max(2, Math.round(h * cap));
       }
@@ -321,25 +329,42 @@ export function App() {
     return () => ro.disconnect();
   }, [aspect, level]);
 
-  /** Positions the two video layers (and the colour dip) for the current transition. */
-  const styleLayers = (res: TickResult) => {
+  /**
+   * Positions the video layers: the main row (moved by its transition), the colour dip, then
+   * the tracks above, each placed by its clip's transform. `xfs`: each layer's transform now.
+   */
+  const styleLayers = (res: TickResult, slots: number[], xfs: (Transform | undefined)[]) => {
     const layers = res.layers!;
-    const look = layers.length > 1 && res.transition ? transitionLook(res.transition.kind, res.progress) : null;
-    canvasRefs.forEach((ref, ri) => {
-      const c = ref.current!;
-      const li = layers.findIndex((l) => l.index % 2 === ri);
+    const inTransition = layers.some((l) => l.role === 'in');
+    const look = inTransition && res.transition ? transitionLook(res.transition.kind, res.progress) : null;
+    const main = layers.filter((l) => l.track === 0).length;
+    const frame = frameRef.current!;
+    const W = frame.clientWidth, H = frame.clientHeight;
+    for (let ri = 0; ri < MAX_LAYERS; ri++) {
+      const slot = slotEls.current[ri], box = boxEls.current[ri], c = canvasEls.current[ri];
+      if (!slot || !box || !c) continue;
+      const li = slots.indexOf(ri);
       if (li < 0) {
-        c.style.visibility = 'hidden';
-        return;
+        slot.style.visibility = 'hidden';
+        continue;
       }
-      c.style.visibility = 'visible';
-      c.style.zIndex = String(li + 1);
-      const css = look
-        ? layerCss(li === 0 ? look.a : look.b, c.clientWidth, li === 0 ? null : look.reveal)
+      const l = layers[li]!;
+      slot.style.visibility = 'visible';
+      // (The dip sits between the main row and the tracks above.)
+      slot.style.zIndex = String(li < main ? li + 1 : li + 2);
+      const css = look && l.role
+        ? layerCss(l.role === 'out' ? look.a : look.b, W, l.role === 'out' ? null : look.reveal)
         : { opacity: '1', transform: '', filter: '', clipPath: '' };
-      Object.assign(c.style, css);
-    });
+      Object.assign(slot.style, css);
+      const placed = placedCss(xfs[li], W, H);
+      Object.assign(box.style, placed.box);
+      // The selected clip over the main row is outlined (only here, never in the export).
+      const s = selRef.current;
+      box.style.outline = l.track > 0 && s?.kind === 'layer' && s.id === l.clip.id ? '2px solid var(--accent)' : '';
+      Object.assign(c.style, placed.canvas);
+    }
     const dip = dipRef.current!;
+    dip.style.zIndex = String(main + 1);
     dip.style.opacity = look?.dip ? String(look.dipAlpha) : '0';
     if (look?.dip) dip.style.background = look.dip;
   };
@@ -367,11 +392,26 @@ export function App() {
     let raf = 0, stop = false;
     let frames = 0, pictures = 0, lastPicture = -1, fpsT = performance.now(), uiT = 0;
     // Per renderer: which clip it shows and what it last drew.
-    const state = [0, 1].map(() => ({ clipKey: '', lastTs: -1, lastSig: '' }));
+    const state = Array.from({ length: MAX_LAYERS }, () => ({ clipKey: '', lastTs: -1, lastSig: '' }));
+    const making = new Set<number>();
+    /** Renderer `ri`, or null while it is being made (the first two are made up front). */
+    const rendererAt = (ri: number): ReframeRenderer | null => {
+      const r = renderersRef.current[ri];
+      if (r) return r;
+      if (!making.has(ri)) {
+        making.add(ri);
+        void ReframeRenderer.create(canvasEls.current[ri]!).then(async (made) => {
+          await loadLut(made, tlRef.current.lutPath).catch(() => {});
+          renderersRef.current[ri] = made;
+        }).catch((e) => setError(`GPU: ${e}`));
+      }
+      return null;
+    };
     (async () => {
       try {
-        renderersRef.current = await Promise.all([canvas0, canvas1].map((r) => ReframeRenderer.create(r.current!)));
-        for (const r of renderersRef.current) await loadLut(r, tlRef.current.lutPath).catch(() => {});
+        const first = await Promise.all([0, 1].map((ri) => ReframeRenderer.create(canvasEls.current[ri]!)));
+        for (const r of first) await loadLut(r, tlRef.current.lutPath).catch(() => {});
+        renderersRef.current = [...first, ...Array.from({ length: MAX_LAYERS - 2 }, () => null)];
       } catch (e) {
         setError(`GPU: ${e}`);
         return;
@@ -381,16 +421,26 @@ export function App() {
         const res = player.tick(now);
         if (!res) {
           // Nothing on the timeline: don't leave the last picture up.
-          for (const c of [canvas0.current, canvas1.current]) if (c) c.style.visibility = 'hidden';
+          for (const c of slotEls.current) if (c) c.style.visibility = 'hidden';
           for (const st of state) st.clipKey = '';
+          slotClip.current.fill(null);
         }
         if (res?.layers) {
           lastResult.current = res;
+          // A clip keeps its renderer (and motion-blur history) for its whole time on screen,
+          // transitions included; renderers of clips that left draw the newcomers.
+          const ids = new Set(res.layers.map((l) => l.clip.id));
+          slotClip.current = slotClip.current.map((id) => (id && ids.has(id) ? id : null));
+          const slots = res.layers.map((l) => {
+            let ri = slotClip.current.indexOf(l.clip.id);
+            if (ri < 0) { ri = slotClip.current.indexOf(null); if (ri >= 0) slotClip.current[ri] = l.clip.id; }
+            return ri;
+          });
+          const xfs: (Transform | undefined)[] = [];
           res.layers.forEach((l, li) => {
-            // Clips alternate between the two renderers, so a clip keeps its renderer (and
-            // motion-blur history) for its whole time on screen, transitions included.
-            const ri = l.index % 2;
-            const r = renderersRef.current[ri]!;
+            const ri = slots[li]!;
+            const r = ri < 0 ? null : rendererAt(ri);
+            if (!r) { slots[li] = -1; return; }
             const st = state[ri]!;
             const clipKey = `${l.clip.id}|${l.media.path}|${l.level}`;
             if (clipKey !== st.clipKey) {
@@ -403,6 +453,7 @@ export function App() {
             const ts = l.frames[0]!.timestamp;
             const raw = showRawRef.current && li === 0;
             const look = clipLookAt(l.clip, ts);
+            xfs[li] = look.xf;
             // (Before / after also leaves out what is done to each lens.)
             const shownClip = compareRef.current && l.clip.lenses ? { ...l.clip, lenses: undefined } : l.clip;
             const sig = reframeSignature(shownClip, look, `${raw}|${r.canvas.width}x${r.canvas.height}`);
@@ -423,7 +474,7 @@ export function App() {
             r.highlight = mark.highlight && !raw && hasTwoLenses(l.media) ? mark.lens : null;
             presentLook(r, compareRef.current ? withoutEffects(look) : look, { raw: raw && l.media.is360, time: ts });
           });
-          styleLayersRef.current(res);
+          styleLayersRef.current(res, slots, xfs);
           frames++;
           const shown = res.layers[0]!.frames[0]!.timestamp;
           if (shown !== lastPicture) { pictures++; lastPicture = shown; }
@@ -458,7 +509,10 @@ export function App() {
 
   // --- Current clip & edits --------------------------------------------------------------------
   // (In the Source view nothing on the timeline is being edited.)
-  const at = source ? null : locate(tl, time);
+  // A selected clip on a track above the main row is the one being edited; otherwise the main-row
+  // clip under the playhead.
+  const layerSel = !source && sel?.kind === 'layer' ? tl.connected.find((c) => c.id === sel.id) ?? null : null;
+  const at: Located | null = source ? null : layerSel ? layerLocated(tl, layerSel, time) : locate(tl, time);
   const clip = at?.clip ?? null;
   const media = clip ? mediaNow(clip.mediaPath) ?? null : null;
   const look = clip && at ? clipLookAt(clip, at.mediaUs) : null;
@@ -503,9 +557,15 @@ export function App() {
 
   const editClip = (patch: Partial<TimelineClip>, key: string) => clip && commit(updateClip(tlRef.current, clip.id, patch), `${key}:${clip.id}`);
 
+  /** The clip being edited at the playhead: a selected track clip, or else the main-row clip there. */
+  const editingAt = (t: Timeline = tlRef.current, T = player.time): Located | null => {
+    const s = selRef.current;
+    const layer = s?.kind === 'layer' ? t.connected.find((c) => c.id === s.id) : undefined;
+    return layer ? layerLocated(t, layer, T) : locate(t, T);
+  };
   const editLook = (patchIn: Partial<Look>, key: string) => {
     let patch = patchIn;
-    const cur = locate(tlRef.current, player.time);
+    const cur = editingAt();
     if (!cur) return;
     // A regular clip from before reframing existed starts from its picture as recorded.
     const c = adoptReframe(cur.clip);
@@ -564,7 +624,7 @@ export function App() {
     put({ ...others, track });
   };
   const editGrade = (patch: Partial<Grade>, key: string) => {
-    const cur = locate(tlRef.current, player.time);
+    const cur = editingAt();
     if (!cur) return;
     editLook({ grade: { ...ownLookAt(cur.clip, cur.mediaUs).grade, ...patch } }, key);
   };
@@ -681,7 +741,7 @@ export function App() {
   // --- Lens match ----------------------------------------------------------------------------------
   const [lensBusy, setLensBusy] = useState(false);
   const matchLensesNow = async (which?: 'front' | 'back') => {
-    const cur = locate(tlRef.current, player.time), m = cur && mediaNow(cur.clip.mediaPath);
+    const cur = editingAt(), m = cur && mediaNow(cur.clip.mediaPath);
     if (!cur || !m || !hasTwoLenses(m) || lensBusy) return;
     setLensBusy(true);
     try {
@@ -700,7 +760,12 @@ export function App() {
     }
   };
 
-  const split = () => splitHere();
+  const split = () => {
+    // A selected clip on a track above splits there; otherwise the main row does.
+    const s = selRef.current;
+    if (s?.kind === 'layer') { commit(splitConnected(tlRef.current, s.id, player.time)); return; }
+    splitHere();
+  };
   const deleteCurrent = () => {
     const t = tlRef.current;
     const s = selRef.current;
@@ -710,8 +775,40 @@ export function App() {
     if (s?.kind === 'audio') commit(removeAudio(t, s.id));
     else if (s?.kind === 'overlay') commit(removeOverlay(t, s.id));
     else if (s?.kind === 'transition') commit(updateClip(t, s.id, { transitionIn: undefined }));
+    else if (s?.kind === 'layer') commit(trimEmptyTracks(removeConnected(t, s.id)));
     else if (clip) commit(removeClip(t, clip.id));
     setSel(null);
+  };
+
+  /** Duplicates the clip being edited: a track clip goes on the lowest free track at the same time. */
+  const duplicateCurrent = () => {
+    if (!clip) return;
+    const t = tlRef.current;
+    if (layerSel) {
+      const placed = placeConnected(t, { ...layerSel, id: newId('v') }, layerSel.startUs, layerSel.trackId);
+      if (placed) { commit(placed.tl); setSel({ kind: 'layer', id: placed.id }); } else setNotice('Every video track is taken there. Remove a clip from V2–V6 first.');
+      return;
+    }
+    commit(duplicateClip(t, clip.id));
+  };
+  /**
+   * Puts the Media clip that is selected (or open in Source) on the lowest free track above the
+   * main row at the playhead, like a connected clip. With nothing picked in Media, the main-row
+   * clip under the playhead is copied there.
+   */
+  const connectToTrack = (path?: string) => {
+    const t = tlRef.current;
+    const from = path ?? source?.path;
+    const base = from ? clipFor(from) : null;
+    const piece = base && source && from === source.path ? { ...base, inUs: source.inUs ?? 0, outUs: source.outUs ?? base.outUs } : base;
+    const T = sourceRef.current?.savedTime ?? player.time;
+    const copy = piece ?? (locate(t, T)?.clip ? { ...locate(t, T)!.clip, transitionIn: undefined, audioDetached: false } : null);
+    if (!copy || !t.clips.length) { setNotice('Put a clip on the main row first: clips above it are drawn over it.'); return; }
+    const placed = placeConnected(t, { ...copy, id: newId('v') }, T);
+    if (!placed) { setNotice('Every video track is taken at the playhead. Move or remove a clip on V2–V6 first.'); return; }
+    commit(placed.tl);
+    setSel({ kind: 'layer', id: placed.id });
+    setNotice(`Added ${baseName(copy.mediaPath)} to ${trackName(placed.tl, placed.tl.connected.find((c) => c.id === placed.id)!.trackId)} at the playhead.`);
   };
 
   const selectClip = (id: string) => {
@@ -807,6 +904,7 @@ export function App() {
   const [kfMenu, setKfMenu] = useState<{ clipId: string; id: string; x: number; y: number } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ clipId: string; T: number; x: number; y: number } | null>(null);
   const ctxClip = ctxMenu ? tl.clips.find((c) => c.id === ctxMenu.clipId) ?? null : null;
+  const ctxLayer = ctxMenu ? tl.connected.find((c) => c.id === ctxMenu.clipId) ?? null : null;
   const ctxIndex = ctxClip ? tl.clips.indexOf(ctxClip) : -1;
   const ctxHasSound = !!(ctxClip && mediaNow(ctxClip.mediaPath)?.info.audioTracks.length);
 
@@ -924,7 +1022,7 @@ export function App() {
   /** Asks for a folder and points everything that used a missing file at the one found there. */
   const relinkMissing = async (folder?: string) => {
     const t = tlRef.current;
-    const gone = [...new Set([...binRef.current.filter((b) => b.error === MISSING).map((b) => b.path), ...t.clips.filter((c) => !mediaNow(c.mediaPath)).map((c) => c.mediaPath)])];
+    const gone = [...new Set([...binRef.current.filter((b) => b.error === MISSING).map((b) => b.path), ...[...t.clips, ...t.connected].filter((c) => !mediaNow(c.mediaPath)).map((c) => c.mediaPath)])];
     if (!gone.length) return;
     const r = await ace.relink(gone.map((path) => ({ path, size: savedSizes.current.get(path) })), folder);
     if (!r) return;
@@ -936,7 +1034,7 @@ export function App() {
     binRef.current = binRef.current.filter((x) => !to.has(x.path));
     await importPaths(r.matches.map((m) => m.to));
     setBin((b) => b.map((x) => { const from = r.matches.find((m) => m.to === x.path)?.from; const old = from && meta.get(from); return old ? { ...x, rating: old.rating, flag: old.flag, bin: old.bin } : x; }));
-    commit({ ...t, clips: t.clips.map((c) => (to.has(c.mediaPath) ? { ...c, mediaPath: to.get(c.mediaPath)! } : c)), audio: t.audio.map((a) => (to.has(a.path) ? { ...a, path: to.get(a.path)! } : a)) });
+    commit({ ...t, clips: t.clips.map((c) => (to.has(c.mediaPath) ? { ...c, mediaPath: to.get(c.mediaPath)! } : c)), connected: t.connected.map((c) => (to.has(c.mediaPath) ? { ...c, mediaPath: to.get(c.mediaPath)! } : c)), audio: t.audio.map((a) => (to.has(a.path) ? { ...a, path: to.get(a.path)! } : a)) });
     player.invalidate();
     const left = gone.length - r.matches.length;
     setNotice(`Found ${r.matches.length} of ${gone.length} missing video${gone.length === 1 ? '' : 's'} in “${r.folder}”${r.matches.some((m) => m.how === 'size') ? ' (some under new names, recognised by size)' : ''}.${left ? ` ${left} still missing.` : ''}`);
@@ -948,11 +1046,11 @@ export function App() {
     const raw = JSON.parse(text) as Partial<Omit<SaveFile, 'library'>> & { library?: unknown } & Partial<Timeline>;
     const timeline = loadTimeline(raw.timeline ?? raw);
     const entries = libraryOf(raw.library);
-    const library = [...new Set([...entries.map((e) => e.path), ...timeline.clips.map((c) => c.mediaPath)])];
+    const library = [...new Set([...entries.map((e) => e.path), ...timeline.clips.map((c) => c.mediaPath), ...timeline.connected.map((c) => c.mediaPath)])];
     // A file moved or deleted since it was last opened mustn't come back from memory.
     await Promise.all([...library, ...timeline.audio.map((a) => a.path)].map((p) => ace.stat(p).catch(() => forgetMedia(p))));
     // Saved by a version newer than this one: opens, but what it added isn't shown.
-    const newer = (typeof (raw as { version?: unknown }).version === 'number' && (raw as { version: number }).version > 2) || (((raw.timeline as { version?: unknown } | undefined)?.version ?? 2) as number) > 2;
+    const newer = (typeof (raw as { version?: unknown }).version === 'number' && (raw as { version: number }).version > 2) || (((raw.timeline as { version?: unknown } | undefined)?.version ?? 2) as number) > TIMELINE_VERSION;
     setBin([]);
     binRef.current = [];
     setBins(Array.isArray(raw.bins) ? raw.bins.filter((b) => b && typeof b.id === 'string' && typeof b.name === 'string') : []);
@@ -963,7 +1061,7 @@ export function App() {
     savedSizes.current = new Map(entries.flatMap((e) => (e.size ? [[e.path, e.size] as [string, number]] : [])));
     setBin((b) => b.map((x) => { const e = meta.get(x.path); return e ? { ...x, rating: e.rating, flag: e.flag, bin: e.bin } : x; }));
     // (A clip may use one chapter of a recording the bin now shows as a whole.)
-    await Promise.all([...new Set(timeline.clips.map((c) => c.mediaPath))].map((p) => getMedia(p).catch(() => {})));
+    await Promise.all([...new Set([...timeline.clips, ...timeline.connected].map((c) => c.mediaPath))].map((p) => getMedia(p).catch(() => {})));
     await Promise.all(timeline.audio.map((a) => loadMusic(a.path).catch(() => {})));
     // Clips whose files are missing stay, shown as offline until relinked.
     tlRef.current = timeline;
@@ -1359,10 +1457,10 @@ export function App() {
     shuttleBack: () => shuttleTo(-1), shuttleStop: () => { stopShuttle(); player.pause(); }, shuttleFwd: () => shuttleTo(1),
     play: togglePlay, prevFrame: () => step(-1), nextFrame: () => step(1), back10: () => step(-10), fwd10: () => step(10), start: () => seek(0), end: () => seek(timelineDuration(tlRef.current)), fullscreen: () => { if (tlRef.current.clips.length) toggleFullscreen(); },
     split, delLeft: () => deleteSide('left'), delRight: () => deleteSide('right'), keyframe: () => { if (player.playing || shuttle.current.dir) { stopShuttle(); player.pause(); } else addKeyframe(); }, delKey: deleteKeyframe, prevKey: () => jumpKey(-1), nextKey: () => jumpKey(1), text: addText, track: startTrackPick, detach: toggleDetach,
-    duplicate: () => { if (clip) commit(duplicateClip(tlRef.current, clip.id)); }, delete: deleteCurrent, undo, redo,
+    duplicate: duplicateCurrent, delete: deleteCurrent, undo, redo, connect: connectToTrack,
     import: () => void importDialog(), card: () => setCardOpen(true), music: () => void addMusic(), open: () => void openProject(), save: () => void saveProject(), saveAs: () => void saveProjectAs(), newProject: () => void newProject(), projects: () => { setWelcome(false); setProjectsOpen((v) => !v); }, export: () => {
       if (!tlRef.current.clips.length) return;
-      const missing = [...new Set(tlRef.current.clips.filter((c) => !mediaNow(c.mediaPath)).map((c) => baseName(c.mediaPath)))];
+      const missing = [...new Set([...tlRef.current.clips, ...tlRef.current.connected].filter((c) => !mediaNow(c.mediaPath)).map((c) => baseName(c.mediaPath)))];
       if (missing.length) { setError(`Can’t export yet: ${missing.length === 1 ? `“${missing[0]}” is` : `${missing.length} videos are`} missing. Relink ${missing.length === 1 ? 'it' : 'them'} in Media first.`); return; }
       setExportOpen(true);
     }, grab: () => void frameGrab(),
@@ -1436,7 +1534,19 @@ export function App() {
   }, []);
 
   // --- Pointer on the preview: move overlays, or look around ---------------------------------------
-  const drag = useRef<{ kind: 'look'; x: number; y: number; look: Look } | { kind: 'overlay'; x: number; y: number; o: Overlay } | null>(null);
+  const drag = useRef<{ kind: 'look'; x: number; y: number; look: Look } | { kind: 'overlay'; x: number; y: number; o: Overlay } | { kind: 'layer'; x: number; y: number; xf: Transform } | null>(null);
+  /** The topmost clip on a track above the main row under a preview point (fractions of the frame). */
+  const layerUnder = (fx: number, fy: number) => {
+    const st = stackAt(tlRef.current, player.time);
+    if (!st) return null;
+    for (const l of [...st.layers].reverse()) {
+      if (l.track === 0) break;
+      if (tlRef.current.tracks[l.track - 1]?.locked) continue;
+      const xf = xfOf(clipLookAt(l.clip, l.mediaUs));
+      if (xf.opacity > 0.02 && hitsLayer(xf, fx, fy, aspect)) return { clip: l.clip, xf };
+    }
+    return null;
+  };
   const boxStart = useRef<{ x: number; y: number } | null>(null);
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
@@ -1457,7 +1567,14 @@ export function App() {
       drag.current = { kind: 'overlay', x: e.clientX, y: e.clientY, o: hit };
       return;
     }
-    if (sel?.kind === 'overlay') setSel(null);
+    // A clip over the main row: select it; dragging moves it.
+    const over = layerUnder((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+    if (over) {
+      if (selRef.current?.kind !== 'layer' || selRef.current.id !== over.clip.id) { setSel({ kind: 'layer', id: over.clip.id }); selRef.current = { kind: 'layer', id: over.clip.id }; }
+      drag.current = { kind: 'layer', x: e.clientX, y: e.clientY, xf: over.xf };
+      return;
+    }
+    if (sel?.kind === 'overlay' || sel?.kind === 'layer') { setSel(null); selRef.current = null; }
     if (look && media && canReframe(media)) drag.current = { kind: 'look', x: e.clientX, y: e.clientY, look };
   };
   const onPointerMove = (e: React.PointerEvent) => {
@@ -1470,6 +1587,12 @@ export function App() {
     const d = drag.current;
     if (!d) return;
     const r = overlayRef.current!.getBoundingClientRect();
+    if (d.kind === 'layer') {
+      // Lines up with the centre when close to it.
+      const near = (v: number) => (Math.abs(v) < 0.012 ? 0 : v);
+      editLook({ xf: cleanXf({ ...d.xf, x: near(d.xf.x + (e.clientX - d.x) / r.width), y: near(d.xf.y + (e.clientY - d.y) / r.height) }) }, 'xf-drag');
+      return;
+    }
     if (d.kind === 'overlay') {
       const x = Math.max(0, Math.min(1, d.o.x + (e.clientX - d.x) / r.width));
       const y = Math.max(0, Math.min(1, d.o.y + (e.clientY - d.y) / r.height));
@@ -1488,6 +1611,12 @@ export function App() {
     editLook({ yaw, pitch }, 'drag');
   };
   const onWheel = (e: React.WheelEvent) => {
+    // A selected clip over the main row: scrolling resizes it.
+    if (layerSel && look) {
+      const xf = xfOf(look);
+      editLook({ xf: cleanXf({ ...xf, scale: xf.scale * Math.exp(-e.deltaY * 0.0015) }) }, 'xf-wheel');
+      return;
+    }
     if (selectedOverlay) {
       editOverlay({ size: Math.max(0.02, Math.min(1, selectedOverlay.size * Math.exp(-e.deltaY * 0.0015))) }, 'ov-size');
       return;
@@ -1672,7 +1801,14 @@ export function App() {
   const inspector: InspectorProps = {
     clip: clip,
     clipIndex: at?.index ?? 0,
-    clipCount: tl.clips.length,
+    clipCount: layerSel ? tl.connected.length : tl.clips.length,
+    clipStartUs: at?.startUs ?? 0,
+    layerTrack: layerSel ? trackName(tl, layerSel.trackId) : null,
+    layersHere: stackAt(tl, time)?.layers.length ?? 0,
+    onLayout: (id) => {
+      const next = applyLayout(tlRef.current, player.time, id);
+      if (next !== tlRef.current) commit(next);
+    },
     media: media,
     mediaUs: at?.mediaUs ?? 0,
     look: look,
@@ -1732,9 +1868,9 @@ export function App() {
     onClearTrack: () => clip && commit(updateClip(tlRef.current, clip.id, { track: undefined })),
     onTrackPatch: (patch, key) => clip?.track && commit(updateClip(tlRef.current, clip.id, { track: { ...clip.track, ...patch } }), `${key}:${clip.id}`),
     onSplit: split,
-    onDuplicate: () => clip && commit(duplicateClip(tlRef.current, clip.id)),
+    onDuplicate: duplicateCurrent,
     onDelete: deleteCurrent,
-    onMove: (dir) => clip && at && commit(moveClip(tlRef.current, clip.id, at.index + dir)),
+    onMove: (dir) => clip && at && !layerSel && commit(moveClip(tlRef.current, clip.id, at.index + dir)),
   };
   // Selecting something brings its settings to the front, until another tab is clicked.
   const selKey = sel ? `${sel.kind}:${sel.id}` : '';
@@ -1790,8 +1926,13 @@ export function App() {
               if (clip) setCtxMenu({ clipId: clip.id, T: player.time, x: e.clientX, y: e.clientY });
             }}
           >
-            <canvas ref={canvas0} className="layer" />
-            <canvas ref={canvas1} className="layer" />
+            {Array.from({ length: MAX_LAYERS }, (_, i) => (
+              <div key={i} className="layer-slot" ref={(el) => { slotEls.current[i] = el; }}>
+                <div className="layer-box" ref={(el) => { boxEls.current[i] = el; }}>
+                  <canvas className="layer" ref={(el) => { canvasEls.current[i] = el; }} />
+                </div>
+              </div>
+            ))}
             <div ref={dipRef} className="dip" />
             <canvas ref={overlayRef} className="overlay-layer" />
             {compare && has && <span className="compare-tag">Before</span>}
@@ -1832,6 +1973,18 @@ export function App() {
           e.preventDefault();
           // Insert after the clip under the drop point (or at the end).
           const T = dropAtRef.current(e.clientX) ?? 0;
+          // Onto a track above the main row (or the row for a new one): placed there, at the drop point.
+          const row = (e.target as HTMLElement).closest<HTMLElement>('[data-track]');
+          if (row && tlRef.current.clips.length) {
+            const c = clipFor(path);
+            if (!c) return;
+            // The row above the top track makes a new track; a track row puts it there (or on the next free one up).
+            const fresh = row.dataset.track === 'new' ? addTrack(tlRef.current) : null;
+            const placed = fresh?.id ? placeConnected(fresh.tl, { ...c, id: newId('v') }, T, fresh.id) : placeConnected(tlRef.current, { ...c, id: newId('v') }, T, row.dataset.track === 'new' ? undefined : row.dataset.track);
+            if (placed) { commit(placed.tl); setSel({ kind: 'layer', id: placed.id }); }
+            else setNotice('Every video track is taken there. Move or remove a clip on V2–V6 first.');
+            return;
+          }
           const hit = duration > 0 ? locate(tlRef.current, T) : null;
           addToTimeline(path, hit ? hit.index + (T > hit.startUs + clipDuration(hit.clip) / 2 ? 1 : 0) : undefined);
         }}
@@ -1870,6 +2023,24 @@ export function App() {
           onReorderClip={(id, to) => commit(moveClip(tlRef.current, id, to))}
           onMoveAudio={(id, startUs, inUs, outUs) => commit(updateAudio(tlRef.current, id, { startUs, inUs, outUs }), `music:${id}`)}
           onMoveOverlay={(id, startUs, endUs) => commit(updateOverlay(tlRef.current, id, { startUs, endUs }), `ov-time:${id}`)}
+          onMoveConnected={(id, startUs, trackId) => {
+            const next = moveConnected(tlRef.current, id, startUs, trackId);
+            if (next !== tlRef.current) commit(next, `layer-move:${id}`);
+          }}
+          onTrimConnected={(id, startUs, inUs, outUs) => {
+            const t = tlRef.current, c = t.connected.find((x) => x.id === id);
+            if (!c || t.tracks.find((x) => x.id === c.trackId)?.locked) return;
+            const moved = { ...c, startUs, inUs, outUs };
+            // Not over the clip next to it on the same track.
+            if (!trackFree(t, c.trackId, startUs, startUs + playLength(moved), id)) return;
+            commit({ ...t, connected: t.connected.map((x) => (x.id === id ? moved : x)) }, `layer-trim:${id}`);
+          }}
+          onTrack={(id, patch) => {
+            commit(updateTrack(tlRef.current, id, patch));
+            // A locked track's clips can't stay selected (they can't be changed).
+            const s = selRef.current;
+            if (patch.locked && s?.kind === 'layer' && tlRef.current.connected.find((c) => c.id === s.id)?.trackId === id) setSel(null);
+          }}
           onDragEnd={() => { endGesture(); bump((n) => n + 1); }}
           onMarker={(id, patch) => commit(updateMarker(tlRef.current, id, patch), `marker:${id}`)}
           onRemoveMarker={(id) => commit(removeMarker(tlRef.current, id))}
@@ -1882,11 +2053,11 @@ export function App() {
       </div>
   );
   const panels: Record<string, PanelDef> = {
-    media: { title: 'Media', icon: 'media', render: () => <MediaBin level={level} items={bin} folders={bins} onFolders={setBins} onItem={(path, patch) => setBin((b) => b.map((x) => (x.path === path ? { ...x, ...patch } : x)))} onRelink={() => void relinkMissing()} onProxiesCleared={() => { forgetProxies(); ensureProxies(binMedia()); }} onImport={importDialog} onAdd={(p) => addToTimeline(p)} onSource={openSource} onRemove={(p) => setBin((b) => b.filter((x) => x.path !== p))} /> },
+    media: { title: 'Media', icon: 'media', render: () => <MediaBin level={level} items={bin} folders={bins} onFolders={setBins} onItem={(path, patch) => setBin((b) => b.map((x) => (x.path === path ? { ...x, ...patch } : x)))} onRelink={() => void relinkMissing()} onProxiesCleared={() => { forgetProxies(); ensureProxies(binMedia()); }} onImport={importDialog} onAdd={(p) => addToTimeline(p)} onConnect={(p) => connectToTrack(p)} onSource={openSource} onRemove={(p) => setBin((b) => b.filter((x) => x.path !== p))} /> },
     viewer: { title: 'Preview', icon: 'viewer', bare: true, keep: true, render: viewerPanel },
     timeline: { title: 'Timeline', icon: 'timeline', bare: true, render: timelinePanel },
     ...Object.fromEntries((['reframe', 'stabilize', 'color', 'effects', 'clip'] as const).map((id) => [id, { title: PANELS[id], icon: id, render: () => <InspectorPanel {...inspector} panel={id} /> }])),
-    selection: { title: PANELS.selection, icon: 'selection', idle: !sel, render: () => <SelectionPanel {...inspector} /> },
+    selection: { title: PANELS.selection, icon: 'selection', idle: !sel || sel.kind === 'layer', render: () => <SelectionPanel {...inspector} /> },
     markers: { title: PANELS.markers, icon: 'marker', render: () => <MarkersPanel timeline={tl} time={time} onSeek={seek} onAdd={run.marker!} onChange={(id, patch) => commit(updateMarker(tlRef.current, id, patch), `marker:${id}`)} onRemove={(id) => commit(removeMarker(tlRef.current, id))} /> },
     ...Object.fromEntries(customPanels.map((c) => [c.id, { title: c.title, icon: 'custom', render: () => <InspectorPanel {...inspector} panel={c.id} /> }])),
   };
@@ -1898,7 +2069,7 @@ export function App() {
       {top && mainBar}
       {/* Without a toolbar at the top, the window still needs somewhere to be dragged from. */}
       {platformMac && (!mainBar || !top) && <div className="titlebar">Action Cam Editor</div>}
-      <Dock panels={panels} front={sel && frontOff !== selKey ? 'selection' : null} onFront={(p) => setFrontOff(p === 'selection' ? '' : selKey)} />
+      <Dock panels={panels} front={sel && sel.kind !== 'layer' && frontOff !== selKey ? 'selection' : null} onFront={(p) => setFrontOff(p === 'selection' ? '' : selKey)} />
       {!top && mainBar}
 
         <AppMenu
@@ -1934,6 +2105,26 @@ export function App() {
               : []
           }
         />
+
+      <AppMenu
+        open={!!ctxMenu && !!ctxLayer}
+        at={ctxMenu ? { x: ctxMenu.x, y: ctxMenu.y } : undefined}
+        title={ctxLayer ? `${trackName(tl, ctxLayer.trackId)} · ${baseName(ctxLayer.mediaPath)}` : undefined}
+        onClose={() => setCtxMenu(null)}
+        items={
+          ctxMenu && ctxLayer
+            ? [
+                { label: 'Split here', hint: 'S', onClick: () => commit(splitConnected(tlRef.current, ctxLayer.id, ctxMenu.T)) },
+                { label: 'Duplicate clip', onClick: () => { setSel({ kind: 'layer', id: ctxLayer.id }); selRef.current = { kind: 'layer', id: ctxLayer.id }; duplicateCurrent(); } },
+                'sep',
+                ...LAYOUT_TEMPLATES.filter((l) => l.id.startsWith('pip')).map((l) => ({ label: l.label, onClick: () => commit(updateClip(tlRef.current, ctxLayer.id, { look: { ...ctxLayer.look, xf: cellTransform(l.cells[1]!, l.fill, xfOf(ctxLayer.look)) }, keyframes: ctxLayer.keyframes.map((k) => ({ ...k, look: { ...k.look, xf: cellTransform(l.cells[1]!, l.fill, xfOf(k.look)) } })) })) })),
+                { label: 'Full frame', onClick: () => commit(updateClip(tlRef.current, ctxLayer.id, { look: { ...ctxLayer.look, xf: undefined }, keyframes: ctxLayer.keyframes.map((k) => ({ ...k, look: { ...k.look, xf: undefined } })) })) },
+                'sep',
+                { label: 'Delete clip', hint: '⌫', onClick: () => { commit(trimEmptyTracks(removeConnected(tlRef.current, ctxLayer.id))); setSel(null); } },
+              ]
+            : []
+        }
+      />
 
       <AppMenu
         open={!!kfMenu}

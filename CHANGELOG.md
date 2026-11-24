@@ -1,5 +1,20 @@
 # Changes
 
+## 0.1.0-beta.7
+
+The first part of milestone 2 (layers): clips over the main row.
+
+**Picture in picture and split screen**
+- Video tracks V2–V6 above the main row. Put a clip there with E, the layers button on a Media item, or by dragging it onto the row above the main row.
+- Drag a clip on a track to move it (up or down to change track) and drag its edges to trim it. It moves along when the main row is trimmed or a clip is inserted.
+- Each track can be hidden, locked or muted.
+- Click a picture in the preview to select it; drag to move it, scroll to resize it.
+- Layout (Inspector ▸ Clip): picture in picture in any corner, side by side, stacked, three across, a grid of four, three stacked for 9:16, or full frame.
+- Transform (Inspector ▸ Clip): position, size, crop, turn, opacity, rounded corners, border and shadow. Keyframe it to animate.
+- Clips on the tracks play their sound, and exports include them.
+
+Projects with tracks open only in this version or later.
+
 ## 0.1.0-beta.6
 
 - Checking for updates right after an update had installed could fail with “directory not empty”. The old download is now cleared safely, and a check no longer trips over it.

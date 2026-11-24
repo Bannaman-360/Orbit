@@ -1,10 +1,10 @@
 # Changes
 
-## Next
+## 0.1.0-beta.5
 
 **Editing**
 - Markers with notes and colours (M); a Markers panel; copy them as YouTube chapters.
-- Snapping (N) to clip edges, the playhead, markers and music beats; hold ⌘ to drag freely.
+- Snapping (N) to clip edges, the playhead, markers and music beats; hold ⌘ (Ctrl on Windows) to drag freely.
 - Beats are found in music automatically and shown on it; scrubbing stops on them, so cuts land on the beat.
 - Roll, Slip and Slide tools (Shift+N, Y, U; A for Select).
 - JKL: play backward and forward, faster with each press; K stops.

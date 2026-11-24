@@ -105,7 +105,8 @@ describe('updates', () => {
   });
 });
 
-describe.skipIf(process.platform === 'win32')('the Mac swap', () => {
+describe.skipIf(process.platform !== 'darwin')('the Mac swap', () => {
+  // (Mac only: the script uses ditto, which other systems don't have.)
   // (The real script finishes by opening the app; here that's left out.)
   const script = MAC_SCRIPT.replace(/^open .*$/m, ': opened');
   const run = async (newApp: string, dest: string) => {

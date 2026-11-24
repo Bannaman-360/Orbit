@@ -1,5 +1,14 @@
 # Changes
 
+## 0.1.0-beta.4
+
+The first version that arrives by itself: copies on beta 3 download it in the background and
+offer to restart into it (or choose Check for Updates).
+
+- Project pictures on the Projects page now last after the app quits (beta 3 saved them in a way
+  that was lost on restart; those show a plain icon until the project is saved again).
+- Tests for updating and for the Projects page.
+
 ## 0.1.0-beta.3
 
 New:

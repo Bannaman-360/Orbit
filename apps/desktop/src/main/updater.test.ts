@@ -4,7 +4,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -60,6 +60,20 @@ describe('updates', () => {
     const s = await u.check();
     expect(s).toEqual({ state: 'ready', version: '0.1.0-beta.4' });
     expect(seen.map((x) => x.state)).toEqual(expect.arrayContaining(['checking', 'downloading', 'ready']));
+  });
+  it('clears a big leftover download, and one a failed clean-up left behind, before downloading again', async () => {
+    await publish([await release('v0.1.0-beta.4', winFiles('0.1.0-beta.4'))]);
+    const dir = path.join(root, 'leftover', 'updates');
+    for (let i = 0; i < 40; i++) {
+      const d = path.join(dir, 'new', 'Action Cam Editor.app', 'Contents', 'Resources', `f${i}`, 'a', 'b');
+      await mkdir(d, { recursive: true });
+      for (let j = 0; j < 10; j++) await writeFile(path.join(d, `x${j}`), 'x');
+    }
+    await mkdir(path.join(dir + '-old-1', 'new'), { recursive: true });
+    const u = setupUpdater({ enabled: false, send: () => {}, busy: () => null, test: { feed: base, current: '0.1.0-beta.3', platform: 'win32', arch: 'arm64', dir } });
+    expect(await u.check()).toEqual({ state: 'ready', version: '0.1.0-beta.4' });
+    expect((await readdir(path.join(root, 'leftover'))).sort()).toEqual(['updates']);
+    expect(await readdir(dir)).not.toContain('new');
   });
   it('says it is up to date when nothing newer is published', async () => {
     await publish([await release('v0.1.0-beta.3', winFiles('0.1.0-beta.3')), await release('v0.1.0-beta.9', winFiles('0.1.0-beta.9'), { draft: true })]);

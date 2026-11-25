@@ -590,3 +590,11 @@ export async function realPlay(api: EditorApi, name: string) {
   await ace.capture('real-ui');
   return out;
 }
+
+/** A shaking clip with no motion data of its own, and how its camera really turned (for selftestFinish). */
+export async function shakingClip(fps: number): Promise<{ path: string; lens: SourceLens; cameraAt: (t: number) => Mat3 }> {
+  const src = await getMedia((await ace.listFixtures()).find((f) => f.endsWith('GS010120.360'))!);
+  const lens = lensFor({ model: 'HERO12 Black', fovMode: 'W' }, 3840, 2160);
+  const { path } = await recordShaking(src, lens, 6 * S, 4, fps);
+  return { path, lens, cameraAt };
+}

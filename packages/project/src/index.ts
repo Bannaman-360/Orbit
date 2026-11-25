@@ -12,3 +12,4 @@ export * from './masks';
 export * from './compound';
 export * from './multicam';
 export * from './sound';
+export * from './grading';

@@ -64,6 +64,7 @@ contextBridge.exposeInMainWorld('ace', {
   onOpenMedia: (f: (found: unknown) => void) => { ipcRenderer.on('open:media', (_e, x) => f(x)); },
   selftestFiles: inv('selftest:files'),
   proxyPath: inv('proxy:path'),
+  motionPath: inv('motion:path'),
   proxyFinish: inv('proxy:finish'),
   proxyDiscard: inv('proxy:discard'),
   proxyUsage: inv('proxy:usage'),

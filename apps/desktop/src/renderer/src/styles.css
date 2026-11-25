@@ -828,3 +828,64 @@ button.project-thumb:hover:not(:disabled) { background-color: var(--group); filt
 .path-pad { position: relative; aspect-ratio: 2 / 1; border-radius: var(--r-control); background: var(--hover); cursor: crosshair; touch-action: none; box-shadow: inset 0 0 0 1px var(--line); }
 .path-pad svg { position: absolute; inset: 8px; width: calc(100% - 16px); height: calc(100% - 16px); overflow: visible; }
 .path-pad polyline { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+
+/* --- Milestone 4: grading, scopes, film looks, transitions ------------------------------------- */
+.wheels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; margin: 4px 0 8px; }
+.wheels.is-off { opacity: 0.45; }
+.wheel { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
+.wheel-title { display: flex; gap: 6px; align-items: baseline; font-size: 0.9em; }
+.wheel-title .muted { color: var(--muted); font-size: 0.9em; }
+.wheel-disc {
+  position: relative; width: 100%; max-width: 116px; aspect-ratio: 1; border-radius: 50%; cursor: crosshair; touch-action: none;
+  background: radial-gradient(circle, color-mix(in srgb, var(--panel) 92%, transparent) 0, transparent 72%),
+    conic-gradient(from -13deg, #ff3b30 0deg, #ff2dd5 53deg, #3a5bff 108deg, #19c3ff 180deg, #2ad15a 233deg, #ffd60a 288deg, #ff3b30 360deg);
+  box-shadow: inset 0 0 0 1px var(--line), 0 1px 2px color-mix(in srgb, #000 25%, transparent);
+}
+.wheel-disc::after { content: ''; position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px; border-radius: 50%; background: var(--muted); }
+.wheel-puck { position: absolute; width: 14px; height: 14px; margin: -7px; border-radius: 50%; border: 2px solid var(--text); box-shadow: 0 1px 3px color-mix(in srgb, #000 50%, transparent); pointer-events: none; z-index: 1; }
+.wheel-master { width: 100%; max-width: 116px; accent-color: var(--accent); }
+
+.curve-pick button.changed::after { content: '•'; margin-left: 4px; color: var(--accent); }
+.grade-curve { width: 100%; height: auto; display: block; border-radius: var(--r-control, 6px); background: color-mix(in srgb, var(--muted) 10%, transparent); box-shadow: inset 0 0 0 1px var(--line); touch-action: none; cursor: crosshair; margin: 4px 0; }
+.grade-curve.is-off { opacity: 0.45; }
+.grade-curve .grid line { stroke: var(--line); stroke-width: 1; }
+.grade-curve .identity { stroke: var(--muted); stroke-dasharray: 3 3; stroke-width: 1; opacity: 0.6; }
+.grade-curve .curve-point { fill: var(--panel); stroke: var(--text); stroke-width: 1.5; cursor: grab; }
+.grade-curve .curve-point:hover { fill: var(--accent); }
+
+.hue-bar { position: relative; height: 10px; border-radius: 5px; margin: 6px 0 8px; box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+.hue-bar span { position: absolute; top: 0; bottom: 0; transform: translateX(-50%); border: 2px solid var(--text); border-radius: 5px; box-sizing: border-box; min-width: 4px; }
+.sub-head { margin: 10px 0 4px; font-size: 0.85em; color: var(--muted); font-weight: 600; text-transform: none; }
+
+.film-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; margin-bottom: 6px; }
+.film-chip { display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 4px; font-size: 0.85em; text-align: left; }
+.film-chip.on { box-shadow: inset 0 0 0 2px var(--accent); }
+.film-swatch { display: block; height: 22px; border-radius: 4px; background: linear-gradient(90deg, #1a2a3a, #c08a5a 55%, #f5e6c8); }
+.film-warm-print { background: linear-gradient(90deg, #2a2018, #c79563 55%, #fbe9c9); }
+.film-teal-and-orange { background: linear-gradient(90deg, #0f3440, #2f7f86 40%, #e69a5a 75%, #ffd7a8); }
+.film-faded-70s { background: linear-gradient(90deg, #3d3a42, #a48f6e 55%, #efe0b0); }
+.film-slide-film { background: linear-gradient(90deg, #05070c, #1f5fbf 35%, #e0402a 70%, #ffe170); }
+.film-bleach-bypass { background: linear-gradient(90deg, #111, #6d7378 55%, #e9ecee); }
+.film-cross-process { background: linear-gradient(90deg, #0b2a22, #4f9a5f 45%, #e5e05a 80%, #fffbd0); }
+.film-night-city { background: linear-gradient(90deg, #05061a, #3d2a8a 45%, #e04aa8 75%, #9ff0ff); }
+.film-silver-mono { background: linear-gradient(90deg, #000, #808080 55%, #fff); }
+.film-sepia { background: linear-gradient(90deg, #2a1a0e, #9a7250 55%, #f4e2c4); }
+
+.scopes-panel { display: flex; flex-direction: column; gap: 6px; height: 100%; padding: 8px; box-sizing: border-box; }
+.scopes-bar .seg { width: 100%; }
+.scope-box { position: relative; flex: 1; min-height: 120px; border-radius: var(--r-control, 6px); overflow: hidden; background: #09090b; box-shadow: inset 0 0 0 1px var(--line); }
+.scope-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.scope-grid { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.scope-grid line, .scope-grid circle, .scope-grid rect { fill: none; stroke: rgba(255, 255, 255, 0.16); stroke-width: 0.4; vector-effect: non-scaling-stroke; }
+.scope-grid .skin { stroke: rgba(255, 190, 140, 0.45); }
+.scope-grid text { fill: rgba(255, 255, 255, 0.5); font-size: 4px; }
+.scope-empty { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; color: rgba(255, 255, 255, 0.55); font-size: 0.9em; text-align: center; padding: 12px; }
+.scope-hint { margin: 0; }
+
+.tr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; }
+.tr-tile { display: flex; flex-direction: column; gap: 3px; padding: 3px; font-size: 0.82em; align-items: stretch; text-align: center; }
+.tr-tile canvas { width: 100%; aspect-ratio: 16 / 9; border-radius: 4px; display: block; background: #000; }
+.tr-tile.on { box-shadow: inset 0 0 0 2px var(--accent); }
+
+.flow-progress { height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--muted) 20%, transparent); overflow: hidden; margin: 6px 0; }
+.flow-progress > span { display: block; height: 100%; background: var(--accent); }

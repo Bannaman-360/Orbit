@@ -17,7 +17,7 @@ An Electron editor for GoPro and action-camera footage (Mac and Windows), meant 
   - `synthetic/` has generated files; `synthetic/odd/` has broken and unusual ones.
 - `scripts/build-ffmpeg-mac.sh`: builds the bundled LGPL ffmpeg into `apps/desktop/resources/ffmpeg/`.
 - `docs/INSTALL.md` (install and build), `docs/BETA.md` (testers' guide), `CHANGELOG.md`.
-- `docs/ROADMAP.md`: the pro-features plan in five milestones (milestone 1 is released; milestone 2 is done in beta 8; milestone 3 is done in beta 10; milestone 4 is next), with the user's decisions. Read it before starting milestone work.
+- `docs/ROADMAP.md`: the pro-features plan in five milestones (milestone 1 is released; milestone 2 is done in beta 8; milestone 3 is done in beta 10; milestone 4 is done in beta 11; milestone 5 is next), with the user's decisions. Read it before starting milestone work.
 
 ## Commands
 Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:$PATH"; eval "$(fnm env)"`
@@ -36,6 +36,7 @@ Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:
     - masks: `masks` (blur, pixelate, hide; soft edge, invert, keyframes, follow subject; preview vs export)
     - beta 8 and the rest of milestone 2: `beta8` (track header column, cuts on track clips, gauge trimming and source, solo sound, on/off switches, social export presets and loudness, compound clips, multicam)
     - milestone 3: `motion` (curves, motion titles and text paths, sound tools and ducking, true-peak loudness, export queue, presets and batch)
+    - milestone 4: `finish` (colour wheels, curves, qualifier, power windows, film looks, noise reduction, new effects and transitions, scopes, stabilizing from the picture; preview vs export; 4K grading playback)
     - ride data and export: `gauges`, `airtime`, `export`, `tenbitexport`, `rider`
   - A full regression runs all of them and takes about 45 minutes. Timing checks (`gauges`, `scrubback`) can fail once when the machine is busy: rerun before treating it as a bug.
 - Installers: `pnpm --filter action-cam-editor dist:mac`. This builds Apple Silicon and Intel dmgs into `apps/desktop/release/`. Windows is built by `.github/workflows/installers.yml`.

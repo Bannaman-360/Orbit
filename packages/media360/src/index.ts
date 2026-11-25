@@ -10,3 +10,5 @@ export * from './mosse';
 export * from './sourceLens';
 export * from './inputColor';
 export * from './lensMatch';
+export * from './scopes';
+export * from './flow';

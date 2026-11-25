@@ -195,13 +195,14 @@ ipcMain.handle('dialog:open-theme', async () => {
   return r.canceled || !r.filePaths[0] ? null : readFile(r.filePaths[0], 'utf8');
 });
 
-ipcMain.handle('dialog:save', async (_e, kind: 'project' | 'video' | 'mov' | 'image' | 'theme', defaultName: string) => {
+ipcMain.handle('dialog:save', async (_e, kind: 'project' | 'video' | 'mov' | 'image' | 'theme' | 'lut', defaultName: string) => {
   const filters = {
     project: [{ name: 'Project', extensions: ['acproj'] }],
     video: [{ name: 'MP4 video', extensions: ['mp4'] }],
     mov: [{ name: 'QuickTime movie (ProRes)', extensions: ['mov'] }],
     image: [{ name: 'Image', extensions: ['jpg', 'png'] }],
     theme: [{ name: 'Theme or interface settings', extensions: ['acetheme'] }],
+    lut: [{ name: 'Cube LUT', extensions: ['cube'] }],
   }[kind];
   const r = await dialog.showSaveDialog(win!, { defaultPath: defaultName, filters });
   if (r.canceled || !r.filePath) return null;
@@ -317,6 +318,19 @@ const importer = setupImporter({
 // data folder, named from the source file's path, size and modification time (so an edited
 // source gets a fresh proxy).
 const proxyDir = () => path.join(app.getPath('userData'), 'proxies');
+/** Where a file's motion worked out from its picture is kept (see flowStab.ts). */
+ipcMain.handle('motion:path', async (_e, src: string) => {
+  if (!canRead(src)) throw new Error('File access denied');
+  const st = await stat(src);
+  const key = createHash('sha1').update(`${path.resolve(src)}|${st.size}|${st.mtimeMs}|motion`).digest('hex').slice(0, 20);
+  const dir = path.join(app.getPath('userData'), 'motion');
+  await mkdir(dir, { recursive: true });
+  const file = path.join(dir, `${key}.json`);
+  const exists = await stat(file).then(() => true, () => false);
+  readable.add(file);
+  writable.add(file);
+  return { path: file, exists };
+});
 const inProxyDir = (p: string) => inside(p, proxyDir());
 ipcMain.handle('proxy:path', async (_e, src: string, level: number, tag = '') => {
   if (!canRead(src)) throw new Error('File access denied');
@@ -478,7 +492,7 @@ function buildMenu() {
     ...(MAC ? [{ label: app.name, submenu: [{ role: 'about' }, it('Check for Updates…', 'checkUpdates'), sep, it('Customize…', 'customize'), sep, { role: 'services' }, sep, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, sep, { role: 'quit' }] as MenuItemConstructorOptions[] }] : []),
     { label: 'File', submenu: [it('Import Media…', 'import'), it('Import from Memory Card…', 'card'), it('Add Music…', 'music'), sep, it('Projects…', 'projects'), it('New Project', 'newProject'), it('Open Project…', 'open'), sep, it('Save Project', 'save'), it('Save Project As…', 'saveAs'), sep, it('Export Video…', 'export'), it('Save Frame…', 'grab'), sep, MAC ? { role: 'close' } : { role: 'quit' }] },
     { label: 'Edit', submenu: [it('Undo', 'undo'), it('Redo', 'redo'), sep, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }, sep, it('Split', 'split'), it('Split and Delete Left', 'delLeft'), it('Split and Delete Right', 'delRight'), it('Duplicate Clip', 'duplicate'), it('Delete', 'delete'), sep, it('Add Keyframe', 'keyframe'), it('Add Marker', 'marker'), it('Add Text', 'text'), it('Track Subject…', 'track')] },
-    { label: 'View', submenu: [it('Media', 'toggleMedia'), it('Inspector', 'toggleInspector'), it('Timeline', 'toggleTimeline'), it('Markers', 'markersPanel'), sep, it('Customize…', 'customize'), it('Arrange Interface', 'arrange'), it('Undo Interface Change', 'undoUi'), sep, it('Show Before / After', 'compare'), it('Full-Screen Preview', 'fullscreen'), { role: 'togglefullscreen', label: 'Enter Full Screen Window' }, ...(app.isPackaged ? [] : [sep, { role: 'reload' }, { role: 'toggleDevTools' }] as MenuItemConstructorOptions[])] },
+    { label: 'View', submenu: [it('Media', 'toggleMedia'), it('Inspector', 'toggleInspector'), it('Timeline', 'toggleTimeline'), it('Markers', 'markersPanel'), it('Scopes', 'scopesPanel'), sep, it('Customize…', 'customize'), it('Arrange Interface', 'arrange'), it('Undo Interface Change', 'undoUi'), sep, it('Show Before / After', 'compare'), it('Full-Screen Preview', 'fullscreen'), { role: 'togglefullscreen', label: 'Enter Full Screen Window' }, ...(app.isPackaged ? [] : [sep, { role: 'reload' }, { role: 'toggleDevTools' }] as MenuItemConstructorOptions[])] },
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, ...(MAC ? [sep, { role: 'front' }] as MenuItemConstructorOptions[] : [])] },
     { label: 'Help', submenu: [...(MAC ? [] : [it('Check for Updates…', 'checkUpdates'), sep]), it('Show Tour Again', 'tour'), it('Welcome Screen', 'welcome'), sep, it('Keyboard Shortcuts', 'shortcuts'), sep, it('Report a Problem…', 'report')] },
   ];

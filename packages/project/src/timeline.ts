@@ -14,19 +14,23 @@ import { fixMasks, type Mask } from './masks';
 import type { Sequence } from './compound';
 import type { MulticamGroup } from './multicam';
 import { cleanSound, type SoundFx } from './sound';
+import { cleanCurves, cleanDenoise, cleanFilm, cleanQualifier, cleanWheels, type Denoise, type FilmChoice, type GradeCurves, type Qualifier } from './grading';
 
 export type TransitionKind =
   | 'crossfade' | 'dip-black' | 'dip-white' | 'flash' | 'blur'
   | 'wipe-left' | 'wipe-right' | 'wipe-up' | 'wipe-down' | 'barn-door' | 'iris' | 'diagonal' | 'clock'
   | 'slide-left' | 'slide-right' | 'push-up' | 'push-down' | 'cover-left' | 'whip-left' | 'whip-right'
-  | 'zoom' | 'zoom-through' | 'spin';
+  | 'zoom' | 'zoom-through' | 'spin'
+  | 'blinds' | 'split-h' | 'corner' | 'diamond' | 'star' | 'fan' | 'checker'
+  | 'cover-right' | 'cover-up' | 'cover-down' | 'uncover-left' | 'whip-up' | 'whip-down' | 'drop-in'
+  | 'zoom-out' | 'shake' | 'glitch';
 
 /** Transitions, grouped for the picker. */
 export const TRANSITION_GROUPS: [string, [TransitionKind, string][]][] = [
   ['Fades', [['crossfade', 'Crossfade'], ['dip-black', 'Dip to black'], ['dip-white', 'Dip to white'], ['flash', 'Flash'], ['blur', 'Blur dissolve']]],
-  ['Wipes', [['wipe-left', 'Wipe left'], ['wipe-right', 'Wipe right'], ['wipe-up', 'Wipe up'], ['wipe-down', 'Wipe down'], ['barn-door', 'Barn door'], ['iris', 'Iris'], ['diagonal', 'Diagonal'], ['clock', 'Clock']]],
-  ['Motion', [['slide-left', 'Slide left'], ['slide-right', 'Slide right'], ['push-up', 'Push up'], ['push-down', 'Push down'], ['cover-left', 'Cover'], ['whip-left', 'Whip pan left'], ['whip-right', 'Whip pan right']]],
-  ['Camera', [['zoom', 'Zoom in'], ['zoom-through', 'Zoom through'], ['spin', 'Spin']]],
+  ['Wipes', [['wipe-left', 'Wipe left'], ['wipe-right', 'Wipe right'], ['wipe-up', 'Wipe up'], ['wipe-down', 'Wipe down'], ['barn-door', 'Barn door'], ['split-h', 'Split open'], ['iris', 'Iris'], ['diagonal', 'Diagonal'], ['corner', 'Corner'], ['clock', 'Clock'], ['fan', 'Fan'], ['blinds', 'Blinds'], ['checker', 'Checkerboard'], ['diamond', 'Diamond'], ['star', 'Star']]],
+  ['Motion', [['slide-left', 'Slide left'], ['slide-right', 'Slide right'], ['push-up', 'Push up'], ['push-down', 'Push down'], ['cover-left', 'Cover'], ['cover-right', 'Cover from left'], ['cover-up', 'Cover up'], ['cover-down', 'Cover down'], ['uncover-left', 'Uncover'], ['drop-in', 'Drop in'], ['whip-left', 'Whip pan left'], ['whip-right', 'Whip pan right'], ['whip-up', 'Whip up'], ['whip-down', 'Whip down']]],
+  ['Camera', [['zoom', 'Zoom in'], ['zoom-out', 'Zoom out'], ['zoom-through', 'Zoom through'], ['spin', 'Spin'], ['shake', 'Shake'], ['glitch', 'Glitch']]],
 ];
 
 export const TRANSITIONS: [TransitionKind, string][] = TRANSITION_GROUPS.flatMap(([, list]) => list);
@@ -133,6 +137,14 @@ export interface TimelineClip {
   off?: string[];
   /** A cut of a multicam group: which group, and which camera it shows (see multicam.ts). */
   multicam?: { group: string; angle: number };
+  /** Tone and colour curves (see grading.ts). */
+  curves?: GradeCurves;
+  /** A secondary correction of one range of colours. */
+  qualifier?: Qualifier;
+  /** Noise reduction. */
+  denoise?: Denoise;
+  /** One of our film looks, over the grade. */
+  film?: FilmChoice;
 }
 
 export interface AudioClip {
@@ -537,12 +549,17 @@ export function assignLanes<T extends { id: string }>(items: T[], span: (x: T) =
 
 // --- Saving -----------------------------------------------------------------
 
-const fixLook = (l?: Partial<Look>): Look => ({
+const fixLook = (l?: Partial<Look>): Look => {
+  const { wheels: raw, ...rest } = l ?? {};
+  const wheels = cleanWheels(raw);
+  return fixLookParts({ ...rest, ...(wheels ? { wheels } : {}) });
+};
+const fixLookParts = (l?: Partial<Look>): Look => ({
   ...DEFAULT_LOOK, ...l, grade: { ...NEUTRAL_GRADE, ...(l?.grade ?? {}) }, fx: { ...NO_EFFECTS, ...(l?.fx ?? {}) },
   ...(l?.xf ? { xf: { ...IDENTITY_XF, ...l.xf, crop: (Array.isArray(l.xf.crop) && l.xf.crop.length === 4 ? l.xf.crop : IDENTITY_XF.crop) } } : {}),
 });
 
-const fixClip = (c: TimelineClip): TimelineClip => withSound({
+const fixClip = (c: TimelineClip): TimelineClip => withGrading(withSound({
   ...newClip(c.mediaPath, c.outUs ?? 0, true),
   ...c,
   look: fixLook(c.look),
@@ -550,7 +567,13 @@ const fixClip = (c: TimelineClip): TimelineClip => withSound({
   stabilize: { ...{ smoothing: 'off' as const, horizon: false }, ...(c.stabilize ?? {}) },
   ...(c.speedKeys ? { speedKeys: fixSpeedKeys(c.speedKeys) } : {}),
   masks: fixMasks(c.masks),
-});
+}));
+/** A clip with its pro grading made safe (parts that do nothing are dropped). */
+function withGrading(c: TimelineClip): TimelineClip {
+  const { curves: rc, qualifier: rq, denoise: rd, film: rf, ...rest } = c;
+  const curves = cleanCurves(rc), qualifier = cleanQualifier(rq), denoise = cleanDenoise(rd), film = cleanFilm(rf);
+  return { ...rest, ...(curves ? { curves } : {}), ...(qualifier ? { qualifier } : {}), ...(denoise ? { denoise } : {}), ...(film ? { film } : {}) };
+}
 /** Clip or music with its sound settings made safe (or dropped). */
 function withSound<T extends { sound?: SoundFx }>(x: T): T {
   const sound = cleanSound(x.sound);

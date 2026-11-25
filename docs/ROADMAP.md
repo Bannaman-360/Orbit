@@ -20,7 +20,7 @@ what to try, then wait for the go-ahead.
 | 1. Editing core | 3, 10, 15, 16 + project format 2 | **Done**: released in 0.1.0-beta.5 |
 | 2. Layers | 1, 2, 4, 14 | **Done** (0.1.0-beta.8 prepared): tracks, N-layer pipeline, Transform and layouts (beta 7); masks and tracked blur, compound clips, multicam |
 | 3. Motion and sound | 5, 6, 7, 9 | **Done** (0.1.0-beta.10 prepared): curves, motion titles and text paths, sound tools and ducking, true-peak loudness, export queue, presets and batch |
-| 4. Colour and finishing | 11, 12, 13, 17 | Planned |
+| 4. Colour and finishing | 11, 12, 13, 17 | **Done** (0.1.0-beta.11 prepared): wheels, curves, qualifier, power windows, film looks, scopes, noise reduction, stabilizing from the picture, 5 effects, 17 transitions |
 | 5. AI tools | 8 | Planned |
 
 The numbers are the user's original list:
@@ -140,6 +140,20 @@ clips' own sound settings (the clips inside keep theirs).
   - Batch export of several Media clips.
 
 ## Milestone 4: Colour and finishing (items 11, 12, 13, 17)
+Done (self-test mode `finish`). Grading model: `packages/project/src/grading.ts` (wheels in `look.wheels`,
+keyframed in the grade group; `clip.curves`, `clip.qualifier`, `clip.denoise`, `clip.film`, clip-level;
+power windows are masks with `effect: 'grade'` and `mask.grade`). Shader: optional parts of the finish
+pass (`finishWgsl({ masks, pro, nr, fx2 })`, one pipeline per combination, so plain clips stay lean);
+curves are a 256×2 LUT texture, film looks a second 3D LUT made in code (`filmLut`). Preview and export
+both go through `presentLook(..., { clip })` → `clipFinish`. Scopes: `packages/media360/src/scopes.ts`
+(compute pass on the finished preview picture via `ReframeRenderer.tap`, `Scopes.tsx`, `gradeView.ts`).
+Optical flow: `packages/media360/src/flow.ts` (FAST, pyramidal LK, Horn + RANSAC), run in `flowWorker.ts`
+by `flowStab.ts`, which turns the result into orientation data for a `Stabilizer` and keeps it in
+`userData/motion`. Checked against a clip whose true shake is known (0.11° per 0.1 s) and against the
+Max 2 gyro on a real ride. Transitions: 17 new in `transitionLook`, `aOnTop` for ones where the outgoing
+clip moves away over the incoming one; picker tiles in `TransitionTiles.tsx`.
+Not done: stabilizing stitched 360 videos from their picture (regular clips only); rolling-shutter fix for
+picture-stabilized clips (needs a gyro); temporal noise reduction on a paused frame (needs frames before it).
 - **Grading:**
   - Wheels: lift, gamma, gain, offset.
   - Curves: RGB, luma, hue vs sat, hue vs hue, as a 1D LUT texture.

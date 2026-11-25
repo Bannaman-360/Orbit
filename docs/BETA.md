@@ -35,7 +35,9 @@ Windows version can't, so it shows a **Download** link instead.
 2. Put clips on the timeline, trim and split them, try a speed ramp.
 3. For 360 videos: drag in the preview to aim, and try subject tracking.
 4. Add gauges (speed, G-force, airtime, jump distance) and try a few designs.
-5. Export: H.264, then 10-bit HEVC.
+5. Grade a clip with the color wheels and curves, with View ▸ Scopes open, and try a film look.
+6. A phone or older action-camera clip: Stabilize ▸ Stabilize from the picture.
+7. Export: H.264, then 10-bit HEVC.
 
 ### Windows checklist
 

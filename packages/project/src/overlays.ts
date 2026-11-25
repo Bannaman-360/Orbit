@@ -419,6 +419,8 @@ export interface TransitionLook {
   reveal: Reveal | null;
   dip: string | null;
   dipAlpha: number;
+  /** The outgoing clip is drawn over the incoming one (it moves away to show it). */
+  aOnTop?: boolean;
 }
 
 const still = (): LayerXf => ({ alpha: 1, dx: 0, dy: 0, scale: 1, rotate: 0, blur: 0 });
@@ -433,6 +435,29 @@ function clockPolygon(e: number): [number, number][] {
   pts.push([0.5 + 1.5 * Math.sin(sweep), 0.5 - 1.5 * Math.cos(sweep)]);
   return pts;
 }
+
+/** A star with five points round the centre, `r` of the half-diagonal out (frame fractions). */
+function starPolygon(r: number): [number, number][] {
+  const pts: [number, number][] = [];
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / 5, k = (i % 2 ? 0.45 : 1) * r * 1.9;
+    // (In a 16:9 frame: x is squeezed so the star isn't stretched sideways.)
+    pts.push([0.5 + Math.cos(a) * k * 0.5625, 0.5 + Math.sin(a) * k]);
+  }
+  return pts;
+}
+/**
+ * Several rectangles as one polygon: each starts and ends at its top-left corner, and the path
+ * from one corner to the next is walked back again at the end, so the joins enclose nothing.
+ */
+function rectsPolygon(rects: [number, number, number, number][]): [number, number][] {
+  const pts: [number, number][] = [];
+  for (const [x0, y0, x1, y1] of rects) pts.push([x0, y0], [x0, y1], [x1, y1], [x1, y0], [x0, y0]);
+  for (let i = rects.length - 2; i >= 0; i--) pts.push([rects[i]![0], rects[i]![1]]);
+  return pts;
+}
+/** A steady random number for step i (the same every time it is drawn). */
+const jitter = (i: number, k: number) => { const s = Math.sin(i * 127.1 + k * 311.7) * 43758.5453; return (s - Math.floor(s)) * 2 - 1; };
 
 export function transitionLook(kind: TransitionKind, p: number): TransitionLook {
   const e = easeInOut(p);
@@ -523,6 +548,107 @@ export function transitionLook(kind: TransitionKind, p: number): TransitionLook 
       t.b.scale = 0.6 + 0.4 * e;
       t.b.alpha = e;
       break;
+    case 'split-h':
+      t.reveal = { kind: 'rect', r: [0, 0.5 - e / 2, 1, 0.5 + e / 2] };
+      break;
+    case 'corner':
+      t.reveal = { kind: 'rect', r: [0, 0, e, e] };
+      break;
+    case 'fan': {
+      // Two hands sweeping down from 12 o'clock, one each way.
+      const pts: [number, number][] = [[0.5, 0.5]];
+      const sweep = e * Math.PI;
+      for (let a = -sweep; a <= sweep + 1e-9; a += Math.PI / 36) pts.push([0.5 + 1.5 * Math.sin(a), 0.5 - 1.5 * Math.cos(a)]);
+      pts.push([0.5 + 1.5 * Math.sin(sweep), 0.5 - 1.5 * Math.cos(sweep)]);
+      t.reveal = { kind: 'polygon', pts };
+      break;
+    }
+    case 'blinds': {
+      const n = 8, w = 1 / n;
+      t.reveal = { kind: 'polygon', pts: rectsPolygon(Array.from({ length: n }, (_, i) => [i * w, 0, i * w + w * e, 1] as [number, number, number, number])) };
+      break;
+    }
+    case 'checker': {
+      // Squares grow from their centres, the second half of the board a little later.
+      const cols = 8, rows = 5, out: [number, number, number, number][] = [];
+      for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+        const late = (r + c) % 2 ? 0.35 : 0;
+        const g = Math.max(0, Math.min(1, (p - late) / 0.65));
+        const s = (g < 0.5 ? 2 * g * g : 1 - (-2 * g + 2) ** 2 / 2) / 2;
+        const cx = (c + 0.5) / cols, cy = (r + 0.5) / rows;
+        if (s > 0) out.push([cx - s / cols - 0.001, cy - s / rows - 0.001, cx + s / cols + 0.001, cy + s / rows + 0.001]);
+      }
+      t.reveal = out.length ? { kind: 'polygon', pts: rectsPolygon(out) } : { kind: 'rect', r: [0, 0, 0, 0] };
+      break;
+    }
+    case 'diamond': {
+      const r = e * 1.05;
+      t.reveal = { kind: 'polygon', pts: [[0.5, 0.5 - r], [0.5 + r, 0.5], [0.5, 0.5 + r], [0.5 - r, 0.5]] };
+      break;
+    }
+    case 'star':
+      t.reveal = { kind: 'polygon', pts: starPolygon(e * 1.35) };
+      break;
+    case 'cover-right':
+      t.b.dx = e - 1;
+      t.a.alpha = 1 - 0.4 * e;
+      break;
+    case 'cover-up':
+      t.b.dy = 1 - e;
+      t.a.alpha = 1 - 0.4 * e;
+      break;
+    case 'cover-down':
+      t.b.dy = e - 1;
+      t.a.alpha = 1 - 0.4 * e;
+      break;
+    case 'uncover-left':
+      // The outgoing clip slides away and the incoming one is already there underneath.
+      t.a.dx = -e;
+      t.b.scale = 1.08 - 0.08 * e;
+      t.aOnTop = true;
+      break;
+    case 'drop-in': {
+      // Falls in from the top and settles with a small bounce.
+      const b = p < 0.7 ? 1 - (p / 0.7) ** 2 : -0.06 * Math.sin(((p - 0.7) / 0.3) * Math.PI);
+      t.b.dy = -b;
+      t.a.alpha = 1 - 0.3 * e;
+      break;
+    }
+    case 'whip-up':
+    case 'whip-down': {
+      const w = easeInOutQuint(p), s = kind === 'whip-up' ? -1 : 1;
+      t.a.dy = s * w;
+      t.b.dy = s * (w - 1);
+      t.a.blur = t.b.blur = peak * 0.045;
+      break;
+    }
+    case 'zoom-out':
+      // The outgoing clip shrinks away into the middle.
+      t.a.scale = 1 - 0.85 * e;
+      t.a.alpha = 1 - e * e;
+      t.b.scale = 1.25 - 0.25 * e;
+      t.aOnTop = true;
+      break;
+    case 'shake': {
+      // A hard cut hidden in a burst of camera shake.
+      const i = Math.floor(p * 24), amp = peak * 0.06;
+      const dx = jitter(i, 1) * amp, dy = jitter(i, 2) * amp * 0.7, rot = jitter(i, 3) * peak * 3;
+      t.a = { ...t.a, dx, dy, rotate: rot, scale: 1 + peak * 0.1, blur: peak * 0.006 };
+      t.b = { ...t.b, dx, dy, rotate: rot, scale: 1 + peak * 0.1, blur: peak * 0.006, alpha: p >= 0.5 ? 1 : 0 };
+      break;
+    }
+    case 'glitch': {
+      // Jumps back and forth between the clips in steps, the picture knocked sideways.
+      const i = Math.floor(p * 18);
+      const show = p > 0.85 ? 1 : p < 0.15 ? 0 : jitter(i, 5) + (p - 0.5) * 2.4 > 0 ? 1 : 0;
+      const kick = peak * 0.08 * jitter(i, 6);
+      t.a.dx = kick;
+      t.b.dx = -kick;
+      t.b.alpha = show;
+      t.dip = '#ff00ff';
+      t.dipAlpha = Math.max(0, jitter(i, 7)) * peak * 0.18;
+      break;
+    }
     case 'spin':
       t.a.rotate = e * 90;
       t.a.scale = 1 + e;

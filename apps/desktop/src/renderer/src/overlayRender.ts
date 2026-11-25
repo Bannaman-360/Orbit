@@ -797,7 +797,9 @@ export function compositeLayers(ctx: Ctx2D, W: number, H: number, layers: CompLa
       ctx.restore();
     }
   };
-  for (const l of layers) {
+  // (Some transitions move the outgoing clip away over the incoming one.)
+  const order = look?.aOnTop ? [...layers].sort((x, y) => (x.role === 'out' && y.role === 'in' ? 1 : x.role === 'in' && y.role === 'out' ? -1 : 0)) : layers;
+  for (const l of order) {
     if (l.track > 0) dip();
     if (!look || !l.role) { drawPlaced(ctx, W, H, l.src, l.xf); continue; }
     if (l.role === 'out') { withTransition(ctx, W, H, look.a, () => drawPlaced(ctx, W, H, l.src, l.xf)); continue; }

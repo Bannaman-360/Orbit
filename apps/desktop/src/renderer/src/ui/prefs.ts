@@ -7,7 +7,7 @@ import { group, sanitize, split, type DockLayout } from './dockModel';
 import { DEFAULT_THEME, resolveMode, sanitizeTheme, THEMES, themeVars, type Mode, type Theme } from './theme';
 
 export const PANELS = {
-  media: 'Media', viewer: 'Preview', timeline: 'Timeline', reframe: 'Reframe', stabilize: 'Stabilize', color: 'Color', effects: 'Effects', clip: 'Clip', selection: 'Selected item', markers: 'Markers',
+  media: 'Media', viewer: 'Preview', timeline: 'Timeline', reframe: 'Reframe', stabilize: 'Stabilize', color: 'Color', effects: 'Effects', clip: 'Clip', selection: 'Selected item', markers: 'Markers', scopes: 'Scopes',
 } as const;
 export type BuiltinPanel = keyof typeof PANELS;
 export interface CustomPanel { id: string; title: string }
@@ -45,7 +45,7 @@ export const LAYOUTS: [string, () => DockLayout][] = [
   ['Tall inspector', () => ({ root: split('row', [split('col', [split('row', [group('media'), 0.23], [group('viewer'), 0.77]), 0.64], [group('timeline'), 0.36]), 0.74], [group(...INSPECTOR), 0.26]), floats: [] })],
   ['Tall media', () => ({ root: split('row', [group('media'), 0.17], [split('col', [split('row', [group('viewer'), 0.69], [group(...INSPECTOR), 0.31]), 0.64], [group('timeline'), 0.36]), 0.83]), floats: [] })],
   ['Tall sidebars', () => ({ root: split('row', [group('media'), 0.16], [split('col', [group('viewer'), 0.62], [group('timeline'), 0.38]), 0.58], [group(...INSPECTOR), 0.26]), floats: [] })],
-  ['Color & effects', () => ({ root: split('col', [split('row', [group('viewer', 'media'), 0.5], [group('color'), 0.25], [group('effects', 'reframe', 'stabilize', 'clip', 'selection'), 0.25]), 0.68], [group('timeline'), 0.32]), floats: [] })],
+  ['Color & effects', () => ({ root: split('col', [split('row', [split('col', [group('viewer', 'media'), 0.68], [group('scopes'), 0.32]), 0.5], [group('color'), 0.25], [group('effects', 'reframe', 'stabilize', 'clip', 'selection'), 0.25]), 0.68], [group('timeline'), 0.32]), floats: [] })],
   ['Reframe', () => ({ root: split('col', [split('row', [group('reframe', 'stabilize'), 0.24], [group('viewer'), 0.54], [group('color', 'effects', 'clip', 'selection', 'media'), 0.22]), 0.66], [group('timeline'), 0.34]), floats: [] })],
   ['Focus', () => ({ root: split('col', [group('viewer'), 0.7], [group('timeline'), 0.3]), floats: [] })],
 ];
@@ -61,8 +61,8 @@ export const DEFAULT_BARS: Record<BarId, BarPrefs> = {
 export const DEFAULT_SECTIONS: Record<string, string[]> = {
   reframe: ['Keyframes', 'Curves', 'Subject tracking', 'View', 'Framing', 'Lens', 'Lens details', 'Debug'],
   stabilize: ['Stabilization', 'Crop', 'Horizon'],
-  color: ['Input color', 'Presets', 'Light', 'Color', 'Detail', 'LUT', 'Lens match', 'Match clips'],
-  effects: ['Masks', 'Motion blur (ND filter)', 'Speed & lens', 'Film & light', 'Quick looks'],
+  color: ['Input color', 'Presets', 'Light', 'Color', 'Color wheels', 'Color curves', 'Qualifier', 'Detail', 'Noise reduction', 'LUT', 'Film looks', 'Lens match', 'Match clips'],
+  effects: ['Masks', 'Motion blur (ND filter)', 'Speed & lens', 'Film & light', 'Glitch & tape', 'Quick looks'],
   clip: ['Transform', 'Layout', 'Speed', 'Airtime', 'Audio', 'Sound tools', 'Trim'],
   'sel:text': ['Text', 'Motion title', 'Font', 'Colour & effect', 'Text path', 'Position', 'Overlay timing'],
   'sel:gauge': ['Look', 'Position', 'Overlay timing'],

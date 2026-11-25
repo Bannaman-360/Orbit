@@ -1,8 +1,8 @@
 // One rendering step shared by preview, export and frame grabs, so they always match.
 
-import { DEFAULT_CROP, NO_EFFECTS, NEUTRAL_GRADE, withOff, applyTrack, fisheyeForLook, type OwnLens, blurFrames, lookAt, curveOf, trackWeight, type Look, type ShareOf, type TimelineClip } from '@ace/project';
+import { bakeCurves, curvesUsed, denoiseFrames, denoiseOn, filmLut, qualifierUniforms, wheelsNeutral, wheelUniforms, DEFAULT_CROP, NO_EFFECTS, NEUTRAL_GRADE, withOff, applyTrack, fisheyeForLook, type OwnLens, blurFrames, lookAt, curveOf, trackWeight, type Look, type ShareOf, type TimelineClip } from '@ace/project';
 import { cropAt, DEFAULT_AXIS_MAP, planCrop, smoothUnder, type CropPlan, type CropRequest } from '@ace/telemetry';
-import type { ReframeRenderer, RenderMode } from '@ace/media360';
+import type { Lut3D, PresentInput, ReframeRenderer, RenderMode } from '@ace/media360';
 import { inputFor } from './color';
 import { mediaNow, type Media } from './media';
 import { adjustLens, BORDER, dirToPicture, flatRay, frameShare, IDENTITY, insideFov, matPower, pictureToDir, reachX, rotZ, SHUTTER_ROWS, type Mat3, mulMat, mulVec, planeScale, sampleMatrix, transpose, viewRotation, type FlatView, type SourceLens, type Vec3 } from '@ace/media360';
@@ -234,9 +234,13 @@ const viewKey = (l: Look) => `${l.yaw.toFixed(3)},${l.pitch.toFixed(3)},${l.roll
 const trackIds = new WeakMap<object, number>();
 let trackCount = 0;
 const trackId = (tr: object | undefined) => { if (!tr) return 0; let n = trackIds.get(tr); if (!n) trackIds.set(tr, (n = ++trackCount)); return n; };
+/** A number for each motion source a file has had (it changes when motion is worked out from the picture). */
+const stabIds = new WeakMap<object, number>();
+let stabCount = 0;
+export const motionId = (media: Media) => { let n = stabIds.get(media.stabilizer); if (!n) stabIds.set(media.stabilizer, (n = ++stabCount)); return n; };
 function planKey(clip: TimelineClip, media: Media, outAspect: number) {
   const st = clip.stabilize;
-  return [clip.id, media.path, clip.inUs, clip.outUs, outAspect.toFixed(2), clip.fit, clip.lensMode, clip.lensFix?.hfov ?? '', clip.lensFix?.bend ?? '', st.smoothing, st.strength ?? '', st.crop ?? 'auto', st.cropSpeed ?? '', st.maxCrop ?? '', st.cropAmount ?? '', rolling(media, clip), levels(media, clip), trackId(clip.track), viewKey(clip.look), clip.keyframes.map((k) => `${k.t}:${viewKey(k.look)}:${JSON.stringify(curveOf(k, "view"))}`).join(';')].join('|');
+  return [clip.id, media.path, motionId(media), clip.inUs, clip.outUs, outAspect.toFixed(2), clip.fit, clip.lensMode, clip.lensFix?.hfov ?? '', clip.lensFix?.bend ?? '', st.smoothing, st.strength ?? '', st.crop ?? 'auto', st.cropSpeed ?? '', st.maxCrop ?? '', st.cropAmount ?? '', rolling(media, clip), levels(media, clip), trackId(clip.track), viewKey(clip.look), clip.keyframes.map((k) => `${k.t}:${viewKey(k.look)}:${JSON.stringify(curveOf(k, "view"))}`).join(';')].join('|');
 }
 /** How far ahead a followed view starts moving away from an edge (µs). */
 const STEER_US = 500_000;
@@ -452,15 +456,52 @@ export function pushClipFrame(r: ReframeRenderer, clip: TimelineClip, media: Med
   return withOff(look, clip.off);
 }
 
-/** `time` (µs of media time) animates grain and light leaks. */
-export function presentLook(r: ReframeRenderer, look: Look, opts: { raw?: boolean; time?: number } = {}) {
-  r.present({ blendFrames: blurFrames(look.motionBlur), grade: look.grade, bypass: opts.raw, fx: look.fx, time: (opts.time ?? 0) / 1e6 });
+/**
+ * `time` (µs of media time) animates grain and light leaks. `clip`: its curves, qualifier, film
+ * look and noise reduction (left out when comparing with the original).
+ */
+export function presentLook(r: ReframeRenderer, look: Look, opts: { raw?: boolean; time?: number; clip?: TimelineClip | null } = {}) {
+  const fx = look.fx;
+  r.present({
+    blendFrames: blurFrames(look.motionBlur), grade: look.grade, bypass: opts.raw, fx, time: (opts.time ?? 0) / 1e6,
+    fx2: { bloom: fx.bloom, halation: fx.halation, vhs: fx.vhs, shake: fx.shake, rgbSplit: fx.rgbSplit },
+    wheels: wheelsNeutral(look.wheels) ? null : wheelUniforms(look.wheels!),
+    ...clipFinish(opts.clip),
+  });
+}
+
+const baked = new WeakMap<object, { key: string; data: Float32Array; mode: number }>();
+let bakes = 0;
+const films = new Map<string, Lut3D>();
+/** A clip's own finishing (not keyframed): curves, qualifier, film look, noise reduction. */
+export function clipFinish(clip: TimelineClip | null | undefined): Pick<PresentInput, 'curves' | 'qualifier' | 'film' | 'denoise'> {
+  if (!clip) return {};
+  const off = new Set(clip.off ?? []);
+  let curves: PresentInput['curves'] = null;
+  if (clip.curves && !off.has('curves')) {
+    let b = baked.get(clip.curves);
+    if (!b) {
+      const used = curvesUsed(clip.curves);
+      baked.set(clip.curves, (b = { key: `c${++bakes}`, data: bakeCurves(clip.curves), mode: (used.tone ? 1 : 0) + (used.color ? 2 : 0) }));
+    }
+    if (b.mode) curves = b;
+  }
+  const q = clip.qualifier && !clip.qualifier.off && !off.has('qualifier') ? qualifierUniforms(clip.qualifier) : null;
+  let film: PresentInput['film'] = null;
+  if (clip.film && clip.film.mix > 0.001 && !off.has('film')) {
+    let lut = films.get(clip.film.look);
+    if (!lut) films.set(clip.film.look, (lut = filmLut(clip.film.look)));
+    film = { key: clip.film.look, lut, mix: clip.film.mix };
+  }
+  const d = clip.denoise && !off.has('denoise') && denoiseOn(clip.denoise) ? { ...clip.denoise, frames: denoiseFrames(clip.denoise) } : null;
+  return { curves, qualifier: q, film, denoise: d };
 }
 
 /** The same view with nothing done to the picture: no colour, LUT, sharpening, effects or motion blur. */
-export const withoutEffects = (look: Look): Look => ({ ...look, grade: { ...NEUTRAL_GRADE, lutMix: 0 }, fx: NO_EFFECTS, motionBlur: 0 });
+export const withoutEffects = (look: Look): Look => { const { wheels: _w, ...rest } = look; return { ...rest, grade: { ...NEUTRAL_GRADE, lutMix: 0 }, fx: NO_EFFECTS, motionBlur: 0 }; };
 
+const mediaMotion = (clip: TimelineClip) => { const m = mediaNow(clip.mediaPath); return m ? motionId(m) : 0; };
 /** Everything that changes the reframe pass (as opposed to grading), for change detection. */
 export function reframeSignature(clip: TimelineClip, look: Look, extra: string) {
-  return `${clip.id}|${look.yaw.toFixed(3)}|${look.pitch.toFixed(3)}|${look.roll.toFixed(3)}|${look.fov.toFixed(3)}|${look.fisheye.toFixed(4)}|${clip.stabilize.smoothing}:${clip.stabilize.strength ?? ''}|${clip.stabilize.horizon}|${clip.fit}|${clip.lensMode ?? ''}|${clip.stabilize.crop ?? ''}:${clip.stabilize.cropSpeed ?? ''}:${clip.stabilize.maxCrop ?? ''}:${clip.stabilize.cropAmount ?? ''}:${clip.stabilize.rolling ?? ''}|${clip.lenses ? JSON.stringify(clip.lenses) : ''}|${clip.lensLook ? `${clip.lensLook.fov},${clip.lensLook.fisheye}` : ''}|${clip.inputColor ?? ''}:${clip.wideColor ?? ''}|${clip.lensMode ? planVersion : 0}|${clip.lensFix ? `${clip.lensFix.hfov ?? ''},${clip.lensFix.bend ?? ''}` : ''}|${extra}`;
+  return `${clip.id}|${look.yaw.toFixed(3)}|${look.pitch.toFixed(3)}|${look.roll.toFixed(3)}|${look.fov.toFixed(3)}|${look.fisheye.toFixed(4)}|${clip.stabilize.smoothing}:${clip.stabilize.strength ?? ''}|${clip.stabilize.horizon}|${clip.fit}|${clip.lensMode ?? ''}|${clip.stabilize.crop ?? ''}:${clip.stabilize.cropSpeed ?? ''}:${clip.stabilize.maxCrop ?? ''}:${clip.stabilize.cropAmount ?? ''}:${clip.stabilize.rolling ?? ''}|${clip.lenses ? JSON.stringify(clip.lenses) : ''}|${clip.lensLook ? `${clip.lensLook.fov},${clip.lensLook.fisheye}` : ''}|${clip.inputColor ?? ''}:${clip.wideColor ?? ''}|${clip.lensMode ? planVersion : 0}|${clip.lensFix ? `${clip.lensFix.hfov ?? ''},${clip.lensFix.bend ?? ''}` : ''}|${mediaMotion(clip)}|${extra}`;
 }

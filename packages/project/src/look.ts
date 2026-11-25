@@ -2,6 +2,8 @@
 // where the virtual camera points, its lens, the colour grade and motion blur.
 // Keyframes store whole looks; values between keyframes are interpolated.
 
+import type { Wheels } from './grading';
+
 export interface Grade {
   /** Stops, -8..4. */
   exposure: number;
@@ -40,9 +42,21 @@ export interface Effects {
   leak: number;
   /** Cinematic black bars, top and bottom. */
   bars: number;
+  /** Wide, soft light spreading from the brightest parts. */
+  bloom: number;
+  /** Red-orange fringe round bright edges, like light scattering in film. */
+  halation: number;
+  /** Old video tape: wobbling lines, smeared colour, scan lines and noise. */
+  vhs: number;
+  /** Handheld camera shake. */
+  shake: number;
+  /** Red and blue pulled apart sideways. */
+  rgbSplit: number;
 }
 
-export const NO_EFFECTS: Effects = { grain: 0, glow: 0, chroma: 0, zoomBlur: 0, leak: 0, bars: 0 };
+export const NO_EFFECTS: Effects = { grain: 0, glow: 0, chroma: 0, zoomBlur: 0, leak: 0, bars: 0, bloom: 0, halation: 0, vhs: 0, shake: 0, rgbSplit: 0 };
+/** Effects added in milestone 4 (the shader only includes their code when one is used). */
+export const FX2_KEYS: (keyof Effects)[] = ['bloom', 'halation', 'vhs', 'shake', 'rgbSplit'];
 
 /**
  * Where a clip sits in the frame (picture-in-picture, split screen). Fractions of the output
@@ -92,6 +106,8 @@ export interface Look {
   motionBlur: number;
   grade: Grade;
   fx: Effects;
+  /** Colour wheels: lift, gamma, gain, offset (missing = neutral; see grading.ts). */
+  wheels?: Wheels;
 }
 
 export const NEUTRAL_GRADE: Grade = {
@@ -119,19 +135,22 @@ export function gradeFromPreset(name: string): Grade {
  * Changes switched off for comparison (like the eye buttons in Lightroom): 'grade.exposure',
  * 'grade.lutMix' (the LUT), 'fx.grain', 'motionBlur'… The settings are kept; they just aren't applied.
  */
-export type OffKey = `grade.${keyof Grade}` | `fx.${keyof Effects}` | 'motionBlur';
+export type OffKey = `grade.${keyof Grade}` | `fx.${keyof Effects}` | 'motionBlur' | 'wheels' | 'curves' | 'qualifier' | 'denoise' | 'film';
 
 /** The look as shown, with the switched-off changes left out. */
 export function withOff(look: Look, off: readonly string[] | undefined): Look {
   if (!off?.length) return look;
   const grade = { ...look.grade }, fx = { ...look.fx };
   let motionBlur = look.motionBlur;
+  let wheels = look.wheels;
   for (const k of off) {
     if (k === 'motionBlur') motionBlur = 0;
+    else if (k === 'wheels') wheels = undefined;
     else if (k.startsWith('grade.')) { const g = k.slice(6) as keyof Grade; if (g in grade) grade[g] = g === 'lutMix' ? 0 : NEUTRAL_GRADE[g]; }
     else if (k.startsWith('fx.')) { const f = k.slice(3) as keyof Effects; if (f in fx) fx[f] = 0; }
   }
-  return { ...look, grade, fx, motionBlur };
+  const { wheels: _w, ...rest } = look;
+  return { ...rest, grade, fx, motionBlur, ...(wheels ? { wheels } : {}) };
 }
 
 /** Motion blur amount → number of source frames blended (1 = off). */

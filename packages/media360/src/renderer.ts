@@ -13,7 +13,7 @@ import { highRange, inputUniforms, type InputColor } from './inputColor';
 import { type Mat3, IDENTITY } from './math';
 import { type ViewParams, effectiveLens, sampleMatrix } from './projection';
 import { REFRAME_WGSL } from './shader';
-import { finishWgsl } from './finish';
+import { finishKey, finishWgsl, type FinishParts } from './finish';
 import { gpRadiusMax, planeScale, reachX, srcRadius, srcThetaMax, type SourceLens } from './sourceLens';
 
 export type RenderMode = '360' | 'flat' | 'raw' | 'lens';
@@ -65,6 +65,18 @@ export interface PresentInput {
   fx?: { grain: number; glow: number; chroma: number; zoomBlur: number; leak: number; bars: number };
   /** Seconds, for animated effects (grain, light leaks). */
   time?: number;
+  /** Effects added later (0..1 each; missing = off). */
+  fx2?: { bloom?: number; halation?: number; vhs?: number; shake?: number; rgbSplit?: number };
+  /** Colour wheels, per channel (see project/grading.ts wheelUniforms). */
+  wheels?: { lift: number[]; gamma: number[]; gain: number[]; offset: number[] } | null;
+  /** Curves baked into two rows of 256 RGBA entries (bakeCurves); mode 1 tone, 2 colour, 3 both. */
+  curves?: { key: string; data: Float32Array; mode: number } | null;
+  /** The HSL qualifier's 12 uniforms (qualifierUniforms). */
+  qualifier?: number[] | null;
+  /** A film look over everything. */
+  film?: { key: string; lut: Lut3D; mix: number } | null;
+  /** Noise reduction: strengths 0..1, and frames the temporal part looks back over. */
+  denoise?: { spatial: number; temporal: number; frames: number } | null;
 }
 
 /**
@@ -83,6 +95,8 @@ export interface MaskSet {
   colors: [number, number, number][];
   /** Changes when the coverage does (so it is uploaded only then). */
   key: string;
+  /** Colour masks (power windows, kind 4): exposure, contrast, saturation, temperature. */
+  grades?: [number, number, number, number][];
 }
 
 export interface Lut3D {
@@ -119,7 +133,7 @@ export function sharedDevice(): Promise<GPUDevice> {
 const REFRAME_UNIFORM_BYTES = 16 * 14 + 64 * 6 + 16 * 27 + 16 * 3 + 16 * 4;
 /** Rolling-shutter matrices per frame, top row to bottom. */
 export const SHUTTER_ROWS = 9;
-const FINISH_UNIFORM_BYTES = 16 * 17;
+const FINISH_UNIFORM_BYTES = 16 * 32;
 
 const mode0 = (i: PushInput) => i.mode === '360';
 
@@ -156,6 +170,16 @@ export class ReframeRenderer {
   private lutSize = 2;
   private hasLut = false;
   private maskTex: GPUTexture | null = null;
+  private curveTex: GPUTexture | null = null;
+  private curveKey = '';
+  private filmTex: GPUTexture | null = null;
+  private filmKey = '';
+  private filmSize = 2;
+  private nrFrames = 1;
+  /** Preview only: shows what the qualifier picks, in grey. */
+  showMatte = false;
+  /** Called once with the next finished picture (still on the GPU), e.g. for the scopes. */
+  tap: ((tex: GPUTexture, enc: GPUCommandEncoder) => void) | null = null;
   private maskKey = '';
   private masks: MaskSet | null = null;
   private width = 0;
@@ -166,7 +190,7 @@ export class ReframeRenderer {
     readonly canvas: HTMLCanvasElement | OffscreenCanvas,
     private readonly ctx: GPUCanvasContext,
     private readonly reframePipelines: { low: GPURenderPipeline; high: GPURenderPipeline },
-    private readonly finishPipeline: { lean: GPURenderPipeline; masks: GPURenderPipeline },
+    private readonly finishFor: (p: FinishParts) => GPURenderPipeline,
     private readonly sampler: GPUSampler,
     private readonly reframeUniforms: GPUBuffer,
     private readonly finishUniforms: GPUBuffer,
@@ -182,7 +206,8 @@ export class ReframeRenderer {
     const ctx = canvas.getContext('webgpu') as GPUCanvasContext | null;
     if (!ctx) throw new Error('Could not get a WebGPU canvas context');
     const format: GPUTextureFormat = opts.deep ? 'rgba16float' : navigator.gpu.getPreferredCanvasFormat();
-    ctx.configure({ device, format, alphaMode: 'opaque' });
+    // (Read back by the scopes.)
+    ctx.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
 
     const rm = device.createShaderModule({ code: REFRAME_WGSL });
     const reframe = (f: GPUTextureFormat) => device.createRenderPipeline({
@@ -192,20 +217,28 @@ export class ReframeRenderer {
       primitive: { topology: 'triangle-list' },
     });
     const reframePipeline = { low: reframe('rgba8unorm'), high: reframe('rgba16float') };
-    const finishFor = (masks: boolean) => {
-      const fm = device.createShaderModule({ code: finishWgsl(masks) });
-      return device.createRenderPipeline({
-        layout: 'auto',
-        vertex: { module: fm, entryPoint: 'vs' },
-        fragment: { module: fm, entryPoint: 'fs', targets: [{ format }] },
-        primitive: { topology: 'triangle-list' },
-      });
+    // One pipeline per combination of optional parts, made when first needed.
+    const made = new Map<number, GPURenderPipeline>();
+    const finishFor = (p: FinishParts) => {
+      const k = finishKey(p);
+      let pipe = made.get(k);
+      if (!pipe) {
+        const fm = device.createShaderModule({ code: finishWgsl(p) });
+        pipe = device.createRenderPipeline({
+          layout: 'auto',
+          vertex: { module: fm, entryPoint: 'vs' },
+          fragment: { module: fm, entryPoint: 'fs', targets: [{ format }] },
+          primitive: { topology: 'triangle-list' },
+        });
+        made.set(k, pipe);
+      }
+      return pipe;
     };
-    const finishPipeline = { lean: finishFor(false), masks: finishFor(true) };
+    finishFor({});
     const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge', addressModeW: 'clamp-to-edge' });
     const ru = device.createBuffer({ size: REFRAME_UNIFORM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const fu = device.createBuffer({ size: FINISH_UNIFORM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const r = new ReframeRenderer(device, canvas, ctx, reframePipeline, finishPipeline, sampler, ru, fu);
+    const r = new ReframeRenderer(device, canvas, ctx, reframePipeline, finishFor, sampler, ru, fu);
     r.deep = !!opts.deep;
     return r;
   }
@@ -341,8 +374,18 @@ export class ReframeRenderer {
   present(input: PresentInput) {
     if (!this.history || this.filled === 0) return;
     const { device } = this;
-    this.wantLayers = Math.max(1, Math.min(HISTORY_LAYERS, Math.round(input.blendFrames)));
-    const n = Math.max(1, Math.min(this.wantLayers, this.filled, this.layers));
+    const nr = input.bypass ? null : input.denoise ?? null;
+    this.nrFrames = nr ? Math.max(1, Math.min(6, Math.round(nr.frames))) : 1;
+    this.wantLayers = Math.max(1, Math.min(HISTORY_LAYERS, Math.max(Math.round(input.blendFrames), this.nrFrames)));
+    const n = Math.max(1, Math.min(Math.round(input.blendFrames), this.filled, this.layers));
+    const pro = !input.bypass && !!(input.wheels || input.curves || input.qualifier || input.film);
+    if (input.curves && !input.bypass) this.useCurves(input.curves);
+    if (input.film && !input.bypass) this.useFilm(input.film);
+    const w = input.wheels, q = input.qualifier, x2 = input.bypass ? undefined : input.fx2;
+    const fx2 = !!x2 && [x2.bloom, x2.halation, x2.vhs, x2.shake, x2.rgbSplit].some((v) => (v ?? 0) > 0.001);
+    const tFrames = nr ? Math.min(this.nrFrames, this.filled, this.layers) : 1;
+    const nrOn = !!nr && (nr.spatial > 0.001 || tFrames > 1);
+    const win = (i: number) => this.masks?.grades?.[i] ?? [0, 0, 0, 0];
     const u32 = new Uint32Array(8);
     for (let s = 0; s < 8; s++) u32[s] = (this.next - 1 - s + this.layers * HISTORY_LAYERS) % this.layers;
     const g = input.grade;
@@ -359,6 +402,13 @@ export class ReframeRenderer {
       ...[0, 1, 2, 3].map((i) => (input.bypass ? 0 : this.masks?.kinds[i] ?? 0)),
       ...[0, 1, 2, 3].map((i) => this.masks?.amounts[i] ?? 0),
       ...[0, 1, 2, 3].flatMap((i) => [...(this.masks?.colors[i] ?? [0, 0, 0]), 1]),
+      ...(w ? [...w.lift, 0, ...w.gamma, 1, ...w.gain, 1, ...w.offset, 0] : [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]),
+      ...(q && q.length >= 11 ? [...q.slice(0, 11), this.showMatte ? 1 : 0] : [0, 0.5, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0]),
+      pro && w ? 1 : 0, pro && input.curves ? input.curves.mode : 0, pro && q ? 1 : 0, pro && input.film ? input.film.mix : 0,
+      nr?.spatial ?? 0, nr?.temporal ?? 0, tFrames, this.filmSize,
+      x2?.halation ?? 0, x2?.vhs ?? 0, x2?.shake ?? 0, x2?.rgbSplit ?? 0,
+      x2?.bloom ?? 0, 0, 0, 0,
+      ...[0, 1, 2, 3].map((i) => win(i)[0]), ...[0, 1, 2, 3].map((i) => win(i)[1]), ...[0, 1, 2, 3].map((i) => win(i)[2]), ...[0, 1, 2, 3].map((i) => win(i)[3]),
     ]);
     const buf = new ArrayBuffer(FINISH_UNIFORM_BYTES);
     new Uint32Array(buf, 0, 8).set(u32);
@@ -366,7 +416,7 @@ export class ReframeRenderer {
     device.queue.writeBuffer(this.finishUniforms, 0, buf);
 
     const masked = !!(this.masks && this.maskTex && !input.bypass);
-    const pipe = masked ? this.finishPipeline.masks : this.finishPipeline.lean;
+    const pipe = this.finishFor({ masks: masked, pro, nr: nrOn, fx2 });
     const bind = device.createBindGroup({
       layout: pipe.getBindGroupLayout(0),
       entries: [
@@ -375,17 +425,49 @@ export class ReframeRenderer {
         { binding: 2, resource: this.lutTex.createView({ dimension: '3d' }) },
         { binding: 3, resource: { buffer: this.finishUniforms } },
         ...(masked ? [{ binding: 4, resource: this.maskTex!.createView() }] : []),
+        ...(pro ? [{ binding: 5, resource: this.curveTexture().createView() }, { binding: 6, resource: this.filmTexture().createView({ dimension: '3d' }) }] : []),
       ],
     });
     const enc = device.createCommandEncoder();
+    const out = this.ctx.getCurrentTexture();
     const pass = enc.beginRenderPass({
-      colorAttachments: [{ view: this.ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }],
+      colorAttachments: [{ view: out.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }],
     });
     pass.setPipeline(pipe);
     pass.setBindGroup(0, bind);
     pass.draw(3);
     pass.end();
+    const tap = this.tap;
+    this.tap = null;
+    tap?.(out, enc);
     device.queue.submit([enc.finish()]);
+  }
+
+  private curveTexture(): GPUTexture {
+    if (!this.curveTex) {
+      this.curveTex = this.device.createTexture({ size: [256, 2], format: 'rgba16float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+      this.curveKey = '';
+    }
+    return this.curveTex;
+  }
+  private useCurves(c: { key: string; data: Float32Array }) {
+    const tex = this.curveTexture();
+    if (c.key === this.curveKey) return;
+    const px = new Uint16Array(256 * 2 * 4);
+    for (let i = 0; i < px.length; i++) px[i] = toHalf(c.data[i] ?? 0);
+    this.device.queue.writeTexture({ texture: tex }, px, { bytesPerRow: 256 * 8 }, [256, 2]);
+    this.curveKey = c.key;
+  }
+  private filmTexture(): GPUTexture {
+    if (!this.filmTex) { this.filmTex = this.makeLutTexture({ size: 2, data: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1]) }); this.filmSize = 2; this.filmKey = ''; }
+    return this.filmTex;
+  }
+  private useFilm(fl: { key: string; lut: Lut3D }) {
+    if (fl.key === this.filmKey && this.filmTex) return;
+    this.filmTex?.destroy();
+    this.filmTex = this.makeLutTexture(fl.lut);
+    this.filmSize = fl.lut.size;
+    this.filmKey = fl.key;
   }
 
   /** Masks for the next present() (null = none). */
@@ -416,6 +498,8 @@ export class ReframeRenderer {
     this.history = null;
     this.lutTex.destroy();
     this.maskTex?.destroy();
+    this.curveTex?.destroy();
+    this.filmTex?.destroy();
     this.ctx.unconfigure();
   }
 }

@@ -432,7 +432,7 @@ async function renderFrames(tl: Timeline, opts: ExportOptions, comp: Compositor,
         const look = await feed(v.clip, v.mediaUs);
         const r = await comp.rendererFor(v.clip.id);
         applyMasks(r, v.clip, await getMedia(v.clip.mediaPath), look, v.mediaUs, MASK_WIDTH);
-        presentLook(r, look, { time: v.mediaUs });
+        presentLook(r, look, { time: v.mediaUs, clip: v.clip });
         looks.push({ clip: v.clip, look, track: v.track, role: v.role });
       }
       const inTransition = visible.some((v) => v.role === 'in');
@@ -475,7 +475,7 @@ export async function grabFrame(tl: Timeline, T: number, layers: LayerFrame[], p
         r.setLayout(l.media.layout);
         const look = pushClipFrame(r, l.clip, l.media, ts, orig.frames);
         applyMasks(r, l.clip, l.media, look, ts, MASK_WIDTH);
-        presentLook(r, { ...look, motionBlur: 0 }, { time: ts });
+        presentLook(r, { ...look, motionBlur: 0 }, { time: ts, clip: l.clip });
         looks.push({ clip: l.clip, look, track: l.track, role: l.role });
         await r.idle();
       } finally {

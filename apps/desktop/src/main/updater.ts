@@ -9,11 +9,18 @@
 import { app, net, shell } from 'electron';
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { constants, existsSync } from 'node:fs';
-import { access, mkdir, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import * as nodeFs from 'node:fs';
 import path from 'node:path';
 import { log } from './diagnostics';
 import { checksumFor, compareVersions, isVersion } from './versions';
+
+// Electron's own `fs` treats .asar files as folders, so removing a downloaded app (its
+// Resources/app.asar) never finishes and every later check waits on it. `original-fs` is the
+// plain one. (Loaded at run time so the bundler leaves it alone; tests use node:fs.)
+// eslint-disable-next-line no-eval
+const fsx: typeof nodeFs = process.versions.electron ? (eval('require') as NodeRequire)('original-fs') : nodeFs;
+const { constants, existsSync } = fsx;
+const { access, mkdir, open, readdir, rename, rm, writeFile } = fsx.promises;
 
 const REPO = 'Bannaman-360/Orbit';
 const RELEASES = `https://github.com/${REPO}/releases`;
@@ -168,8 +175,9 @@ export function setupUpdater(o: { enabled: boolean; send: (s: UpdateState) => vo
       const want = checksumFor(await fetchText(sums.browser_download_url), file.name);
       if (!want) return set(byHand ? { state: 'error', message: `Version ${v} is still being prepared for this computer. Try again in a little while.` } : { state: 'idle' });
 
-      // Earlier downloads are no longer needed.
-      await clear();
+      // Earlier downloads are no longer needed. (A clean-up that can't finish mustn't hold up the
+      // update: after 20 s the download goes ahead; the folder is reused.)
+      await Promise.race([clear(), new Promise((r) => setTimeout(r, 20_000))]);
       await mkdir(dir(), { recursive: true });
       const to = path.join(dir(), file.name);
       set({ state: 'downloading', version: v, fraction: 0 });

@@ -1,5 +1,9 @@
 # Changes
 
+## 0.1.0-beta.9
+
+- Fixed the update check getting stuck on “Checking for updates” on Mac (seen since beta 6). Clearing away the previous update’s download never finished, because of how the app’s own files are stored, and every later check waited for it. It now finishes, and a clean-up that takes too long no longer holds up an update. Macs on beta 6, 7 or 8 need to install this version once by hand (download the .dmg); updates work by themselves after that.
+
 ## 0.1.0-beta.8
 
 Fixes from testing beta 7, and the rest of milestone 2 (layers).

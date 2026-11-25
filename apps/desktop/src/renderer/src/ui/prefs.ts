@@ -59,7 +59,7 @@ export const DEFAULT_SECTIONS: Record<string, string[]> = {
   reframe: ['Keyframes', 'Subject tracking', 'View', 'Framing', 'Lens', 'Lens details', 'Debug'],
   stabilize: ['Stabilization', 'Crop', 'Horizon'],
   color: ['Input color', 'Presets', 'Light', 'Color', 'Detail', 'LUT', 'Lens match', 'Match clips'],
-  effects: ['Motion blur (ND filter)', 'Speed & lens', 'Film & light', 'Quick looks'],
+  effects: ['Masks', 'Motion blur (ND filter)', 'Speed & lens', 'Film & light', 'Quick looks'],
   clip: ['Transform', 'Layout', 'Speed', 'Airtime', 'Audio', 'Trim'],
   'sel:text': ['Text', 'Font', 'Colour & effect', 'Position', 'Overlay timing'],
   'sel:gauge': ['Look', 'Position', 'Overlay timing'],

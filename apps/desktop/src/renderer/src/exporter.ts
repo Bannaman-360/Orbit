@@ -15,6 +15,10 @@ import { clipLookAt, cropReady, presentLook, pushClipFrame } from './frameRender
 import { compositeLayers, drawOverlays, transitionLook, type CompLayer } from './overlayRender';
 import type { LayerFrame } from './timelinePlayer';
 import { YuvReader, type YuvLayout } from './deepExport';
+import { applyMasks } from './masksRender';
+
+/** Mask coverage pixels across in exports (the preview uses fewer). */
+const MASK_WIDTH = 1024;
 
 export type Resolution = 720 | 1080 | 1440 | 2160;
 export type Quality = 'standard' | 'high' | 'max';
@@ -402,7 +406,9 @@ async function renderFrames(tl: Timeline, opts: ExportOptions, comp: Compositor,
       const looks: ComposeLayer[] = [];
       for (const v of visible) {
         const look = await feed(v.clip, v.mediaUs);
-        presentLook(await comp.rendererFor(v.clip.id), look, { time: v.mediaUs });
+        const r = await comp.rendererFor(v.clip.id);
+        applyMasks(r, v.clip, await getMedia(v.clip.mediaPath), look, v.mediaUs, MASK_WIDTH);
+        presentLook(r, look, { time: v.mediaUs });
         looks.push({ clip: v.clip, look, track: v.track, role: v.role });
       }
       const inTransition = visible.some((v) => v.role === 'in');
@@ -441,6 +447,7 @@ export async function grabFrame(tl: Timeline, T: number, layers: LayerFrame[], p
       try {
         r.setLayout(l.media.layout);
         const look = pushClipFrame(r, l.clip, l.media, ts, orig.frames);
+        applyMasks(r, l.clip, l.media, look, ts, MASK_WIDTH);
         presentLook(r, { ...look, motionBlur: 0 }, { time: ts });
         looks.push({ clip: l.clip, look, track: l.track, role: l.role });
         await r.idle();

@@ -271,3 +271,20 @@ export function cleanXf(x: Transform): Transform {
 
 /** A look with a transform patch applied. */
 export const withXf = (look: Look, patch: Partial<Transform>): Look => ({ ...look, xf: cleanXf({ ...xfOf(look), ...patch }) });
+
+/** A point of a clip's own picture (fractions) → where it is in the frame, after its transform. */
+export function layerToFrame(xf: Transform | undefined, aspect: number, u: number, v: number): [number, number] {
+  if (!xf) return [u, v];
+  const a = (xf.rotate * Math.PI) / 180, cos = Math.cos(a), sin = Math.sin(a);
+  const px = (u - 0.5) * xf.scale * aspect, py = (v - 0.5) * xf.scale;
+  return [0.5 + xf.x + (px * cos - py * sin) / aspect, 0.5 + xf.y + px * sin + py * cos];
+}
+
+/** The other way: a frame point → the clip's own picture. */
+export function frameToLayer(xf: Transform | undefined, aspect: number, x: number, y: number): [number, number] {
+  if (!xf) return [x, y];
+  const a = (-xf.rotate * Math.PI) / 180, cos = Math.cos(a), sin = Math.sin(a);
+  const px = (x - 0.5 - xf.x) * aspect, py = y - 0.5 - xf.y;
+  const s = Math.max(1e-6, xf.scale);
+  return [0.5 + (px * cos - py * sin) / aspect / s, 0.5 + (px * sin + py * cos) / s];
+}

@@ -732,3 +732,10 @@ button.project-thumb:hover:not(:disabled) { background-color: var(--group); filt
 .layout-pick .layout-cell { fill: var(--accent); }
 .layout-pick:hover .layout-frame { stroke: var(--text); }
 .inspector .subhead { margin: 10px 0 2px; font-size: 0.85em; font-weight: 600; color: var(--muted); }
+
+/* Masks (Inspector ▸ Effects). */
+.mask-list { display: grid; gap: 3px; margin: 6px 0 8px; }
+.mask-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--r-control, 6px); cursor: pointer; background: color-mix(in srgb, var(--muted) 8%, transparent); font-size: 0.92em; }
+.mask-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mask-row.selected { background: color-mix(in srgb, var(--accent) 22%, transparent); box-shadow: inset 0 0 0 1px var(--accent); }
+.mask-row.off span { opacity: 0.5; }

@@ -18,7 +18,7 @@ what to try, then wait for the go-ahead.
 | Milestone | Items | Status |
 |---|---|---|
 | 1. Editing core | 3, 10, 15, 16 + project format 2 | **Done**: released in 0.1.0-beta.5 |
-| 2. Layers | 1, 2, 4, 14 | **In progress** on `features/m2-layers`: tracks, N-layer pipeline, Transform and layouts done; masks, compound clips and multicam next |
+| 2. Layers | 1, 2, 4, 14 | **In progress**: tracks, N-layer pipeline, Transform and layouts released in beta 7; masks and tracked blur done on `features/m2-masks`; compound clips and multicam next |
 | 3. Motion and sound | 5, 6, 7, 9 | Planned |
 | 4. Colour and finishing | 11, 12, 13, 17 | Planned |
 | 5. AI tools | 8 | Planned |
@@ -69,6 +69,9 @@ The numbers are the user's original list:
 Done so far (self-test mode `layers`): tracks V2–V6 (`tl.tracks`, `tl.connected`, project format 3),
 `stackAt` in `packages/project/src/layers.ts`, renderer pools in preview and export, `compositeLayers`
 taking an array, the transform as `look.xf` (keyframed with the look), layout templates, track sound.
+Masks (self-test mode `masks`): `clip.masks` (`packages/project/src/masks.ts`, up to 4, own keyframes),
+coverage drawn in `masksRender.ts` into one RGBA texture (one mask per channel) read by the finish
+pass; "Follow subject" uses the clip's track (`steer: false` = masks only, view stays put).
 - **Tracks V2–V6** above the main row (like Final Cut's connected clips):
   - Clips on these tracks are placed freely with a `startUs` and draw over the main row.
   - The main row keeps working exactly as now.

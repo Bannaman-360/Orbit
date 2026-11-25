@@ -8,7 +8,7 @@ import {
   hasRamp, mediaAt, moveSpeedKey, rippleItems, DEFAULT_LENS_LOOK, fisheyeForLook, lookAt, removeSpeedKey, setClipSpeed, setSpeedEase, setSpeedKey, speedAt, speedKeyNear,
   COMFORT_FOV, fitSubjectFrac, fracForFov, moveKeyframe, trackWeight, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, setTrackRange, trackActive, trackExtent, trackHeld, trackRange,
   type ClipTrack, type Easing, type GaugeDesign, type GaugeKind, type Grade, type Look, type Overlay, type Timeline, type TimelineClip, type Transition,
-  TIMELINE_VERSION, addTrack, applyLayout, cellTransform, LAYOUT_TEMPLATES, cleanXf, hitsLayer, stackAt, xfOf, layerLocated, moveConnected, newId, placeConnected, playLength, removeConnected, splitConnected, trackFree, trackName, trimEmptyTracks, updateTrack, type Located,
+  TIMELINE_VERSION, findClip, MAX_MASKS, frameToLayer, insidePolygon, layerToFrame, maskOutline, maskPoseAt, newMask, setMaskPose, type Mask, addTrack, applyLayout, cellTransform, LAYOUT_TEMPLATES, cleanXf, hitsLayer, stackAt, xfOf, layerLocated, moveConnected, newId, placeConnected, playLength, removeConnected, splitConnected, trackFree, trackName, trimEmptyTracks, updateTrack, type Located,
 } from '@ace/project';
 import { ace, baseName, type FoundMedia, type ProjectMeta, type UpdateState } from './api';
 import { NameSheet, ProjectsPage } from './Projects';
@@ -28,6 +28,7 @@ import { forgetMedia, getMedia, loadMusic, mediaNow, MISSING, whyCannotOpen, who
 import { ensureProxies, forgetProxies, onProxyChange, PREVIEW_LEVELS, setPreviewLevel, type PreviewLevel } from './proxy';
 import { drawOverlays, hitOverlay, layerCss, placedCss } from './overlayRender';
 import { runSelftest, type EditorApi } from './selftest';
+import { applyMasks, maskPlaces, subjectInFrame } from './masksRender';
 import { TimelinePlayer, type TickResult } from './timelinePlayer';
 import { TimelineView } from './TimelineView';
 import { fmtTime, openSection, Range, toggleAllSections } from './ui';
@@ -374,16 +375,78 @@ export function App() {
     if (!c) return;
     // Nothing on it and nothing to draw: leave the (large) layer alone.
     const overlays = sourceRef.current ? [] : tlRef.current.overlays;
-    if (!overlays.length && !c.dataset.drawn) return;
+    // The masks being edited are outlined (only here, never in the export).
+    const outlines = sourceRef.current ? [] : maskOutlinesRef.current();
+    const drawing = drawPts.current;
+    if (!overlays.length && !outlines.length && !drawing && !c.dataset.drawn) return;
     const ctx = c.getContext('2d')!;
     ctx.clearRect(0, 0, c.width, c.height);
-    if (overlays.length) c.dataset.drawn = '1'; else delete c.dataset.drawn;
-    if (!overlays.length) return;
+    if (overlays.length || outlines.length || drawing) c.dataset.drawn = '1'; else delete c.dataset.drawn;
     const s = selRef.current;
-    drawOverlays(ctx, c.width, c.height, tlRef.current, player.time, s?.kind === 'overlay' ? s.id : null);
+    if (overlays.length) drawOverlays(ctx, c.width, c.height, tlRef.current, player.time, s?.kind === 'overlay' ? s.id : null);
+    const accent = getComputedStyle(c).getPropertyValue('--accent').trim() || '#3d8bfd';
+    const path = (pts: [number, number][], close: boolean) => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * c.width, y * c.height) : ctx.moveTo(x * c.width, y * c.height))); if (close) ctx.closePath(); };
+    ctx.save();
+    ctx.lineWidth = Math.max(1.5, c.width / 900);
+    for (const o of outlines) {
+      ctx.strokeStyle = o.selected ? accent : 'rgba(255,255,255,0.55)';
+      ctx.setLineDash(o.selected ? [] : [6, 5]);
+      ctx.shadowColor = 'rgba(0,0,0,0.6)';
+      ctx.shadowBlur = 3;
+      path(o.pts, true);
+      ctx.stroke();
+    }
+    if (drawing && drawing.length > 1) { ctx.strokeStyle = accent; ctx.setLineDash([]); path(drawing, false); ctx.stroke(); }
+    ctx.restore();
   };
   const styleLayersRef = useRef(styleLayers);
   styleLayersRef.current = styleLayers;
+  // --- Masks on the preview -----------------------------------------------------------------
+  const [maskSel, setMaskSel] = useState<string | null>(null);
+  const [drawingMask, setDrawingMask] = useState(false);
+  const maskSelRef = useRef(maskSel);
+  maskSelRef.current = maskSel;
+  /** Freehand outline being drawn (frame fractions). */
+  const drawPts = useRef<[number, number][] | null>(null);
+  /** The clip being edited and where its masks are now (in its own picture, and in the frame). */
+  const maskScene = () => {
+    const cur = editingAt();
+    if (!cur) return null;
+    const m = mediaNow(cur.clip.mediaPath) ?? null;
+    const lk = clipLookAt(cur.clip, cur.mediaUs);
+    return { cur, media: m, look: lk, places: maskPlaces(cur.clip, m, lk, cur.mediaUs, aspect) };
+  };
+  const maskOutlines = () => {
+    if (!maskSelRef.current && !drawingMask) return [];
+    const sc = maskScene();
+    if (!sc) return [];
+    return sc.places.map(({ mask, pose, centre }) => ({
+      selected: mask.id === maskSelRef.current,
+      pts: maskOutline(mask, pose, aspect, centre).map(([u, v]) => layerToFrame(sc.look.xf, aspect, u, v)),
+    }));
+  };
+  const maskOutlinesRef = useRef(maskOutlines);
+  maskOutlinesRef.current = maskOutlines;
+  /** The freehand outline just drawn becomes a mask on the clip being edited. */
+  const finishDrawnMask = () => {
+    const pts = drawPts.current;
+    drawPts.current = null;
+    setDrawingMask(false);
+    setNotice(null);
+    const cur = editingAt();
+    if (!cur || !pts || pts.length < 3) return;
+    if ((cur.clip.masks?.length ?? 0) >= MAX_MASKS) { setNotice(`A clip can have ${MAX_MASKS} masks. Delete one to draw another.`); return; }
+    const lk = clipLookAt(cur.clip, cur.mediaUs);
+    const uv = pts.map(([x, y]) => frameToLayer(lk.xf, aspect, x, y));
+    const xs = uv.map((q) => q[0]), ys = uv.map((q) => q[1]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    if (x1 - x0 < 0.01 && y1 - y0 < 0.01) return;
+    const w = Math.max(0.01, x1 - x0), h = Math.max(0.01, y1 - y0), cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    const made = newMask('path', 'blur', { x: cx, y: cy, w, h, points: uv.map(([u, v]) => [(u - cx) / w, (v - cy) / h] as [number, number]) });
+    setClipMasks(cur.clip.id, [...(cur.clip.masks ?? []), made], 'mask-draw');
+    setMaskSel(made.id);
+  };
+  const setClipMasks = (clipId: string, masks: Mask[], key: string) => commit(updateClip(tlRef.current, clipId, { masks: masks.length ? masks : undefined }), `${key}:${clipId}`);
   const drawOverlayRef = useRef(drawOverlayLayer);
   drawOverlayRef.current = drawOverlayLayer;
 
@@ -472,6 +535,7 @@ export function App() {
             }
             const mark = lensUi();
             r.highlight = mark.highlight && !raw && hasTwoLenses(l.media) ? mark.lens : null;
+            applyMasks(r, l.clip, l.media, look, ts);
             presentLook(r, compareRef.current ? withoutEffects(look) : look, { raw: raw && l.media.is360, time: ts });
           });
           styleLayersRef.current(res, slots, xfs);
@@ -1507,7 +1571,8 @@ export function App() {
     if (e.key === 'Escape') {
       if (isArranging()) { setArranging(false); return; }
       if (customize) { setCustomize(null); return; }
-      setShortcutsOpen(false); setCtxMenu(null); setSel(null); setTrackPick(false); setTrackBox(null); setNotice(null);
+      if (drawingMask) { setDrawingMask(false); drawPts.current = null; setNotice(null); return; }
+      setShortcutsOpen(false); setCtxMenu(null); setSel(null); setTrackPick(false); setTrackBox(null); setNotice(null); setMaskSel(null);
       return;
     }
     // Sliders keep their own arrow, Home and End keys.
@@ -1534,7 +1599,8 @@ export function App() {
   }, []);
 
   // --- Pointer on the preview: move overlays, or look around ---------------------------------------
-  const drag = useRef<{ kind: 'look'; x: number; y: number; look: Look } | { kind: 'overlay'; x: number; y: number; o: Overlay } | { kind: 'layer'; x: number; y: number; xf: Transform } | null>(null);
+  const drag = useRef<{ kind: 'look'; x: number; y: number; look: Look } | { kind: 'overlay'; x: number; y: number; o: Overlay } | { kind: 'layer'; x: number; y: number; xf: Transform }
+    | { kind: 'mask'; clipId: string; id: string; t: number; u: number; v: number; x: number; y: number; xf: Transform | undefined } | { kind: 'drawmask' } | null>(null);
   /** The topmost clip on a track above the main row under a preview point (fractions of the frame). */
   const layerUnder = (fx: number, fy: number) => {
     const st = stackAt(tlRef.current, player.time);
@@ -1550,6 +1616,27 @@ export function App() {
   const boxStart = useRef<{ x: number; y: number } | null>(null);
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
+    // Masks: drawing a freehand one, or dragging the selected one.
+    if (drawingMask || maskSel) {
+      const fr = frameRef.current!.getBoundingClientRect();
+      const fx = (e.clientX - fr.left) / fr.width, fy = (e.clientY - fr.top) / fr.height;
+      if (drawingMask) {
+        drawPts.current = [[fx, fy]];
+        (e.currentTarget as Element).setPointerCapture(e.pointerId);
+        drag.current = { kind: 'drawmask' };
+        return;
+      }
+      const sc = maskScene();
+      const place = sc?.places.find((p) => p.mask.id === maskSel);
+      if (sc && place) {
+        const [u, v] = frameToLayer(sc.look.xf, aspect, fx, fy);
+        if (insidePolygon(maskOutline(place.mask, place.pose, aspect, place.centre), u, v)) {
+          (e.currentTarget as Element).setPointerCapture(e.pointerId);
+          drag.current = { kind: 'mask', clipId: sc.cur.clip.id, id: place.mask.id, t: sc.cur.mediaUs, u, v, x: place.pose.x, y: place.pose.y, xf: sc.look.xf };
+          return;
+        }
+      }
+    }
     if (trackPick) {
       const r = frameRef.current!.getBoundingClientRect();
       boxStart.current = { x: e.clientX - r.left, y: e.clientY - r.top };
@@ -1587,6 +1674,18 @@ export function App() {
     const d = drag.current;
     if (!d) return;
     const r = overlayRef.current!.getBoundingClientRect();
+    if (d.kind === 'drawmask') {
+      const p: [number, number] = [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
+      const last = drawPts.current?.[drawPts.current.length - 1];
+      if (drawPts.current && last && Math.hypot((p[0] - last[0]) * aspect, p[1] - last[1]) > 0.004) drawPts.current.push(p);
+      return;
+    }
+    if (d.kind === 'mask') {
+      const [u, v] = frameToLayer(d.xf, aspect, (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+      const c = findClip(tlRef.current, d.clipId), m = c?.masks?.find((x) => x.id === d.id);
+      if (c && m) setClipMasks(c.id, c.masks!.map((x) => (x.id === d.id ? setMaskPose(x, d.t, { x: d.x + u - d.u, y: d.y + v - d.v }) : x)), 'mask-drag');
+      return;
+    }
     if (d.kind === 'layer') {
       // Lines up with the centre when close to it.
       const near = (v: number) => (Math.abs(v) < 0.012 ? 0 : v);
@@ -1611,6 +1710,15 @@ export function App() {
     editLook({ yaw, pitch }, 'drag');
   };
   const onWheel = (e: React.WheelEvent) => {
+    // The selected mask: scrolling resizes it.
+    if (maskSel) {
+      const cur = editingAt(), m = cur?.clip.masks?.find((x) => x.id === maskSel);
+      if (cur && m) {
+        const pz = maskPoseAt(m, cur.mediaUs), k = Math.exp(-e.deltaY * 0.0015);
+        setClipMasks(cur.clip.id, cur.clip.masks!.map((x) => (x.id === m.id ? setMaskPose(x, cur.mediaUs, { w: pz.w * k, h: pz.h * k }) : x)), 'mask-wheel');
+        return;
+      }
+    }
     // A selected clip over the main row: scrolling resizes it.
     if (layerSel && look) {
       const xf = xfOf(look);
@@ -1805,6 +1913,27 @@ export function App() {
     clipStartUs: at?.startUs ?? 0,
     layerTrack: layerSel ? trackName(tl, layerSel.trackId) : null,
     layersHere: stackAt(tl, time)?.layers.length ?? 0,
+    maskSel,
+    onMaskSel: setMaskSel,
+    onMasks: (masks, key) => clip && setClipMasks(clip.id, masks, key),
+    onMaskFollow: (id, on) => {
+      if (!clip || !at) return;
+      const m = clip.masks?.find((x) => x.id === id);
+      if (!m) return;
+      const s = media ? subjectInFrame(clip, media, clipLookAt(clip, at.mediaUs), at.mediaUs, aspect) : null;
+      // Keep the mask where it is: its place becomes an offset from the subject (or back).
+      const shift = (p: { x: number; y: number }) => (!s ? (on ? { x: 0.5, y: 0.5 } : p) : on ? { x: p.x - s.x + 0.5, y: p.y - s.y + 0.5 } : { x: p.x + s.x - 0.5, y: p.y + s.y - 0.5 });
+      const next: Mask = { ...m, ...shift(m), follow: on, keys: m.keys.map((k) => ({ ...k, ...shift(k) })) };
+      setClipMasks(clip.id, clip.masks!.map((x) => (x.id === id ? next : x)), 'mask-follow');
+      if (on && !s) setNotice('The subject isn’t tracked at the playhead, so the mask is centred on it where it is.');
+    },
+    onDrawMask: () => {
+      if (drawingMask) { setDrawingMask(false); return; }
+      setDrawingMask(true);
+      setNotice('Draw round what to cover on the preview (Esc to stop).');
+    },
+    drawingMask,
+    onTrackPatchSteer: (steer) => clip?.track && commit(updateClip(tlRef.current, clip.id, { track: { ...clip.track, steer: steer ? undefined : false } }), `steer:${clip.id}`),
     onLayout: (id) => {
       const next = applyLayout(tlRef.current, player.time, id);
       if (next !== tlRef.current) commit(next);
@@ -1909,6 +2038,7 @@ export function App() {
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={() => {
+              if (drag.current?.kind === 'drawmask') finishDrawnMask();
               drag.current = null;
               endGesture();
               if (trackPick && boxStart.current && trackBox) {

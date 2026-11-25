@@ -10,6 +10,7 @@ import { fixOverlay, type Overlay } from './overlays';
 import { fixSpeedKeys, localAt, mediaAt, playLength, speedAt, type SpeedKey } from './speed';
 import type { ClipTrack } from './track';
 import type { LensLook } from './lensLook';
+import { fixMasks, type Mask } from './masks';
 
 export type TransitionKind =
   | 'crossfade' | 'dip-black' | 'dip-white' | 'flash' | 'blur'
@@ -119,6 +120,8 @@ export interface TimelineClip {
   audioDetached?: boolean;
   /** Subject tracking: pan/tilt follow this path (see track.ts). */
   track?: ClipTrack;
+  /** Blur, pixelate or hide parts of the picture (see masks.ts). */
+  masks?: Mask[];
 }
 
 export interface AudioClip {
@@ -473,6 +476,7 @@ const fixClip = (c: TimelineClip): TimelineClip => ({
   keyframes: (c.keyframes ?? []).map((k) => ({ ...k, easing: k.easing ?? 'smooth', look: fixLook(k.look) })),
   stabilize: { ...{ smoothing: 'off' as const, horizon: false }, ...(c.stabilize ?? {}) },
   ...(c.speedKeys ? { speedKeys: fixSpeedKeys(c.speedKeys) } : {}),
+  masks: fixMasks(c.masks),
 });
 
 /** Accepts anything previously saved and returns a complete, current timeline. */

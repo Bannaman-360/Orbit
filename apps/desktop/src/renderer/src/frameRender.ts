@@ -1,6 +1,6 @@
 // One rendering step shared by preview, export and frame grabs, so they always match.
 
-import { DEFAULT_CROP, NO_EFFECTS, NEUTRAL_GRADE, applyTrack, fisheyeForLook, type OwnLens, blurFrames, lookAt, trackWeight, type Look, type ShareOf, type TimelineClip } from '@ace/project';
+import { DEFAULT_CROP, NO_EFFECTS, NEUTRAL_GRADE, withOff, applyTrack, fisheyeForLook, type OwnLens, blurFrames, lookAt, trackWeight, type Look, type ShareOf, type TimelineClip } from '@ace/project';
 import { cropAt, DEFAULT_AXIS_MAP, planCrop, smoothUnder, type CropPlan, type CropRequest } from '@ace/telemetry';
 import type { ReframeRenderer, RenderMode } from '@ace/media360';
 import { inputFor } from './color';
@@ -448,7 +448,8 @@ export function pushClipFrame(r: ReframeRenderer, clip: TimelineClip, media: Med
     input: opts.raw ? undefined : inputFor(media, clip, frames[0]!),
     lenses: clip.lenses,
   });
-  return look;
+  // (Settings switched off to compare are left out of what is shown.)
+  return withOff(look, clip.off);
 }
 
 /** `time` (µs of media time) animates grain and light leaks. */

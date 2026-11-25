@@ -3,12 +3,12 @@ import { MIN_FISHEYE, parseCube, ReframeRenderer } from '@ace/media360';
 import {
   addClip, designFor, GAUGE_DESIGNS, gaugeSet, clipDuration, clipStarts, localAt, deleteSideAt, detachAudio, duplicateClip, emptyTimeline, FRAMINGS, framingAspect, GAUGES, keyframeNear, loadTimeline, locate,
   mediaToTimeline, moveClip, newAudioClip, newClip, newGaugeOverlay, newTextOverlay, nextKeyTime, prevKeyTime, reattachAudio, removeAudio,
-  removeClip, removeKeyframe, removeOverlay, setEasing, setKeyframe, splitAt, timelineDuration, transitionLook, trimClip, updateAudio, type Transform,
+  removeClip, removeClipRipple, withOff, removeKeyframe, removeOverlay, setEasing, setKeyframe, splitAt, timelineDuration, transitionLook, trimClip, updateAudio, type Transform,
   updateClip, updateOverlay, addMarker, updateMarker, removeMarker, rollCut, slipClip, slideClip, insertClipAt, overwriteClipAt,
   hasRamp, mediaAt, moveSpeedKey, rippleItems, DEFAULT_LENS_LOOK, fisheyeForLook, lookAt, removeSpeedKey, setClipSpeed, setSpeedEase, setSpeedKey, speedAt, speedKeyNear,
   COMFORT_FOV, fitSubjectFrac, fracForFov, moveKeyframe, trackWeight, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, setTrackRange, trackActive, trackExtent, trackHeld, trackRange,
   type ClipTrack, type Easing, type GaugeDesign, type GaugeKind, type Grade, type Look, type Overlay, type Timeline, type TimelineClip, type Transition,
-  TIMELINE_VERSION, findClip, MAX_MASKS, frameToLayer, insidePolygon, layerToFrame, maskOutline, maskPoseAt, newMask, setMaskPose, type Mask, addTrack, applyLayout, cellTransform, LAYOUT_TEMPLATES, cleanXf, hitsLayer, stackAt, xfOf, layerLocated, moveConnected, newId, placeConnected, playLength, removeConnected, splitConnected, trackFree, trackName, trimEmptyTracks, updateTrack, type Located,
+  TIMELINE_VERSION, findClip, MAX_MASKS, frameToLayer, insidePolygon, layerToFrame, maskOutline, maskPoseAt, newMask, setMaskPose, type Mask, addTrack, applyLayout, cellTransform, LAYOUT_TEMPLATES, cleanXf, hitsLayer, stackAt, xfOf, layerLocated, moveConnected, newId, placeConnected, playLength, removeConnected, splitConnected, deleteSideConnected, trackFree, trackName, trimEmptyTracks, updateTrack, type Located, type ConnectedClip, type AudioClip, addMulticam, groupOf, switchAngle, flattenTimeline, storeSequence, sequenceTimeline, findSequence, sequenceIdOf, isCompound, makeCompound, breakApart, sourceDuration,
 } from '@ace/project';
 import { ace, baseName, type FoundMedia, type ProjectMeta, type UpdateState } from './api';
 import { NameSheet, ProjectsPage } from './Projects';
@@ -30,7 +30,9 @@ import { drawOverlays, hitOverlay, layerCss, placedCss } from './overlayRender';
 import { runSelftest, type EditorApi } from './selftest';
 import { applyMasks, maskPlaces, subjectInFrame } from './masksRender';
 import { TimelinePlayer, type TickResult } from './timelinePlayer';
-import { TimelineView } from './TimelineView';
+import { MAX_PPS, MIN_PPS, TimelineView } from './TimelineView';
+import { AngleViewer, MulticamDialog } from './Multicam';
+import { syncAngles } from './multicamSync';
 import { fmtTime, openSection, Range, toggleAllSections } from './ui';
 import { Bar, dragItem, type ToolItem } from './ui/Bars';
 import { comboFromEvent, comboLabel, comboOf, combosOf, commandFor, COMMANDS, keyOf, KeyMatcher } from './ui/commands';
@@ -58,6 +60,8 @@ export interface LibraryEntry { path: string; rating?: number; flag?: 'fav' | 'r
 export interface MediaBinFolder { id: string; name: string; parent?: string }
 interface SaveFile { version: 2; timeline: Timeline; library: LibraryEntry[]; bins: MediaBinFolder[] }
 /** Older projects listed media as plain paths. */
+/** Every video file an edit uses, including those inside compound clips. */
+const filesOf = (tl: Timeline): string[] => [...new Set([...tl.clips, ...tl.connected, ...(tl.sequences ?? []).flatMap((q) => [...q.clips, ...q.connected])].filter((c) => !isCompound(c)).map((c) => c.mediaPath))];
 const libraryOf = (raw: unknown): LibraryEntry[] => (Array.isArray(raw) ? raw : []).flatMap((x): LibraryEntry[] => (typeof x === 'string' ? [{ path: x }] : x && typeof x.path === 'string' ? [{ path: x.path, ...(x.rating ? { rating: Math.max(0, Math.min(5, Math.round(+x.rating))) } : {}), ...(x.flag === 'fav' || x.flag === 'reject' ? { flag: x.flag } : {}), ...(typeof x.bin === 'string' ? { bin: x.bin } : {}), ...(Number.isFinite(x.size) ? { size: +x.size } : {}) }] : []));
 
 /** What is selected besides the clip under the playhead. */
@@ -105,6 +109,15 @@ export function App() {
     setTl(next);
   }, []);
   const endGesture = useCallback(() => (hist.current.lastKey = ''), []);
+  /** Compound clips opened for editing, outermost first: the timeline each was opened from. */
+  const nestRef = useRef<{ id: string; name: string; outer: Timeline; hist: typeof hist.current; time: number }[]>([]);
+  const [nest, setNest] = useState<{ id: string; name: string }[]>([]);
+  /** The whole project's timeline (with any compound clip being edited put back in). */
+  const rootTimeline = (): Timeline => {
+    let cur = tlRef.current;
+    for (let i = nestRef.current.length - 1; i >= 0; i--) { const n = nestRef.current[i]!; cur = storeSequence(n.outer, n.id, cur); }
+    return cur;
+  };
   const undo = useCallback(() => {
     const h = hist.current;
     const prev = h.past.pop();
@@ -246,7 +259,8 @@ export function App() {
   /** Renderer per slot (made when first needed), and the clip each one draws. */
   const renderersRef = useRef<(ReframeRenderer | null)[]>([]);
   const slotClip = useRef<(string | null)[]>(Array.from({ length: MAX_LAYERS }, () => null));
-  const player = useMemo(() => new TimelinePlayer(() => sourceRef.current?.tl ?? tlRef.current), []);
+  // (Playback sees compound clips as the clips they hold.)
+  const player = useMemo(() => new TimelinePlayer(() => sourceRef.current?.tl ?? flattenTimeline(tlRef.current)), []);
   const audio = useMemo(() => new AudioPlayer(), []);
   const lastResult = useRef<TickResult | null>(null);
   const renderWaiters = useRef<(() => void)[]>([]);
@@ -273,19 +287,19 @@ export function App() {
   useEffect(() => {
     player.onTransport = (isPlaying, t) => {
       // (Shuttling faster than normal is silent, like a tape deck with the sound off.)
-      if (isPlaying && player.rate === 1) audio.play(tlRef.current, t);
+      if (isPlaying && player.rate === 1) audio.play(flattenTimeline(tlRef.current), t);
       else audio.stop();
     };
   }, [player, audio]);
 
   // Re-seek when clips change shape; restart audio when anything audible changes.
-  const sKey = structureKey(tl);
+  const sKey = structureKey(flattenTimeline(tl));
   useEffect(() => player.invalidate(), [sKey, player]);
-  const aKey = audioKey(tl);
+  const aKey = audioKey(flattenTimeline(tl));
   useEffect(() => {
     let cancelled = false;
-    void audio.prepare(tlRef.current).then(() => {
-      if (!cancelled && player.playing) audio.play(tlRef.current, player.time);
+    void audio.prepare(flattenTimeline(tlRef.current)).then(() => {
+      if (!cancelled && player.playing) audio.play(flattenTimeline(tlRef.current), player.time);
     });
     return () => { cancelled = true; };
   }, [aKey, audio, player]);
@@ -374,7 +388,7 @@ export function App() {
     const c = overlayRef.current;
     if (!c) return;
     // Nothing on it and nothing to draw: leave the (large) layer alone.
-    const overlays = sourceRef.current ? [] : tlRef.current.overlays;
+    const overlays = sourceRef.current ? [] : flattenTimeline(tlRef.current).overlays;
     // The masks being edited are outlined (only here, never in the export).
     const outlines = sourceRef.current ? [] : maskOutlinesRef.current();
     const drawing = drawPts.current;
@@ -383,7 +397,7 @@ export function App() {
     ctx.clearRect(0, 0, c.width, c.height);
     if (overlays.length || outlines.length || drawing) c.dataset.drawn = '1'; else delete c.dataset.drawn;
     const s = selRef.current;
-    if (overlays.length) drawOverlays(ctx, c.width, c.height, tlRef.current, player.time, s?.kind === 'overlay' ? s.id : null);
+    if (overlays.length) drawOverlays(ctx, c.width, c.height, flattenTimeline(tlRef.current), player.time, s?.kind === 'overlay' ? s.id : null);
     const accent = getComputedStyle(c).getPropertyValue('--accent').trim() || '#3d8bfd';
     const path = (pts: [number, number][], close: boolean) => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * c.width, y * c.height) : ctx.moveTo(x * c.width, y * c.height))); if (close) ctx.closePath(); };
     ctx.save();
@@ -536,7 +550,7 @@ export function App() {
             const mark = lensUi();
             r.highlight = mark.highlight && !raw && hasTwoLenses(l.media) ? mark.lens : null;
             applyMasks(r, l.clip, l.media, look, ts);
-            presentLook(r, compareRef.current ? withoutEffects(look) : look, { raw: raw && l.media.is360, time: ts });
+            presentLook(r, compareRef.current ? withoutEffects(look) : withOff(look, l.clip.off), { raw: raw && l.media.is360, time: ts });
           });
           styleLayersRef.current(res, slots, xfs);
           frames++;
@@ -567,7 +581,7 @@ export function App() {
   // Have the sound at the playhead ready before play is pressed.
   useEffect(() => {
     if (playing) return;
-    const id = setTimeout(() => audio.prime(tlRef.current, time), 120);
+    const id = setTimeout(() => audio.prime(flattenTimeline(tlRef.current), time), 120);
     return () => clearTimeout(id);
   }, [time, playing, tl, audio]);
 
@@ -619,6 +633,15 @@ export function App() {
   }, [player]);
   const togglePlay = useCallback(() => { stopShuttle(); if (player.playing) player.pause(); else player.play(); }, [player, stopShuttle]);
 
+  /** A clip on the main row or a track above it, and its timeline start. */
+  const clipSpot = (t: Timeline, id: string): { clip: TimelineClip; startUs: number; layer: boolean } | null => {
+    const i = t.clips.findIndex((x) => x.id === id);
+    if (i >= 0) return { clip: t.clips[i]!, startUs: clipStarts(t)[i]!, layer: false };
+    const c = t.connected.find((x) => x.id === id);
+    return c ? { clip: c, startUs: c.startUs, layer: true } : null;
+  };
+  /** Keeps a track clip selected while one of its keyframes, speed points or ranges is picked. */
+  const keepLayer = (clipId: string) => setSel(tlRef.current.connected.some((c) => c.id === clipId) ? { kind: 'layer', id: clipId } : null);
   const editClip = (patch: Partial<TimelineClip>, key: string) => clip && commit(updateClip(tlRef.current, clip.id, patch), `${key}:${clip.id}`);
 
   /** The clip being edited at the playhead: a selected track clip, or else the main-row clip there. */
@@ -700,7 +723,7 @@ export function App() {
   };
   /** Deletes a keyframe. Removing the last one leaves the clip looking like it did there. */
   const deleteKeyframeById = (clipId: string, id: string) => {
-    const c = tlRef.current.clips.find((x) => x.id === clipId);
+    const c = findClip(tlRef.current, clipId);
     const k = c?.keyframes.find((x) => x.id === id);
     if (!c || !k) return;
     const rest = removeKeyframe(c.keyframes, id);
@@ -714,12 +737,12 @@ export function App() {
   /** The keyframe picked on the timeline (for ⌫), as long as the playhead is still on it. */
   const [kfSel, setKfSel] = useState<{ clipId: string; id: string } | null>(null);
   const kfTime = (clipId: string, id: string) => {
-    const t = tlRef.current, i = t.clips.findIndex((x) => x.id === clipId), c = t.clips[i];
+    const spot = clipSpot(tlRef.current, clipId), c = spot?.clip;
     const k = c?.keyframes.find((x) => x.id === id);
-    return c && k ? mediaToTimeline(clipStarts(t)[i]!, c, Math.max(c.inUs, Math.min(c.outUs - 1, k.t))) : null;
+    return spot && c && k ? mediaToTimeline(spot.startUs, c, Math.max(c.inUs, Math.min(c.outUs - 1, k.t))) : null;
   };
   const pickKeyframe = (clipId: string, id: string) => {
-    setSel(null);
+    keepLayer(clipId);
     setSpeedSel(null);
     setKfSel({ clipId, id });
     player.pause();
@@ -731,7 +754,7 @@ export function App() {
     return kfSel && T !== null && Math.abs(T - player.time) < 60_000 ? kfSel : null;
   };
   const dragKeyframe = (clipId: string, id: string, t: number) => {
-    const c = tlRef.current.clips.find((x) => x.id === clipId);
+    const c = findClip(tlRef.current, clipId);
     if (!c) return;
     const m = mediaNow(c.mediaPath), frame = m ? 1e6 / m.fps : 20_000;
     let to = Math.max(c.inUs, Math.min(c.outUs - frame, t));
@@ -752,6 +775,21 @@ export function App() {
   // --- Speed ---------------------------------------------------------------------------------------
   /** Changes a clip's speed, staying on the picture that is showing. */
   const changeSpeed = (clipId: string, patch: Parameters<typeof setClipSpeed>[2], key: string) => {
+    // A clip on a track: it keeps its start, and can't run into the next clip on its track.
+    const layer = tlRef.current.connected.find((c) => c.id === clipId);
+    if (layer) {
+      const next = setClipSpeed(tlRef.current, clipId, patch);
+      const now = next.connected.find((c) => c.id === clipId)!;
+      if (!trackFree(next, now.trackId, now.startUs, now.startUs + playLength(now), now.id)) {
+        setNotice(`At that speed the clip would run into the next one on ${trackName(next, now.trackId)}. Move that one first.`);
+        return;
+      }
+      const localBefore = player.time - layer.startUs;
+      const m = localBefore >= 0 && localBefore < playLength(layer) ? mediaAt(layer, localBefore) : null;
+      commit(next, `${key}:${clipId}`);
+      if (m !== null && !player.playing) player.seek(now.startUs + localAt(now, m));
+      return;
+    }
     const before = locate(tlRef.current, player.time);
     const next = rippleItems(tlRef.current, setClipSpeed(tlRef.current, clipId, patch), clipId);
     commit(next, `${key}:${clipId}`);
@@ -768,7 +806,7 @@ export function App() {
   /** Roll, slip and slide always start from the timeline as it was when the drag began. */
   const proEdit = (kind: 'roll' | 'slip' | 'slide', id: string, d: number, phase: 'start' | 'move') => {
     if (phase === 'start' || !proBase.current) { proBase.current = tlRef.current; return; }
-    const durOf = (path: string) => mediaNow(path)?.durationUs ?? Infinity;
+    const durOf = (path: string) => sourceDuration(tlRef.current, { mediaPath: path }, (p) => mediaNow(p)?.durationUs) ?? Infinity;
     const base = proBase.current;
     const next = kind === 'roll' ? rollCut(base, id, d, durOf).tl : kind === 'slip' ? slipClip(base, id, d, durOf) : slideClip(base, id, d, durOf);
     commit(next, `${kind}:${id}`);
@@ -780,8 +818,8 @@ export function App() {
   const toggleSpeedLines = () => setSpeedLines((v) => { try { localStorage.setItem('ace.speedLines', String(!v)); } catch { /* private mode */ } return !v; });
   const [speedSel, setSpeedSel] = useState<{ clipId: string; id: string } | null>(null);
   const [speedMenu, setSpeedMenu] = useState<{ clipId: string; id: string; x: number; y: number } | null>(null);
-  const clipById = (id: string) => tlRef.current.clips.find((c) => c.id === id);
-  const pickSpeedPoint = (clipId: string, id: string) => { setSel(null); setKfSel(null); setSpeedSel({ clipId, id }); };
+  const clipById = (id: string) => findClip(tlRef.current, id);
+  const pickSpeedPoint = (clipId: string, id: string) => { keepLayer(clipId); setKfSel(null); setSpeedSel({ clipId, id }); };
   const moveSpeedPoint = (clipId: string, id: string, t: number, speed: number) => {
     const c = clipById(clipId);
     if (c?.speedKeys) changeSpeed(clipId, { speedKeys: moveSpeedKey(c.speedKeys, id, t, speed, c.inUs, c.outUs) }, `speedpt-${id}`);
@@ -800,7 +838,7 @@ export function App() {
     if (c?.speedKeys) changeSpeed(clipId, removeSpeedKey(c, id), 'speeddel');
     setSpeedSel(null);
   };
-  const pickedSpeed = speedSel && tl.clips.find((c) => c.id === speedSel.clipId)?.speedKeys?.some((k) => k.id === speedSel.id) ? speedSel : null;
+  const pickedSpeed = speedSel && findClip(tl, speedSel.clipId)?.speedKeys?.some((k) => k.id === speedSel.id) ? speedSel : null;
 
   // --- Lens match ----------------------------------------------------------------------------------
   const [lensBusy, setLensBusy] = useState(false);
@@ -811,7 +849,7 @@ export function App() {
     try {
       const r = await matchClipLenses(m, cur.clip, cur.mediaUs, which);
       if (!r) { setNotice('The lenses couldn’t be compared here: too little of the strip both of them see is lit and in view.'); return; }
-      const now = tlRef.current.clips.find((c) => c.id === cur.clip.id);
+      const now = findClip(tlRef.current, cur.clip.id);
       if (!now) return;
       if (!Object.keys(r.adjust).length || r.before - r.after < 0.5) { setNotice(`The lenses already match about as well as they can (they differ by ${r.before.toFixed(1)} of 255), so nothing was changed.`); return; }
       commit(updateClip(tlRef.current, now.id, { lenses: { [r.lens]: r.adjust as Record<string, number> } }));
@@ -824,11 +862,105 @@ export function App() {
     }
   };
 
-  const split = () => {
-    // A selected clip on a track above splits there; otherwise the main row does.
+  // --- Compound clips ---------------------------------------------------------------------------
+  /** Opens a compound clip's timeline for editing (a breadcrumb leads back up). */
+  const openCompound = (clipId: string) => {
+    const t = tlRef.current;
+    const c = findClip(t, clipId), q = c && findSequence(t, sequenceIdOf(c));
+    if (!c || !q) return;
+    player.pause();
+    nestRef.current = [...nestRef.current, { id: q.id, name: q.name, outer: t, hist: hist.current, time: player.time }];
+    setNest(nestRef.current.map((n) => ({ id: n.id, name: n.name })));
+    hist.current = { past: [], future: [], lastKey: '', lastAt: 0 };
+    const inner = sequenceTimeline(t, q);
+    tlRef.current = inner;
+    setTl(inner);
+    setSel(null);
+    seek(c.inUs);
+  };
+  /** Goes back up to `level` (0 = the main edit); changes made inside are one undo step there. */
+  const leaveCompound = (level: number) => {
+    while (nestRef.current.length > level) {
+      const n = nestRef.current.pop()!;
+      const back = storeSequence(n.outer, n.id, tlRef.current);
+      hist.current = n.hist;
+      if (JSON.stringify(back) !== JSON.stringify(n.outer)) { hist.current.past.push(n.outer); hist.current.future = []; }
+      hist.current.lastKey = '';
+      tlRef.current = back;
+      setTl(back);
+      if (nestRef.current.length === level) seek(n.time);
+    }
+    setNest(nestRef.current.map((n) => ({ id: n.id, name: n.name })));
+    setSel(null);
+  };
+  /** Nests main-row clips `from`…`to` into a compound clip. */
+  const compoundOf = (from: number, to: number) => {
+    const r = makeCompound(tlRef.current, from, to);
+    if (!r) return;
+    commit(r.tl);
+    setNotice('Made a compound clip. Double-click it to open it; right-click to break it apart.');
+  };
+  const renameSequence = (id: string, name: string) => {
+    const t = tlRef.current;
+    commit({ ...t, sequences: t.sequences?.map((q) => (q.id === id ? { ...q, name } : q)) }, `seqname:${id}`);
+  };
+
+  // --- Multicam ----------------------------------------------------------------------------------
+  const [multicamOpen, setMulticamOpen] = useState(false);
+  const [multicamBusy, setMulticamBusy] = useState<string | null>(null);
+  const makeMulticam = async (paths: string[], method: 'sound' | 'clock') => {
+    try {
+      setMulticamBusy(method === 'sound' ? 'Listening to each camera to line them up…' : 'Lining up by the cameras’ clocks…');
+      const r = await syncAngles(paths, method, (f) => setMulticamBusy(`Lining up… ${Math.round(f * 100)}%`));
+      const first = mediaNow(paths[0]!);
+      const name = `Multicam ${(tlRef.current.multicams?.length ?? 0) + 1}`;
+      const added = addMulticam(tlRef.current, r.angles, name, !!first?.is360);
+      commit(added.tl);
+      setMulticamOpen(false);
+      const off = r.how.filter((h) => h === 'start').length, clock = r.how.filter((h) => h === 'clock').length;
+      setNotice(`Made “${name}” at the end of the main row. Play it and press 1–${r.angles.length} (or click an angle above the timeline) to cut between cameras.${clock ? ` ${clock} camera${clock === 1 ? ' was' : 's were'} lined up by ${method === 'sound' ? 'clock (their sound didn’t match clearly)' : 'clock'}.` : ''}${off ? ` ${off} couldn’t be lined up and start${off === 1 ? 's' : ''} with the first; slip ${off === 1 ? 'its cuts' : 'their cuts'} (Y) to fix.` : ''}`);
+    } catch (e) {
+      setError(`Multicam: ${e}`);
+    } finally {
+      setMulticamBusy(null);
+    }
+  };
+  /** Cuts to an angle at the playhead (the whole clip when the playhead is at its start). */
+  const cutToAngle = (angle: number) => {
+    const t = tlRef.current, T = player.time;
+    const at = locate(t, T);
+    if (!at || !at.clip.multicam || angle >= (groupOf(t, at.clip)?.angles.length ?? 0)) return false;
+    if (at.clip.multicam.angle === angle) return true;
+    const frame = 1e6 / (mediaNow(at.clip.mediaPath)?.fps ?? 30);
+    const cut = T - at.startUs < frame * 1.5 ? t : splitAt(t, T);
+    const i = cut === t ? at.index : at.index + 1;
+    const target = cut.clips[i];
+    const next = target ? switchAngle(cut, target.id, angle) : cut;
+    if (next === cut) { setNotice(`Angle ${angle + 1} isn’t recording for the rest of this clip. Split where it stops first, or pick another angle.`); return true; }
+    commit(next);
+    return true;
+  };
+
+  /** The selected clip on V2–V6, if there is one (cuts act on it instead of the main row). */
+  const selectedLayer = () => {
     const s = selRef.current;
-    if (s?.kind === 'layer') { commit(splitConnected(tlRef.current, s.id, player.time)); return; }
-    splitHere();
+    return s?.kind === 'layer' ? tlRef.current.connected.find((c) => c.id === s.id) ?? null : null;
+  };
+  /** Tells why a cut on a track clip did nothing. */
+  const layerCutRefused = (c: ConnectedClip, T: number) => {
+    const t = tlRef.current;
+    if (t.tracks.find((x) => x.id === c.trackId)?.locked) setNotice(`${trackName(t, c.trackId)} is locked. Unlock it to change its clips.`);
+    else if (T <= c.startUs || T >= c.startUs + playLength(c)) setNotice(`The playhead isn’t over the selected clip on ${trackName(t, c.trackId)}. Move it onto the clip first.`);
+  };
+  const split = (T = player.time) => {
+    // A selected clip on a track above splits there; otherwise the main row does.
+    const c = selectedLayer();
+    if (c) {
+      const next = splitConnected(tlRef.current, c.id, T);
+      if (next === tlRef.current) layerCutRefused(c, T); else commit(next);
+      return;
+    }
+    splitHere(T);
   };
   const deleteCurrent = () => {
     const t = tlRef.current;
@@ -840,7 +972,7 @@ export function App() {
     else if (s?.kind === 'overlay') commit(removeOverlay(t, s.id));
     else if (s?.kind === 'transition') commit(updateClip(t, s.id, { transitionIn: undefined }));
     else if (s?.kind === 'layer') commit(trimEmptyTracks(removeConnected(t, s.id)));
-    else if (clip) commit(removeClip(t, clip.id));
+    else if (clip) commit(removeClipRipple(t, clip.id));
     setSel(null);
   };
 
@@ -903,7 +1035,12 @@ export function App() {
   const addGauge = (kind: GaugeKind) => {
     const t = tlRef.current;
     if (!t.clips.length) return;
-    const o = newGaugeOverlay(kind, 0, timelineDuration(t));
+    // With a clip on V2–V6 selected, the gauge shows that clip's ride data, while it plays.
+    const l = selectedLayer();
+    const total = timelineDuration(t);
+    const o = l && l.startUs < total - 200_000
+      ? { ...newGaugeOverlay(kind, l.startUs, Math.min(total, l.startUs + playLength(l))), sourceClipId: l.id }
+      : newGaugeOverlay(kind, 0, total);
     commit({ ...t, overlays: [...t.overlays, o] });
     setSel({ kind: 'overlay', id: o.id });
   };
@@ -911,7 +1048,12 @@ export function App() {
   const addGaugeSet = (design: GaugeDesign) => {
     const t = tlRef.current;
     if (!t.clips.length) return;
-    commit({ ...t, overlays: [...t.overlays, ...gaugeSet(design, 0, timelineDuration(t))] });
+    const l = selectedLayer();
+    const total = timelineDuration(t);
+    const set = l && l.startUs < total - 200_000
+      ? gaugeSet(design, l.startUs, Math.min(total, l.startUs + playLength(l))).map((o) => ({ ...o, sourceClipId: l.id }))
+      : gaugeSet(design, 0, total);
+    commit({ ...t, overlays: [...t.overlays, ...set] });
   };
   const gaugeDesignAll = (design: GaugeDesign) => {
     const t = tlRef.current;
@@ -955,10 +1097,21 @@ export function App() {
   const splitHere = (T = player.time) => commit(splitAt(tlRef.current, T));
   const deleteSide = (side: 'left' | 'right', T = player.time) => {
     const t = tlRef.current;
+    const c = selectedLayer();
+    if (c) {
+      const next = trimEmptyTracks(deleteSideConnected(t, c.id, T, side));
+      if (next === t) { layerCutRefused(c, T); return; }
+      commit(next);
+      const now = next.connected.find((x) => x.id === c.id);
+      if (now) seek(side === 'left' ? now.startUs + 1 : Math.max(now.startUs, T - 1));
+      return;
+    }
     const at = locate(t, T);
     if (!at) return;
-    const next = deleteSideAt(t, T, side);
-    if (next === t) return;
+    const cut = deleteSideAt(t, T, side);
+    if (cut === t) return;
+    // Text, gauges and clips above move with their pictures; those over the cut-away part go.
+    const next = rippleItems(t, cut, at.clip.id);
     commit(next);
     setSel(null);
     // Land on the cut: the clip's new start (left) or its new end (right).
@@ -974,6 +1127,8 @@ export function App() {
 
   // --- Subject tracking ------------------------------------------------------------------------------
   const [trackPick, setTrackPick] = useState(false);
+  /** The track clip being tracked (null = the main row). */
+  const trackTarget = useRef<string | null>(null);
   const [trackBox, setTrackBox] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [trackJob, setTrackJob] = useState<{ progress: number; abort: AbortController } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -983,7 +1138,9 @@ export function App() {
   const startTrackPick = () => {
     if (!clip || !media || !canReframe(media)) return setError('This clip can’t be reframed, so a subject can’t be followed.');
     player.pause();
-    setSel(null);
+    // A selected clip on V2–V6 is the one tracked; it stays selected.
+    trackTarget.current = layerSel?.id ?? null;
+    if (!layerSel) setSel(null);
     setTrackPick(true);
     setNotice('Drag a box around the subject on the preview (Esc to cancel).');
   };
@@ -994,10 +1151,19 @@ export function App() {
     const res = lastResult.current;
     const frame = frameRef.current!;
     const W = frame.clientWidth, H = frame.clientHeight;
-    if (!res?.layers || !canReframe(res.media)) return;
-    const l = res.layers[0]!;
-    const found = tlRef.current.clips.find((x) => x.id === l.clip.id);
+    if (!res?.layers) return;
+    const target = trackTarget.current;
+    const l = target ? res.layers.find((x) => x.clip.id === target) : res.layers[0];
+    if (!l || !canReframe(l.media)) { if (target) setError('That clip isn’t on screen at the playhead, so its subject can’t be picked here.'); return; }
+    const found = findClip(tlRef.current, l.clip.id);
     if (!found) return;
+    if (target) {
+      // The box was drawn on the frame: find it in the clip's own picture (it may be moved, scaled or turned).
+      const xf = xfOf(clipLookAt(found, l.mediaUs));
+      const corners = [[box.x0, box.y0], [box.x1, box.y0], [box.x0, box.y1], [box.x1, box.y1]].map(([x, y]) => frameToLayer(xf, W / H, x! / W, y! / H));
+      const xs = corners.map((c) => c[0] * W), ys = corners.map((c) => c[1] * H);
+      box = { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+    }
     const c = adoptReframe(found);
     const flat = clipLens(l.media, c);
     const startUs = l.frames[0]!.timestamp;
@@ -1022,7 +1188,7 @@ export function App() {
         return;
       }
       const t = tlRef.current;
-      const now = t.clips.find((x) => x.id === c.id);
+      const now = findClip(t, c.id);
       if (!now) return;
       const cur = adoptReframe(now);
       // Keep any earlier tracking before this point (re-track from where it was lost).
@@ -1065,18 +1231,18 @@ export function App() {
   /** Uses only part of a clip's tracked path; shows the frame at the edge being moved. */
   const setClipTrackRange = (id: string, from: number, to: number, edge: 'from' | 'to') => {
     const t = tlRef.current;
-    const i = t.clips.findIndex((x) => x.id === id);
-    const c = t.clips[i];
-    if (!c?.track) return;
+    const spot = clipSpot(t, id);
+    const c = spot?.clip;
+    if (!spot || !c?.track) return;
     const track = setTrackRange(c.track, from, to);
     commit(updateClip(t, id, { track }), `track-range-${edge}:${id}`);
     const r = trackRange(track);
     if (!r || player.playing) return;
     const m = mediaNow(c.mediaPath);
     const at0 = Math.max(c.inUs, Math.min(c.outUs - (m ? 1e6 / m.fps : 20_000), edge === 'from' ? r[0] : r[1]));
-    const T = mediaToTimeline(clipStarts(t)[i]!, c, at0);
+    const T = mediaToTimeline(spot.startUs, c, at0);
     // (Under a transition the playhead belongs to the other clip: leave it alone then.)
-    if (locate(t, T)?.clip.id === id) player.seek(T);
+    if (spot.layer || locate(t, T)?.clip.id === id) player.seek(T);
   };
 
   const runTrackingRef = useRef(runTracking);
@@ -1086,7 +1252,7 @@ export function App() {
   /** Asks for a folder and points everything that used a missing file at the one found there. */
   const relinkMissing = async (folder?: string) => {
     const t = tlRef.current;
-    const gone = [...new Set([...binRef.current.filter((b) => b.error === MISSING).map((b) => b.path), ...[...t.clips, ...t.connected].filter((c) => !mediaNow(c.mediaPath)).map((c) => c.mediaPath)])];
+    const gone = [...new Set([...binRef.current.filter((b) => b.error === MISSING).map((b) => b.path), ...filesOf(flattenTimeline(t)).filter((p) => !mediaNow(p))])];
     if (!gone.length) return;
     const r = await ace.relink(gone.map((path) => ({ path, size: savedSizes.current.get(path) })), folder);
     if (!r) return;
@@ -1098,7 +1264,8 @@ export function App() {
     binRef.current = binRef.current.filter((x) => !to.has(x.path));
     await importPaths(r.matches.map((m) => m.to));
     setBin((b) => b.map((x) => { const from = r.matches.find((m) => m.to === x.path)?.from; const old = from && meta.get(from); return old ? { ...x, rating: old.rating, flag: old.flag, bin: old.bin } : x; }));
-    commit({ ...t, clips: t.clips.map((c) => (to.has(c.mediaPath) ? { ...c, mediaPath: to.get(c.mediaPath)! } : c)), connected: t.connected.map((c) => (to.has(c.mediaPath) ? { ...c, mediaPath: to.get(c.mediaPath)! } : c)), audio: t.audio.map((a) => (to.has(a.path) ? { ...a, path: to.get(a.path)! } : a)) });
+    const move = <X extends { clips: TimelineClip[]; connected: ConnectedClip[]; audio: AudioClip[] }>(x: X): X => ({ ...x, clips: x.clips.map((c) => (to.has(c.mediaPath) ? { ...c, mediaPath: to.get(c.mediaPath)! } : c)), connected: x.connected.map((c) => (to.has(c.mediaPath) ? { ...c, mediaPath: to.get(c.mediaPath)! } : c)), audio: x.audio.map((a) => (to.has(a.path) ? { ...a, path: to.get(a.path)! } : a)) });
+    commit({ ...move(t), ...(t.sequences ? { sequences: t.sequences.map(move) } : {}) });
     player.invalidate();
     const left = gone.length - r.matches.length;
     setNotice(`Found ${r.matches.length} of ${gone.length} missing video${gone.length === 1 ? '' : 's'} in “${r.folder}”${r.matches.some((m) => m.how === 'size') ? ' (some under new names, recognised by size)' : ''}.${left ? ` ${left} still missing.` : ''}`);
@@ -1110,7 +1277,8 @@ export function App() {
     const raw = JSON.parse(text) as Partial<Omit<SaveFile, 'library'>> & { library?: unknown } & Partial<Timeline>;
     const timeline = loadTimeline(raw.timeline ?? raw);
     const entries = libraryOf(raw.library);
-    const library = [...new Set([...entries.map((e) => e.path), ...timeline.clips.map((c) => c.mediaPath), ...timeline.connected.map((c) => c.mediaPath)])];
+    const used = filesOf(timeline);
+    const library = [...new Set([...entries.map((e) => e.path), ...used])];
     // A file moved or deleted since it was last opened mustn't come back from memory.
     await Promise.all([...library, ...timeline.audio.map((a) => a.path)].map((p) => ace.stat(p).catch(() => forgetMedia(p))));
     // Saved by a version newer than this one: opens, but what it added isn't shown.
@@ -1125,19 +1293,21 @@ export function App() {
     savedSizes.current = new Map(entries.flatMap((e) => (e.size ? [[e.path, e.size] as [string, number]] : [])));
     setBin((b) => b.map((x) => { const e = meta.get(x.path); return e ? { ...x, rating: e.rating, flag: e.flag, bin: e.bin } : x; }));
     // (A clip may use one chapter of a recording the bin now shows as a whole.)
-    await Promise.all([...new Set([...timeline.clips, ...timeline.connected].map((c) => c.mediaPath))].map((p) => getMedia(p).catch(() => {})));
-    await Promise.all(timeline.audio.map((a) => loadMusic(a.path).catch(() => {})));
+    await Promise.all(used.map((p) => getMedia(p).catch(() => {})));
+    await Promise.all([...timeline.audio, ...(timeline.sequences ?? []).flatMap((q) => q.audio)].map((a) => loadMusic(a.path).catch(() => {})));
     // Clips whose files are missing stay, shown as offline until relinked.
+    nestRef.current = [];
+    setNest([]);
     tlRef.current = timeline;
     setTl(tlRef.current);
     setSel(null);
     player.seek(0);
-    const offline = new Set(timeline.clips.filter((c) => !mediaNow(c.mediaPath)).map((c) => c.mediaPath));
+    const offline = new Set(used.filter((p) => !mediaNow(p)));
     if (offline.size) setNotice(offline.size === 1 ? `“${baseName([...offline][0]!)}” is missing: it was moved, renamed or deleted. Choose Relink in Media to find it.` : `${offline.size} videos are missing: they were moved, renamed or deleted. Choose Relink in Media to find them.`);
     if (!offline.size && newer) setNotice('This project was saved by a newer version of the app. It opened, but what that version added isn’t shown here.');
   }, [importPaths, player]);
 
-  const saveObject = (): SaveFile => ({ version: 2, timeline: tlRef.current, library: binRef.current.map((b) => ({ path: b.path, ...(b.rating ? { rating: b.rating } : {}), ...(b.flag ? { flag: b.flag } : {}), ...(b.bin ? { bin: b.bin } : {}), ...((b.media?.size ?? savedSizes.current.get(b.path)) ? { size: b.media?.size ?? savedSizes.current.get(b.path) } : {}) })), bins: binsRef.current });
+  const saveObject = (): SaveFile => ({ version: 2, timeline: rootTimeline(), library: binRef.current.map((b) => ({ path: b.path, ...(b.rating ? { rating: b.rating } : {}), ...(b.flag ? { flag: b.flag } : {}), ...(b.bin ? { bin: b.bin } : {}), ...((b.media?.size ?? savedSizes.current.get(b.path)) ? { size: b.media?.size ?? savedSizes.current.get(b.path) } : {}) })), bins: binsRef.current });
   const saveText = () => JSON.stringify(saveObject());
   /** The last session (with which project it was), so the app reopens where you left off. */
   const sessionText = () => JSON.stringify({ ...saveObject(), project: projectRef.current ?? undefined });
@@ -1520,17 +1690,19 @@ export function App() {
   const run: Record<string, () => void> = {
     shuttleBack: () => shuttleTo(-1), shuttleStop: () => { stopShuttle(); player.pause(); }, shuttleFwd: () => shuttleTo(1),
     play: togglePlay, prevFrame: () => step(-1), nextFrame: () => step(1), back10: () => step(-10), fwd10: () => step(10), start: () => seek(0), end: () => seek(timelineDuration(tlRef.current)), fullscreen: () => { if (tlRef.current.clips.length) toggleFullscreen(); },
-    split, delLeft: () => deleteSide('left'), delRight: () => deleteSide('right'), keyframe: () => { if (player.playing || shuttle.current.dir) { stopShuttle(); player.pause(); } else addKeyframe(); }, delKey: deleteKeyframe, prevKey: () => jumpKey(-1), nextKey: () => jumpKey(1), text: addText, track: startTrackPick, detach: toggleDetach,
+    split: () => split(), delLeft: () => deleteSide('left'), delRight: () => deleteSide('right'), keyframe: () => { if (player.playing || shuttle.current.dir) { stopShuttle(); player.pause(); } else addKeyframe(); }, delKey: deleteKeyframe, prevKey: () => jumpKey(-1), nextKey: () => jumpKey(1), text: addText, track: startTrackPick, detach: toggleDetach,
     duplicate: duplicateCurrent, delete: deleteCurrent, undo, redo, connect: connectToTrack,
     import: () => void importDialog(), card: () => setCardOpen(true), music: () => void addMusic(), open: () => void openProject(), save: () => void saveProject(), saveAs: () => void saveProjectAs(), newProject: () => void newProject(), projects: () => { setWelcome(false); setProjectsOpen((v) => !v); }, export: () => {
       if (!tlRef.current.clips.length) return;
-      const missing = [...new Set([...tlRef.current.clips, ...tlRef.current.connected].filter((c) => !mediaNow(c.mediaPath)).map((c) => baseName(c.mediaPath)))];
+      const missing = [...new Set(filesOf(flattenTimeline(rootTimeline())).filter((p) => !mediaNow(p)).map(baseName))];
       if (missing.length) { setError(`Can’t export yet: ${missing.length === 1 ? `“${missing[0]}” is` : `${missing.length} videos are`} missing. Relink ${missing.length === 1 ? 'it' : 'them'} in Media first.`); return; }
       setExportOpen(true);
     }, grab: () => void frameGrab(),
     customize: () => setCustomize((v) => (v ? null : 'themes')), arrange: () => { setArranging(!isArranging()); setCustomize(null); }, undoUi: undoPrefs, toggleMedia: () => togglePanel(['media']),
     toggleInspector: () => togglePanel(['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection']), toggleTimeline: () => togglePanel(['timeline']), compare: () => setCompare(true), sections: toggleAllSections, speedline: toggleSpeedLines, jumps: toggleJumpMarks, snap: toggleSnapping, source: () => { const p = binRef.current.find((b) => b.media)?.path; if (sourceRef.current) closeSource(); else if (p) openSource(p); }, markIn: () => markSource('inUs'), markOut: () => markSource('outUs'), insertEdit: () => placeSource('insert'), overwriteEdit: () => placeSource('overwrite'), toolSelect: () => setTool('select'), toolRoll: () => setTool('roll'), toolSlip: () => setTool('slip'), toolSlide: () => setTool('slide'), shortcuts: () => setShortcutsOpen(true), report: () => setReportOpen(true), tour: () => { setWelcome(false); setTourOpen(true); }, welcome: () => { setProjectsOpen(false); setWelcome(true); }, checkUpdates: () => void checkUpdates(),
     marker: () => { const r = addMarker(tlRef.current, player.time); commit(r.tl); },
+    multicam: () => setMulticamOpen(true),
+    angle1: () => void cutToAngle(0), angle2: () => void cutToAngle(1), angle3: () => void cutToAngle(2), angle4: () => void cutToAngle(3),
     prevMarker: () => { const m = [...tlRef.current.markers].reverse().find((x) => x.t < player.time - 1000); if (m) seek(m.t); },
     nextMarker: () => { const m = tlRef.current.markers.find((x) => x.t > player.time + 1000); if (m) seek(m.t); },
     markersPanel: () => togglePanel(['markers']),
@@ -1879,6 +2051,7 @@ export function App() {
     compare: cmdItem('compare', 'Before / after', 'compare', { title: `Hold to see the picture without color, LUT, effects and motion blur${key('compare')}`, disabled: !has, on: compare, hold: setCompare }),
     fullscreen: cmdItem('fullscreen', fullscreen ? 'Exit full screen' : 'Full screen', fullscreen ? 'exitfull' : 'fullscreen', { disabled: !has }),
     split: cmdItem('split', 'Split', 'split', { locked: noClips }),
+    multicam: cmdItem('multicam', 'Multicam', 'layers', { title: 'New multicam clip: cut between cameras filming the same moment' }),
     delLeft: cmdItem('delLeft', 'Delete left', 'delLeft', { locked: noClips }),
     delRight: cmdItem('delRight', 'Delete right', 'delRight', { locked: noClips }),
     detach: cmdItem('detach', clip?.audioDetached ? 'Reattach audio' : 'Detach audio', 'detach', { locked: noClips ?? (media && !media.info.audioTracks.length ? 'This clip has no sound to detach.' : undefined), on: !!clip?.audioDetached }),
@@ -1899,7 +2072,7 @@ export function App() {
       menu: TOOLS.map(([t, label, hint]) => ({ label, hint: `${comboLabel(comboOf(`tool${t[0]!.toUpperCase()}${t.slice(1)}`, shortcuts))}  ${hint}`, checked: tool === t, onClick: () => setTool(t) })),
     },
     tlinfo: { label: 'Clip count', control: <span className="muted">{tl.clips.length} clip{tl.clips.length === 1 ? '' : 's'} · {fmtTime(duration)}</span> },
-    tlzoom: { label: 'Timeline zoom', title: 'Timeline zoom', control: <label className="inline zoom"><Icon name="zoom" /><Range label="Timeline zoom" min={Math.log(4)} max={Math.log(400)} step={0.01} value={Math.log(pps)} onChange={(v) => setPps(Math.exp(v))} /></label> },
+    tlzoom: { label: 'Timeline zoom', title: 'Timeline zoom', control: <label className="inline zoom"><Icon name="zoom" /><Range label="Timeline zoom" min={Math.log(MIN_PPS)} max={Math.log(MAX_PPS)} step={0.01} value={Math.log(pps)} onChange={(v) => setPps(Math.exp(v))} /></label> },
   };
   // A message must never be lost because its toolbar item was removed.
   const statusShown = (['main', 'transport', 'timeline'] as const).some((b) => !bars[b].hidden && bars[b].items.includes('status') && (b === 'main' || openPanels(getPrefs().layout).includes(b === 'transport' ? 'viewer' : 'timeline')));
@@ -1976,7 +2149,7 @@ export function App() {
     jumpMarks,
     onJumpMarks: toggleJumpMarks,
     onPreviewAt: (T) => { seek(T); if (!player.playing) player.play(); },
-    onSeekMedia: (m) => { if (!clip) return; const i = tlRef.current.clips.findIndex((c) => c.id === clip.id); if (i >= 0) seek(clipStarts(tlRef.current)[i]! + localAt(clip, m)); },
+    onSeekMedia: (m) => { if (!clip) return; const spot = clipSpot(tlRef.current, clip.id); if (spot) seek(spot.startUs + localAt(clip, m)); },
     onGradeToAll: () => {
           if (!look) return;
           const t = tlRef.current;
@@ -1988,6 +2161,9 @@ export function App() {
     onDetachAudio: () => detach(),
     onReattachAudio: (clipId) => { commit(reattachAudio(tlRef.current, clipId)); setSel(null); },
     onOverlay: editOverlay,
+    compoundName: clip ? findSequence(tl, sequenceIdOf(clip))?.name : undefined,
+    onOpenCompound: openCompound,
+    gaugeSources: tl.connected.map((c) => ({ id: c.id, label: `${trackName(tl, c.trackId)} · ${baseName(c.mediaPath)} (${fmtTime(c.startUs)})` })),
     onTransition: editTransition,
     onRemoveSelected: deleteCurrent,
     onCloseSelection: () => setSel(null),
@@ -1996,7 +2172,7 @@ export function App() {
     onTrackRange: (from, to, edge) => clip && setClipTrackRange(clip.id, from, to, edge),
     onClearTrack: () => clip && commit(updateClip(tlRef.current, clip.id, { track: undefined })),
     onTrackPatch: (patch, key) => clip?.track && commit(updateClip(tlRef.current, clip.id, { track: { ...clip.track, ...patch } }), `${key}:${clip.id}`),
-    onSplit: split,
+    onSplit: () => split(),
     onDuplicate: duplicateCurrent,
     onDelete: deleteCurrent,
     onMove: (dir) => clip && at && !layerSel && commit(moveClip(tlRef.current, clip.id, at.index + dir)),
@@ -2088,10 +2264,9 @@ export function App() {
   /** The timeline time under a point of the screen (where something dropped lands). */
   dropAtRef.current = (x: number) => {
     const scroller = document.querySelector<HTMLElement>('.timeline-wrap .timeline-scroll');
-    const inner = scroller?.querySelector<HTMLElement>('.timeline-inner');
-    if (!scroller || !inner) return undefined;
-    const frac = (x - scroller.getBoundingClientRect().left + scroller.scrollLeft) / inner.clientWidth;
-    return Math.max(0, frac * Math.max(duration, 1));
+    if (!scroller) return undefined;
+    const pxPerS = Number(scroller.dataset.pps) || 60, head = Number(scroller.dataset.head) || 0;
+    return Math.max(0, Math.min(Math.max(duration, 1), ((x - scroller.getBoundingClientRect().left + scroller.scrollLeft - head) / pxPerS) * 1e6));
   };
   const timelinePanel = () => (
       <div
@@ -2119,6 +2294,21 @@ export function App() {
           addToTimeline(path, hit ? hit.index + (T > hit.startUs + clipDuration(hit.clip) / 2 ? 1 : 0) : undefined);
         }}
       >
+        {nest.length > 0 && (
+          <nav className="tl-crumbs" aria-label="Compound clips open">
+            <button onClick={() => leaveCompound(0)}>Main edit</button>
+            {nest.map((n, i) => (
+              <span key={n.id}>
+                <span className="crumb-sep" aria-hidden>›</span>
+                {i < nest.length - 1 ? <button onClick={() => leaveCompound(i + 1)}>{n.name}</button> : (
+                  <input aria-label="Compound clip name" value={tl.sequences?.find((q) => q.id === n.id)?.name ?? n.name} onChange={(e) => renameSequence(n.id, e.target.value)} onKeyDown={(e) => e.stopPropagation()} />
+                )}
+              </span>
+            ))}
+            <span className="muted small">Editing inside a compound clip. Changes show wherever it is used.</span>
+          </nav>
+        )}
+        {!source && at && at.clip.multicam && !layerSel && <AngleViewer timeline={tl} clip={at.clip} mediaUs={at.mediaUs} onPick={(a) => cutToAngle(a)} />}
         <TimelineView
           timeline={tl}
           time={source && sourceRef.current ? sourceRef.current.savedTime : time}
@@ -2131,8 +2321,8 @@ export function App() {
           onTransition={openTransition}
           onTrimClip={(id, i, o) => {
             const c = tlRef.current.clips.find((x) => x.id === id);
-            const m = c && mediaNow(c.mediaPath);
-            if (m) commit(rippleItems(tlRef.current, trimClip(tlRef.current, id, i, o, m.durationUs), id), `trim:${id}`);
+            const d = c && sourceDuration(tlRef.current, c, (p) => mediaNow(p)?.durationUs);
+            if (d) commit(rippleItems(tlRef.current, trimClip(tlRef.current, id, i, o, d), id), `trim:${id}`);
           }}
           onTrackRange={setClipTrackRange}
           keyframe={pickedKf()}
@@ -2175,6 +2365,7 @@ export function App() {
           onMarker={(id, patch) => commit(updateMarker(tlRef.current, id, patch), `marker:${id}`)}
           onRemoveMarker={(id) => commit(removeMarker(tlRef.current, id))}
           onClipMenu={(clipId, T, x, y) => setCtxMenu({ clipId, T, x, y })}
+          onOpenCompound={openCompound}
           pps={pps}
           onPps={setPps}
           toolbarAt={bars.timeline.position}
@@ -2211,13 +2402,14 @@ export function App() {
             ctxMenu && ctxClip
               ? [
                   { label: 'Split here', hint: 'S', onClick: () => { splitHere(ctxMenu.T); seek(ctxMenu.T); } },
-                  { label: 'Split and delete left', hint: 'Q', onClick: () => deleteSide('left', ctxMenu.T) },
-                  { label: 'Split and delete right', hint: 'W', onClick: () => deleteSide('right', ctxMenu.T) },
+                  { label: 'Split and delete left', hint: 'Q', onClick: () => { selRef.current = null; setSel(null); deleteSide('left', ctxMenu.T); } },
+                  { label: 'Split and delete right', hint: 'W', onClick: () => { selRef.current = null; setSel(null); deleteSide('right', ctxMenu.T); } },
                   'sep',
                   ctxClip.audioDetached
                     ? { label: 'Reattach audio', onClick: () => commit(reattachAudio(tlRef.current, ctxClip.id)) }
                     : { label: 'Detach audio', disabled: !ctxHasSound, onClick: () => detach(ctxClip.id) },
-                  { label: 'Track subject from here…', disabled: !mediaNow(ctxClip.mediaPath), onClick: () => { seek(ctxMenu.T); setTimeout(startTrackPick, 150); } },
+                  { label: 'Solo sound', checked: !!ctxClip.soloSound, disabled: !ctxHasSound, onClick: () => commit(updateClip(tlRef.current, ctxClip.id, { soloSound: !ctxClip.soloSound || undefined })) },
+                  { label: 'Track subject from here…', disabled: !mediaNow(ctxClip.mediaPath), onClick: () => { seek(ctxMenu.T); setTimeout(() => runRef.current.track?.(), 150); } },
                   ...(() => {
                     const tr = ctxClip.track, r = tr && trackRange(tr), e = tr && trackExtent(tr);
                     if (!tr || !r || !e) return [];
@@ -2230,7 +2422,18 @@ export function App() {
                   { label: ctxClip.transitionIn ? 'Edit transition in' : 'Add transition in', disabled: ctxIndex === 0, onClick: () => openTransition(ctxClip.id) },
                   { label: 'Duplicate clip', onClick: () => commit(duplicateClip(tlRef.current, ctxClip.id)) },
                   'sep',
-                  { label: 'Delete clip', hint: '⌫', onClick: () => { commit(removeClip(tlRef.current, ctxClip.id)); setSel(null); } },
+                  ...(isCompound(ctxClip)
+                    ? [
+                        { label: 'Open compound clip', onClick: () => openCompound(ctxClip.id) },
+                        { label: 'Break apart', onClick: () => { commit(breakApart(tlRef.current, ctxClip.id)); setSel(null); } },
+                      ]
+                    : []),
+                  ...(ctxClip.multicam ? (groupOf(tl, ctxClip)?.angles ?? []).map((a, k) => ({ label: `Switch angle to ${k + 1}: ${baseName(a.path)}`, checked: ctxClip.multicam!.angle === k, onClick: () => { const n = switchAngle(tlRef.current, ctxClip.id, k); if (n === tlRef.current && ctxClip.multicam!.angle !== k) setNotice(`Angle ${k + 1} isn’t recording for all of this clip.`); else commit(n); } })) : []),
+                  { label: 'Make compound clip', onClick: () => compoundOf(ctxIndex, ctxIndex) },
+                  { label: 'Make compound clip with the next clip', disabled: ctxIndex >= tl.clips.length - 1, onClick: () => compoundOf(ctxIndex, ctxIndex + 1) },
+                  { label: 'Make compound clip from here to the end', disabled: ctxIndex >= tl.clips.length - 1, onClick: () => compoundOf(ctxIndex, tl.clips.length - 1) },
+                  'sep',
+                  { label: 'Delete clip', hint: '⌫', onClick: () => { commit(removeClipRipple(tlRef.current, ctxClip.id)); setSel(null); } },
                 ]
               : []
           }
@@ -2244,7 +2447,11 @@ export function App() {
         items={
           ctxMenu && ctxLayer
             ? [
-                { label: 'Split here', hint: 'S', onClick: () => commit(splitConnected(tlRef.current, ctxLayer.id, ctxMenu.T)) },
+                { label: 'Split here', hint: 'S', onClick: () => { selRef.current = { kind: 'layer', id: ctxLayer.id }; setSel(selRef.current); split(ctxMenu.T); } },
+                { label: 'Split and delete left', hint: 'Q', onClick: () => { selRef.current = { kind: 'layer', id: ctxLayer.id }; setSel(selRef.current); deleteSide('left', ctxMenu.T); } },
+                { label: 'Split and delete right', hint: 'W', onClick: () => { selRef.current = { kind: 'layer', id: ctxLayer.id }; setSel(selRef.current); deleteSide('right', ctxMenu.T); } },
+                { label: 'Solo sound', checked: !!ctxLayer.soloSound, disabled: !mediaNow(ctxLayer.mediaPath)?.info.audioTracks.length, onClick: () => commit(updateClip(tlRef.current, ctxLayer.id, { soloSound: !ctxLayer.soloSound || undefined })) },
+                { label: 'Track subject from here…', disabled: !mediaNow(ctxLayer.mediaPath), onClick: () => { selRef.current = { kind: 'layer', id: ctxLayer.id }; setSel(selRef.current); seek(ctxMenu.T); setTimeout(() => runRef.current.track?.(), 150); } },
                 { label: 'Duplicate clip', onClick: () => { setSel({ kind: 'layer', id: ctxLayer.id }); selRef.current = { kind: 'layer', id: ctxLayer.id }; duplicateCurrent(); } },
                 'sep',
                 ...LAYOUT_TEMPLATES.filter((l) => l.id.startsWith('pip')).map((l) => ({ label: l.label, onClick: () => commit(updateClip(tlRef.current, ctxLayer.id, { look: { ...ctxLayer.look, xf: cellTransform(l.cells[1]!, l.fill, xfOf(ctxLayer.look)) }, keyframes: ctxLayer.keyframes.map((k) => ({ ...k, look: { ...k.look, xf: cellTransform(l.cells[1]!, l.fill, xfOf(k.look)) } })) })) })),
@@ -2262,7 +2469,7 @@ export function App() {
         title="Keyframe"
         onClose={() => setKfMenu(null)}
         items={(() => {
-          const c = kfMenu && tl.clips.find((x) => x.id === kfMenu.clipId), k = c?.keyframes.find((x) => x.id === kfMenu!.id);
+          const c = kfMenu && findClip(tl, kfMenu.clipId), k = c?.keyframes.find((x) => x.id === kfMenu!.id);
           if (!kfMenu || !c || !k) return [];
           const ease = (e: Easing) => () => commit(updateClip(tlRef.current, c.id, { keyframes: setEasing(c.keyframes, k.id, e) }));
           return [
@@ -2282,7 +2489,7 @@ export function App() {
         title="Speed point"
         onClose={() => setSpeedMenu(null)}
         items={(() => {
-          const c = speedMenu && tl.clips.find((x) => x.id === speedMenu.clipId), k = c?.speedKeys?.find((x) => x.id === speedMenu!.id);
+          const c = speedMenu && findClip(tl, speedMenu.clipId), k = c?.speedKeys?.find((x) => x.id === speedMenu!.id);
           if (!speedMenu || !c?.speedKeys || !k) return [];
           const keys = c.speedKeys, set = (patch: Parameters<typeof setClipSpeed>[2]) => () => changeSpeed(c.id, patch, 'speedmenu');
           return [
@@ -2305,7 +2512,8 @@ export function App() {
       )}
       {arranging && <ArrangeBar items={items} drag={(e, id, label) => dragItem(e, id, label, null)} onCustomize={() => setCustomize('layout')} onDone={() => setArranging(false)} />}
       {customize && <Customize page={customize} onPage={setCustomize} onClose={() => setCustomize(null)} items={items} />}
-      {exportOpen && <ExportDialog timeline={tl} onClose={() => setExportOpen(false)} />}
+      {multicamOpen && <MulticamDialog files={bin.filter((b) => b.media).map((b) => b.path)} busy={multicamBusy} onMake={(ps, m) => void makeMulticam(ps, m)} onClose={() => setMulticamOpen(false)} />}
+      {exportOpen && <ExportDialog timeline={flattenTimeline(rootTimeline())} onClose={() => setExportOpen(false)} />}
       {cardOpen && <ImportWindow onClose={() => setCardOpen(false)} />}
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
       {reportOpen && <ReportProblem onClose={() => setReportOpen(false)} />}

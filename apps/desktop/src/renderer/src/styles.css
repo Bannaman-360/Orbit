@@ -314,6 +314,12 @@ input[type='range']:disabled { opacity: 0.45; }
 .tool .tool-lock { position: absolute; right: 3px; bottom: 3px; width: 10px; height: 10px; opacity: 1 !important; color: var(--muted); }
 .tool .tool-lock path { stroke-width: 2.4; }
 .slider-label { display: flex; align-items: center; gap: 5px; min-width: 0; }
+/* On/off switch for one change (Color, Effects): a small dot, filled when on. */
+.slider-toggle { flex: none; width: 12px; height: 12px; min-height: 0; padding: 0; border-radius: 50%; border: 1.5px solid var(--accent); background: var(--accent); box-shadow: none; cursor: pointer; opacity: 0.55; transition: opacity var(--anim); }
+.slider:hover .slider-toggle, .slider-toggle:focus-visible { opacity: 1; }
+.slider-toggle.off { background: transparent; border-color: var(--muted); opacity: 1; }
+.slider.is-off .slider-name { text-decoration: line-through; color: var(--muted); }
+.slider.is-off > :not(.slider-label) { opacity: 0.45; }
 .slider .num { background: none; border: 1px solid transparent; box-shadow: none; justify-content: flex-end; min-height: 0; padding: 0 4px; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 0.94em; border-radius: 5px; cursor: text; }
 .slider .num:hover:not(:disabled) { background: var(--hover); color: var(--text); filter: none; }
 .num-edit { width: 74px; padding: 0 5px; text-align: right; }
@@ -335,23 +341,31 @@ input[type='range']:disabled { opacity: 0.45; }
 .font-grid.compact button { font-size: 12.5px; padding: 3px 5px; }
 
 /* ---- Timeline ---- */
-.timeline-wrap { min-width: 0; min-height: 0; background: var(--timeline-bg); border-radius: inherit; }
-.timeline { height: 100%; display: flex; flex-direction: column; }
+.timeline-wrap { min-width: 0; min-height: 0; background: var(--timeline-bg); border-radius: inherit; display: flex; flex-direction: column; }
+.timeline { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .timeline-scroll { flex: 1; min-height: 0; overflow: auto; position: relative; }
 .timeline-inner { position: relative; min-width: 100%; min-height: 100%; padding-bottom: 8px; }
-.ruler { position: sticky; top: 0; z-index: 60; height: 24px; background: linear-gradient(to right, color-mix(in srgb, var(--muted) 45%, transparent) 0 1px, transparent 1px) left bottom / var(--minor, 20px) 5px repeat-x, var(--ruler); box-shadow: inset 0 -1px 0 var(--line); }
+.ruler { position: relative; flex: 1; height: 24px; background: linear-gradient(to right, color-mix(in srgb, var(--muted) 45%, transparent) 0 1px, transparent 1px) left bottom / var(--minor, 20px) 5px repeat-x, var(--ruler); box-shadow: inset 0 -1px 0 var(--line); }
 .tick { position: absolute; top: 0; height: 100%; border-left: 1px solid color-mix(in srgb, var(--muted) 70%, transparent); padding-left: 5px; font-size: 10px; color: var(--muted); line-height: 22px; pointer-events: none; font-variant-numeric: tabular-nums; }
-.track { position: relative; margin: 6px 0; }
+/* Each row: its name and buttons in a column that stays at the left, then the clips. Clips start
+   right of the column, so the buttons never cover a clip's edge. */
+.tl-row { display: flex; align-items: stretch; }
+.ruler-row { position: sticky; top: 0; z-index: 69; }
+.track { position: relative; margin: 6px 0; flex: 1; min-width: 0; isolation: isolate; }
+.track-head { position: sticky; left: 0; z-index: 68; flex: none; width: var(--head-w); display: flex; align-items: center; gap: 4px; padding: 0 4px 0 8px; background: var(--timeline-bg); box-shadow: inset -1px 0 0 var(--line); font-size: 10.5px; color: var(--muted); overflow: hidden; white-space: nowrap; }
+.track-head.corner { background: var(--ruler); box-shadow: inset -1px -1px 0 var(--line); }
+.track-head b { font-weight: 600; }
+.track-head svg { flex: none; opacity: 0.8; }
 .video-track { height: var(--track-h); }
-/* Video tracks above the main row (V2–V6). The header stays at the left while scrolling. */
-.vtrack-add { height: 18px; margin: 2px 8px; display: flex; align-items: center; gap: 6px; padding-left: 10px; font-size: 10.5px; color: var(--muted); border: 1px dashed color-mix(in srgb, var(--muted) 30%, transparent); border-radius: var(--r-clip); position: sticky; left: 0; width: max-content; min-width: 280px; }
+/* Video tracks above the main row (V2–V6). */
+.vtrack-add { height: 18px; margin: 2px 8px; display: flex; align-items: center; gap: 6px; padding-left: 10px; font-size: 10.5px; color: var(--muted); border: 1px dashed color-mix(in srgb, var(--muted) 30%, transparent); border-radius: var(--r-clip); position: sticky; left: var(--head-w); flex: none; width: max-content; min-width: 280px; }
 [data-dragging] .vtrack-add, .vtrack-add:hover { border-color: var(--accent); color: var(--text); }
 .vtrack { background: color-mix(in srgb, var(--muted) 5%, transparent); border-radius: var(--r-clip); }
 .vtrack .vclip { top: 0; bottom: 0; }
 .vtrack.is-hidden .vclip { opacity: 0.35; }
 .vtrack .vclip.locked { cursor: default; background-image: repeating-linear-gradient(135deg, rgb(0 0 0 / 0.18) 0 6px, transparent 6px 12px), var(--thumb, none); }
-.vtrack-head { position: sticky; left: 0; z-index: 30; display: inline-flex; align-items: center; gap: 2px; height: 100%; padding: 0 4px 0 6px; background: color-mix(in srgb, var(--timeline-bg) 88%, transparent); border-radius: var(--r-clip) 0 0 var(--r-clip); box-shadow: 1px 0 0 var(--line); font-size: 10.5px; color: var(--muted); }
-.vtrack-head b { min-width: 20px; font-weight: 600; }
+.vtrack-head { flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; }
+.vtrack-head .head-buttons { display: flex; gap: 1px; }
 .vtrack-head button { min-height: 0; width: 20px; height: 20px; padding: 0; display: grid; place-items: center; background: none; border: none; box-shadow: none; color: var(--muted); border-radius: 4px; }
 .vtrack-head button:hover { background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--text); }
 .vtrack-head button.on { color: var(--accent); }
@@ -739,3 +753,24 @@ button.project-thumb:hover:not(:disabled) { background-color: var(--group); filt
 .mask-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mask-row.selected { background: color-mix(in srgb, var(--accent) 22%, transparent); box-shadow: inset 0 0 0 1px var(--accent); }
 .mask-row.off span { opacity: 0.5; }
+
+/* Export: one-press settings for each platform. */
+.export-presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+.export-presets button.on { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+
+/* Compound clips, and the way back up when one is open. */
+.clip.compound { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--accent) 34%, var(--clip)) 0 10px, color-mix(in srgb, var(--accent) 26%, var(--clip)) 10px 20px); }
+.tl-crumbs { display: flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 11.5px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 10%, var(--timeline-bg)); }
+.tl-crumbs button { min-height: 0; padding: 1px 8px; }
+.tl-crumbs input { width: 160px; padding: 1px 6px; font-weight: 600; }
+.tl-crumbs .crumb-sep { color: var(--muted); margin: 0 2px; }
+.tl-crumbs .muted { margin-left: auto; }
+
+/* Multicam: every camera at the playhead; click (or 1–4) to cut to it. */
+.angle-viewer { display: flex; align-items: stretch; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.angle-viewer .angle-title { align-self: center; font-size: 11px; font-weight: 600; color: var(--muted); margin-right: 4px; white-space: nowrap; }
+.angle-viewer .angle { display: flex; flex-direction: column; gap: 3px; padding: 3px; min-height: 0; width: 150px; flex: none; border-radius: 6px; }
+.angle-viewer .angle i { display: block; aspect-ratio: 16 / 9; background: #000 center / cover no-repeat; border-radius: 4px; }
+.angle-viewer .angle span { font-size: 10.5px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.angle-viewer .angle.on { box-shadow: 0 0 0 2px var(--accent); }
+.multicam-list { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; margin: 8px 0; }

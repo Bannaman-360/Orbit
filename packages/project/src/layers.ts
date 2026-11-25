@@ -91,13 +91,27 @@ export const removeConnected = (tl: Timeline, id: string): Timeline => ({ ...tl,
 /** Splits the clip on the tracks at timeline time T in two. */
 export function splitConnected(tl: Timeline, id: string, T: number): Timeline {
   const c = tl.connected.find((x) => x.id === id);
-  if (!c) return tl;
+  if (!c || tl.tracks.find((t) => t.id === c.trackId)?.locked) return tl;
   const local = T - c.startUs;
   if (local < MIN_CLIP_US || playLength(c) - local < MIN_CLIP_US) return tl;
   const m = Math.round(mediaAt(c, local));
   const left: ConnectedClip = { ...c, outUs: m };
   const right: ConnectedClip = { ...c, id: newId('v'), inUs: m, startUs: c.startUs + playLength(left) };
   return { ...tl, connected: tl.connected.flatMap((x) => (x.id === id ? [left, right] : [x])) };
+}
+
+/**
+ * Cuts the track clip at timeline time T and deletes the part on one side. The part that stays
+ * keeps its place in time (deleting left moves the clip's start to T).
+ */
+export function deleteSideConnected(tl: Timeline, id: string, T: number, side: 'left' | 'right'): Timeline {
+  const c = tl.connected.find((x) => x.id === id);
+  if (!c || tl.tracks.find((t) => t.id === c.trackId)?.locked) return tl;
+  const local = T - c.startUs;
+  if (local < MIN_CLIP_US || playLength(c) - local < MIN_CLIP_US) return tl;
+  const m = Math.round(mediaAt(c, local));
+  const next: ConnectedClip = side === 'left' ? { ...c, inUs: m, startUs: Math.round(T) } : { ...c, outUs: m };
+  return { ...tl, connected: tl.connected.map((x) => (x.id === id ? next : x)) };
 }
 
 /** Copies a main-row or track clip onto the lowest free track at T. */

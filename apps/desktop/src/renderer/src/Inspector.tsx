@@ -8,6 +8,7 @@ import {
   cleanSpeed, hasRamp, localAt, mediaAt, MAX_SPEED, MIN_SPEED, RAMP_PRESETS, rampPreset, removeSpeedKey, setSpeedEase, setSpeedKey, speedAt, speedKeyNear, speedRange,
   fisheyeForLook, cleanXf, isIdentityXf, addMaskKey, MASK_EFFECTS, MAX_MASKS, maskPoseAt, newMask, removeMaskKey, setMaskPose, type Mask, type MaskPose, type MaskShape, LAYOUT_TEMPLATES, xfOf, type Transform,
   type AudioClip, type ClipTrack, type Easing, type Effects, type GaugeDesign, type Grade, type InputChoice, type Look, type Overlay, type Smoothing, type Timeline, type TimelineClip, type Transition,
+  type OffKey, isCompound,
 } from '@ace/project';
 import { airtimeStats, CUSTOM_SIGMA_RANGE, DEFAULT_AIRTIME, SMOOTHING_SIGMA_S } from '@ace/telemetry';
 import { baseName } from './api';
@@ -89,6 +90,11 @@ export interface InspectorProps {
   onDetachAudio: () => void;
   onReattachAudio: (clipId: string) => void;
   onOverlay: (patch: Partial<Overlay>, key: string) => void;
+  /** A compound clip being edited: its name, and how to open it. */
+  compoundName?: string;
+  onOpenCompound: (clipId: string) => void;
+  /** Clips on V2–V6 a gauge can read its ride data from. */
+  gaugeSources: { id: string; label: string }[];
   /** Gives every gauge this design. */
   onGaugeDesignAll: (design: GaugeDesign) => void;
   onTransition: (patch: Partial<Transition>, key: string) => void;
@@ -199,6 +205,18 @@ function ClipStrip({ p, clip }: { p: InspectorProps; clip: TimelineClip }) {
 /** A panel of sections that edit the clip under the playhead. */
 export function InspectorPanel(p: InspectorProps & { panel: string }) {
   if (!p.clip || !p.look) return <aside className="inspector"><p className="empty-panel">Add clips to the timeline to start editing.</p></aside>;
+  if (isCompound(p.clip)) {
+    const id = p.clip.id;
+    return (
+      <aside className="inspector">
+        <div className="tab-body empty-panel">
+          <p><b>{p.compoundName ?? 'Compound clip'}</b></p>
+          <p className="hint">A compound clip holds clips of its own. Open it to change their color, effects, speed and framing; the changes show wherever it is used.</p>
+          <div className="row-buttons"><button onClick={() => p.onOpenCompound(id)}>Open compound clip</button></div>
+        </div>
+      </aside>
+    );
+  }
   return (
     <aside className="inspector">
       <ClipStrip p={p} clip={p.clip} />
@@ -324,8 +342,16 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
     const off = !media?.stabilizer.hasOrientation;
     const fx = look.fx;
     const set = (k: keyof Effects) => (v: number) => p.onLook({ fx: { ...fx, [k]: v } }, `fx-${k}`);
+    /** The on/off switch for one setting (switching it off keeps its value, to compare). */
+    const sw = (key: OffKey) => ({
+      on: !clip.off?.includes(key),
+      onToggle: () => {
+        const off = clip.off?.includes(key) ? clip.off.filter((k) => k !== key) : [...(clip.off ?? []), key];
+        p.onClip({ off: off.length ? off : undefined }, `off-${key}`);
+      },
+    });
     const fxSlider = (k: keyof Effects, label: string, hint: string) => (
-      <Slider label={label} value={fx[k]} min={0} max={1} reset={0} keyed={keyed} units={PCT} format={pct} hint={hint} onChange={set(k)} />
+      <Slider label={label} value={fx[k]} min={0} max={1} reset={0} keyed={keyed} units={PCT} format={pct} hint={hint} toggle={sw(`fx.${k}`)} onChange={set(k)} />
     );
   const hasSound = !!media?.info.audioTracks.length;
   return {
@@ -511,25 +537,25 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
     'Lens match': <LensMatchSection {...p} />,
     'Light': (
         <Section title="Light" defaultOpen>
-          <Slider label="Exposure" value={g.exposure} min={-8} max={4} reset={0} units={EV} keyed={keyed} format={(v) => `${v > 0 ? '+' : ''}${v.toFixed(2)} EV`} onChange={(v) => p.onGrade({ exposure: v }, 'exposure')} />
-          <Slider label="Contrast" value={g.contrast} min={-1} max={1} reset={0} keyed={keyed} units={PCT} format={signed} onChange={(v) => p.onGrade({ contrast: v }, 'contrast')} />
-          <Slider label="Highlights" value={g.highlights} min={-1} max={1} reset={0} keyed={keyed} units={PCT} format={signed} onChange={(v) => p.onGrade({ highlights: v }, 'highlights')} />
-          <Slider label="Shadows" value={g.shadows} min={-1} max={1} reset={0} keyed={keyed} units={PCT} format={signed} onChange={(v) => p.onGrade({ shadows: v }, 'shadows')} />
-          <Slider label="Fade" value={g.fade} min={0} max={1} reset={0} keyed={keyed} units={PCT} format={pct} onChange={(v) => p.onGrade({ fade: v }, 'fade')} />
+          <Slider label="Exposure" value={g.exposure} min={-8} max={4} reset={0} units={EV} keyed={keyed} format={(v) => `${v > 0 ? '+' : ''}${v.toFixed(2)} EV`} toggle={sw('grade.exposure')} onChange={(v) => p.onGrade({ exposure: v }, 'exposure')} />
+          <Slider label="Contrast" value={g.contrast} min={-1} max={1} reset={0} keyed={keyed} units={PCT} format={signed} toggle={sw('grade.contrast')} onChange={(v) => p.onGrade({ contrast: v }, 'contrast')} />
+          <Slider label="Highlights" value={g.highlights} min={-1} max={1} reset={0} keyed={keyed} units={PCT} format={signed} toggle={sw('grade.highlights')} onChange={(v) => p.onGrade({ highlights: v }, 'highlights')} />
+          <Slider label="Shadows" value={g.shadows} min={-1} max={1} reset={0} keyed={keyed} units={PCT} format={signed} toggle={sw('grade.shadows')} onChange={(v) => p.onGrade({ shadows: v }, 'shadows')} />
+          <Slider label="Fade" value={g.fade} min={0} max={1} reset={0} keyed={keyed} units={PCT} format={pct} toggle={sw('grade.fade')} onChange={(v) => p.onGrade({ fade: v }, 'fade')} />
         </Section>
     ),
     'Color': (
         <Section title="Color">
-          <Slider label="Temperature" value={g.temperature} min={-1} max={1} reset={0} keyed={keyed} units={PCT} format={signed} onChange={(v) => p.onGrade({ temperature: v }, 'temperature')} />
-          <Slider label="Tint" value={g.tint} min={-1} max={1} reset={0} keyed={keyed} units={PCT} format={signed} onChange={(v) => p.onGrade({ tint: v }, 'tint')} />
-          <Slider label="Saturation" value={g.saturation} min={-1} max={1} reset={0} keyed={keyed} units={PCT} format={signed} onChange={(v) => p.onGrade({ saturation: v }, 'saturation')} />
-          <Slider label="Vibrance" value={g.vibrance} min={-1} max={1} reset={0} keyed={keyed} units={PCT} format={signed} onChange={(v) => p.onGrade({ vibrance: v }, 'vibrance')} />
+          <Slider label="Temperature" value={g.temperature} min={-1} max={1} reset={0} keyed={keyed} units={PCT} format={signed} toggle={sw('grade.temperature')} onChange={(v) => p.onGrade({ temperature: v }, 'temperature')} />
+          <Slider label="Tint" value={g.tint} min={-1} max={1} reset={0} keyed={keyed} units={PCT} format={signed} toggle={sw('grade.tint')} onChange={(v) => p.onGrade({ tint: v }, 'tint')} />
+          <Slider label="Saturation" value={g.saturation} min={-1} max={1} reset={0} keyed={keyed} units={PCT} format={signed} toggle={sw('grade.saturation')} onChange={(v) => p.onGrade({ saturation: v }, 'saturation')} />
+          <Slider label="Vibrance" value={g.vibrance} min={-1} max={1} reset={0} keyed={keyed} units={PCT} format={signed} toggle={sw('grade.vibrance')} onChange={(v) => p.onGrade({ vibrance: v }, 'vibrance')} />
         </Section>
     ),
     'Detail': (
         <Section title="Detail">
-          <Slider label="Sharpen" value={g.sharpen} min={0} max={3} reset={0} keyed={keyed} units={PCT} format={pct} onChange={(v) => p.onGrade({ sharpen: v }, 'sharpen')} />
-          <Slider label="Vignette" value={g.vignette} min={0} max={1} reset={0} keyed={keyed} units={PCT} format={pct} onChange={(v) => p.onGrade({ vignette: v }, 'vignette')} />
+          <Slider label="Sharpen" value={g.sharpen} min={0} max={3} reset={0} keyed={keyed} units={PCT} format={pct} toggle={sw('grade.sharpen')} onChange={(v) => p.onGrade({ sharpen: v }, 'sharpen')} />
+          <Slider label="Vignette" value={g.vignette} min={0} max={1} reset={0} keyed={keyed} units={PCT} format={pct} toggle={sw('grade.vignette')} onChange={(v) => p.onGrade({ vignette: v }, 'vignette')} />
         </Section>
     ),
     'LUT': (
@@ -541,7 +567,7 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
           {p.lutPath && (
             <>
               <p className="hint">{baseName(p.lutPath)} (shared by all clips)</p>
-              <Slider label="LUT strength" value={g.lutMix} min={0} max={1} reset={1} keyed={keyed} units={PCT} format={pct} onChange={(v) => p.onGrade({ lutMix: v }, 'lutMix')} />
+              <Slider label="LUT strength" value={g.lutMix} min={0} max={1} reset={1} keyed={keyed} units={PCT} format={pct} toggle={sw('grade.lutMix')} onChange={(v) => p.onGrade({ lutMix: v }, 'lutMix')} />
             </>
           )}
         </Section>
@@ -553,7 +579,7 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
     ),
     'Motion blur (ND filter)': (
         <Section title="Motion blur (ND filter)" defaultOpen badge={look.motionBlur ? blurLabel(look.motionBlur, media?.fps ?? 30) : undefined}>
-          <Slider label="Amount" value={look.motionBlur} min={0} max={1} step={1 / 7} reset={0} keyed={keyed} units={PCT} format={() => blurLabel(look.motionBlur, media?.fps ?? 30)} onChange={(v) => p.onLook({ motionBlur: v }, 'blur')} />
+          <Slider label="Amount" value={look.motionBlur} min={0} max={1} step={1 / 7} reset={0} keyed={keyed} units={PCT} format={() => blurLabel(look.motionBlur, media?.fps ?? 30)} toggle={sw('motionBlur')} onChange={(v) => p.onLook({ motionBlur: v }, 'blur')} />
           <p className="hint">
             Blends consecutive frames like a slow shutter behind an ND filter: smooth, cinematic motion. Visible during playback and in
             exports; a paused frame shows no blur. Works best on 50/60 fps footage.
@@ -658,9 +684,14 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
         {hasSound && !clip.audioDetached && (
           <>
             <Slider label="Clip volume" value={clip.volume} min={0} max={1.5} reset={1} units={PCT} format={pct} onChange={(v) => p.onClip({ volume: v }, 'volume')} />
-            <div className="row-buttons"><button onClick={p.onDetachAudio} title="Move this clip's sound to the audio track">Detach audio</button></div>
-            <p className="hint">Detaching puts the sound on its own track so you can move, trim and fade it separately from the video.</p>
+            {!p.layerTrack && <div className="row-buttons"><button onClick={p.onDetachAudio} title="Move this clip's sound to the audio track">Detach audio</button></div>}
+            {!p.layerTrack && <p className="hint">Detaching puts the sound on its own track so you can move, trim and fade it separately from the video.</p>}
           </>
+        )}
+        {hasSound && (
+          <label className="check" title="While this clip plays, every other clip playing at the same time is silent (music keeps playing). Useful to hear a clip on V2–V6 on its own.">
+            <input type="checkbox" checked={!!clip.soloSound} onChange={(e) => p.onClip({ soloSound: e.target.checked || undefined }, 'solo')} /> Solo sound: mute the other clips while this one plays
+          </label>
         )}
         {hasSound && clip.audioDetached && (
           <>
@@ -939,6 +970,16 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
             <Section title="Look" defaultOpen>
               <GaugeLookPicker o={o} onPick={(design, style) => p.onOverlay(lookPatch(design, style), 'ov-look')} />
               <div className="row-buttons"><button title="Gives every gauge this design (each in the closest type it comes in)" onClick={() => p.onGaugeDesignAll(o.design ?? 'classic')}>Use this design for all gauges</button></div>
+              {o.kind !== 'timer' && (p.gaugeSources.length > 0 || o.sourceClipId) && (
+                <label className="field" title="Which clip’s ride data (speed, G-force, GPS…) the gauge shows">
+                  Ride data from
+                  <select aria-label="Ride data from" value={o.sourceClipId ?? ''} onChange={(e) => p.onOverlay({ sourceClipId: e.target.value || undefined }, 'ov-source')}>
+                    <option value="">The main row (clip under the playhead)</option>
+                    {p.gaugeSources.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
+                    {o.sourceClipId && !p.gaugeSources.some((g) => g.id === o.sourceClipId) && <option value={o.sourceClipId}>A clip that was removed</option>}
+                  </select>
+                </label>
+              )}
               {(o.kind === 'airtime' || o.kind === 'jumpdist') && <Seg value={o.airShow ?? 'best'} options={[['best', o.kind === 'jumpdist' ? 'Longest' : 'Best'], ['last', 'Last'], ['total', 'Total'], ['running', 'Running total']]} onChange={(v) => p.onOverlay({ airShow: v }, 'ov-air')} />}
               {hasUnits && <Seg value={o.units} options={[['metric', 'Metric'], ['imperial', 'Imperial']]} onChange={(v) => p.onOverlay({ units: v }, 'ov-units')} />}
               <div className="field-row">

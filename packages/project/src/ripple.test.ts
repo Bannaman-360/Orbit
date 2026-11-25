@@ -56,3 +56,31 @@ describe('things on the timeline follow a clip that changes length', () => {
     void mediaAt; void localAt; void clipDuration;
   });
 });
+
+describe('cutting footage trims what was over it', () => {
+  it('delete right on the last clip: gauges end with the video', async () => {
+    const { deleteSideAt } = await import('./timeline');
+    const tl = two(), cut = deleteSideAt(tl, 15 * S, 'right'), after = rippleItems(tl, cut, 'b');
+    expect(timelineDuration(after)).toBe(15 * S);
+    expect(ov(after, 'gauge').endUs).toBe(15 * S);
+    expect(after.overlays.every((o) => o.endUs <= 15 * S)).toBe(true);
+  });
+  it('delete left takes away text that was only over the cut part', async () => {
+    const { deleteSideAt } = await import('./timeline');
+    const tl = two(), cut = deleteSideAt(tl, 7 * S, 'left'), after = rippleItems(tl, cut, 'a');
+    expect(after.overlays.find((o) => o.id === 'onA')).toBeUndefined();
+    expect(ov(after, 'onB').startUs).toBe(5 * S);
+    expect(ov(after, 'gauge').endUs).toBe(13 * S);
+  });
+  it('deleting a clip closes the gap and drops what was only on it', async () => {
+    const { removeClipRipple } = await import('./timeline');
+    const tl = two(), after = removeClipRipple(tl, 'a');
+    expect(timelineDuration(after)).toBe(10 * S);
+    expect(after.overlays.find((o) => o.id === 'onA')).toBeUndefined();
+    expect(ov(after, 'onB').startUs).toBe(2 * S);
+    expect(ov(after, 'gauge').endUs).toBe(10 * S);
+    const last = removeClipRipple(tl, 'b');
+    expect(ov(last, 'gauge').endUs).toBe(10 * S);
+    expect(last.overlays.find((o) => o.id === 'onB')).toBeUndefined();
+  });
+});

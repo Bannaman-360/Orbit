@@ -2,7 +2,7 @@
 // Shared by the preview overlay layer, export and frame grabs so they always match.
 
 import {
-  locate, overlayState, transitionLook,
+  locate, overlayState, transitionLook, mediaAt, playLength, type TimelineClip,
   isIdentityXf, shownRect, type Transform,
   type LayerXf, type Overlay, type OverlayFont, type Reveal, type Timeline, type TransitionLook,
 } from '@ace/project';
@@ -50,10 +50,30 @@ const rgba = (hex: string, a: number) => {
 /** Sample telemetry used instead of the timeline's while drawing a look preview. */
 let forced: { t: TelemetrySeries; mediaUs: number } | null = null;
 
-/** Telemetry of whatever clip is on screen at timeline time T. */
-function telemetryAt(tl: Timeline, T: number): { t: TelemetrySeries; mediaUs: number; created?: Date } | null {
-  if (forced) return { ...forced, created: new Date(2026, 5, 14, 16, 42, 0) };
+/**
+ * The clip a gauge reads its ride data from at timeline time T: the clip it is set to (on a track
+ * above the main row: the moment of it at T, held at its ends), or else the main-row clip there.
+ */
+export function gaugeSource(tl: Timeline, T: number, o?: Pick<Overlay, 'sourceClipId'>): { clip: TimelineClip; mediaUs: number } | null {
+  const id = o?.sourceClipId;
+  let own = id ? tl.connected.find((c) => c.id === id) ?? null : null;
+  // Past its ends: a piece of the same recording on that track (after a split) takes over.
+  if (own && (T < own.startUs || T >= own.startUs + playLength(own))) {
+    const o2 = own;
+    own = tl.connected.find((c) => c.trackId === o2.trackId && c.mediaPath === o2.mediaPath && T >= c.startUs && T < c.startUs + playLength(c)) ?? own;
+  }
+  if (own) {
+    const local = Math.max(0, Math.min(playLength(own) - 1, T - own.startUs));
+    return { clip: own, mediaUs: Math.min(own.outUs - 1, mediaAt(own, local)) };
+  }
   const at = locate(tl, T);
+  return at ? { clip: at.clip, mediaUs: at.mediaUs } : null;
+}
+
+/** Telemetry of the clip a gauge reads at timeline time T. */
+function telemetryAt(tl: Timeline, T: number, o?: Overlay): { t: TelemetrySeries; mediaUs: number; created?: Date } | null {
+  if (forced) return { ...forced, created: new Date(2026, 5, 14, 16, 42, 0) };
+  const at = gaugeSource(tl, T, o);
   const m = at && mediaNow(at.clip.mediaPath);
   return m ? { t: m.telemetry, mediaUs: at.mediaUs, created: m.info.created } : null;
 }
@@ -98,7 +118,7 @@ const pad2 = (n: number) => String(Math.floor(n)).padStart(2, '0');
 const CALM = { speed: 250_000, gforce: 180_000 };
 
 export function gaugeReading(o: Overlay, tl: Timeline, T: number): GaugeReading {
-  const src = telemetryAt(tl, T);
+  const src = telemetryAt(tl, T, o);
   const imp = o.units === 'imperial';
   const tm = src?.t;
   const t = src?.mediaUs ?? 0;
@@ -135,8 +155,9 @@ export function gaugeReading(o: Overlay, tl: Timeline, T: number): GaugeReading 
     case 'airtime':
     case 'jumpdist': {
       const dist = o.kind === 'jumpdist';
-      const at = forced ? null : locate(tl, T);
-      const all = !tm ? [] : at ? tm.jumps(at.clip.airtime ?? {}).filter((j) => j.endUs > at.clip.inUs && j.startUs < at.clip.outUs) : tm.jumps();
+      const at = forced ? null : gaugeSource(tl, T, o);
+      // Jumps over the whole recording, so totals and bests are right however the clip is trimmed.
+      const all = !tm ? [] : at ? tm.jumps(at.clip.airtime ?? {}) : tm.jumps();
       const unit = dist ? (imp ? 'ft' : 'm') : 's';
       if (!tm?.hasAccel || (dist && !tm.hasGps)) return blank(unit, dist ? 'JUMP' : 'AIRTIME');
       // What each jump is worth, in display units: its time in the air, or how far it went.
@@ -431,7 +452,7 @@ function drawGraph(ctx: Ctx2D, o: Overlay, r: GaugeReading, tl: Timeline, T: num
   const w = s * 3.2, h = s * 1.2;
   const x0 = o.x * W - w / 2, y0 = o.y * H - h / 2;
   panel(ctx, o, x0, y0, w, h, s * 0.14);
-  const src = telemetryAt(tl, T);
+  const src = telemetryAt(tl, T, o);
   const tm = src?.t;
   const pad = s * 0.14;
   ctx.globalAlpha *= r.available ? 1 : 0.55;
@@ -507,7 +528,7 @@ function drawMap(ctx: Ctx2D, o: Overlay, tl: Timeline, T: number, W: number, H: 
     ctx.fill();
   }
   ctx.clip();
-  const src = telemetryAt(tl, T);
+  const src = telemetryAt(tl, T, o);
   const tm = src?.t;
   if (!tm?.hasGps || tm.track.length < 2) {
     ctx.fillStyle = 'rgba(255,255,255,0.6)';

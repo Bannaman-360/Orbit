@@ -11,6 +11,8 @@ import { fixSpeedKeys, localAt, mediaAt, playLength, speedAt, type SpeedKey } fr
 import type { ClipTrack } from './track';
 import type { LensLook } from './lensLook';
 import { fixMasks, type Mask } from './masks';
+import type { Sequence } from './compound';
+import type { MulticamGroup } from './multicam';
 
 export type TransitionKind =
   | 'crossfade' | 'dip-black' | 'dip-white' | 'flash' | 'blur'
@@ -122,6 +124,12 @@ export interface TimelineClip {
   track?: ClipTrack;
   /** Blur, pixelate or hide parts of the picture (see masks.ts). */
   masks?: Mask[];
+  /** Solo sound: while this clip plays, every other clip playing at the same time is silent. */
+  soloSound?: boolean;
+  /** Colour and effect settings switched off to compare (see `withOff` in look.ts). */
+  off?: string[];
+  /** A cut of a multicam group: which group, and which camera it shows (see multicam.ts). */
+  multicam?: { group: string; angle: number };
 }
 
 export interface AudioClip {
@@ -180,7 +188,7 @@ export interface ConnectedClip extends TimelineClip {
 }
 
 /** Project format version written by this app. Older ones are upgraded by `loadTimeline`. */
-export const TIMELINE_VERSION = 3;
+export const TIMELINE_VERSION = 4;
 
 export interface Timeline {
   version: typeof TIMELINE_VERSION;
@@ -197,6 +205,10 @@ export interface Timeline {
   tracks: VideoTrack[];
   /** Clips on those tracks. */
   connected: ConnectedClip[];
+  /** Timelines inside the project: what compound clips show (see compound.ts). */
+  sequences?: Sequence[];
+  /** Multicam groups: cameras lined up in time (see multicam.ts). */
+  multicams?: MulticamGroup[];
 }
 
 export const MIN_CLIP_US = 100_000;
@@ -336,18 +348,74 @@ export function rippleItems(before: Timeline, after: Timeline, clipId: string): 
   };
   const MIN = 200_000;
   const total = timelineDuration(after);
-  return {
+  return fitItemsToEdit({
     ...after,
-    overlays: after.overlays.map((o) => {
-      const st = move(o.startUs), en = Math.max(st + MIN, move(o.endUs));
-      return st === o.startUs && en === o.endUs ? o : { ...o, startUs: Math.min(st, Math.max(0, total - MIN)), endUs: Math.min(en, Math.max(total, st + MIN)) };
+    overlays: after.overlays.flatMap((o) => {
+      const st = move(o.startUs), en0 = move(o.endUs), en = Math.max(st + MIN, en0);
+      // Over footage that was cut away: it goes too.
+      if (en0 - st < 1 && o.endUs - o.startUs >= 1) return [];
+      return st === o.startUs && en === o.endUs ? [o] : [{ ...o, startUs: Math.min(st, Math.max(0, total - MIN)), endUs: Math.min(en, Math.max(total, st + MIN)) }];
     }),
     audio: after.audio.map((x) => (x.linkedClipId && x.linkedClipId !== clipId && x.startUs >= e0 ? { ...x, startUs: move(x.startUs) } : x)),
     // Clips on the tracks above stay with the picture they start over.
     connected: after.connected.map((c) => { const t = Math.max(0, Math.round(move(c.startUs))); return t === c.startUs ? c : { ...c, startUs: t }; }),
     // Markers stay on the picture they mark.
     markers: after.markers.map((m) => { const t = Math.max(0, Math.round(move(m.t))); return t === m.t ? m : { ...m, t }; }),
-  };
+  });
+}
+
+/**
+ * After the edit got shorter: text and gauges, and clips on the tracks above, end with the video
+ * instead of running past it. Things that would start after the end go.
+ */
+export function fitItemsToEdit(tl: Timeline): Timeline {
+  if (!tl.clips.length) return tl;
+  const total = timelineDuration(tl);
+  const MIN = 200_000;
+  let changed = false;
+  const overlays = tl.overlays.flatMap((o) => {
+    if (o.endUs <= total) return [o];
+    changed = true;
+    return o.startUs > total - MIN ? [] : [{ ...o, endUs: total }];
+  });
+  const connected = tl.connected.flatMap((c) => {
+    const end = c.startUs + playLength(c);
+    if (end <= total + 1) return [c];
+    changed = true;
+    if (c.startUs > total - MIN_CLIP_US) return [];
+    return [{ ...c, outUs: Math.max(c.inUs + 1, Math.round(mediaAt(c, total - c.startUs))) }];
+  });
+  return changed ? { ...tl, overlays, connected } : tl;
+}
+
+/**
+ * Deletes a main-row clip and closes the gap: text, gauges, markers, a clip's own sound and clips
+ * on the tracks after it move up with the pictures; those only over the deleted clip go with it.
+ */
+export function removeClipRipple(tl: Timeline, id: string): Timeline {
+  const i = tl.clips.findIndex((c) => c.id === id);
+  if (i < 0) return removeClip(tl, id);
+  const starts = clipStarts(tl);
+  const s0 = starts[i]!, e0 = s0 + clipDuration(tl.clips[i]!);
+  const after = removeClip(tl, id);
+  if (!after.clips.length) return { ...after, audio: after.audio.filter((a) => a.linkedClipId !== id) };
+  // Where the clip that followed it now starts (it may also lose a transition).
+  const nextId = tl.clips[i + 1]?.id;
+  const sb = nextId ? starts[i + 1]! : e0;
+  const sa = nextId ? clipStarts(after)[after.clips.findIndex((c) => c.id === nextId)]! : timelineDuration(after);
+  const move = (T: number) => (T <= s0 ? T : T >= sb ? T + (sa - sb) : Math.min(s0, sa));
+  const MIN = 200_000;
+  return fitItemsToEdit({
+    ...after,
+    overlays: after.overlays.flatMap((o) => {
+      const st = move(o.startUs), en = move(o.endUs);
+      if (en - st < MIN) return o.endUs - o.startUs >= MIN && (o.startUs < s0 || o.endUs > e0) ? [{ ...o, startUs: st, endUs: st + MIN }] : [];
+      return [{ ...o, startUs: st, endUs: en }];
+    }),
+    markers: after.markers.flatMap((m) => (m.t > s0 && m.t < sb ? [] : [{ ...m, t: Math.max(0, Math.round(move(m.t))) }])),
+    connected: after.connected.flatMap((c) => (c.startUs >= s0 && c.startUs < sb && c.startUs + playLength(c) <= e0 ? [] : [{ ...c, startUs: Math.max(0, Math.round(move(c.startUs))) }])),
+    audio: after.audio.flatMap((a) => (a.linkedClipId === id ? [] : a.linkedClipId && a.startUs >= sb - 1 ? [{ ...a, startUs: Math.max(0, Math.round(move(a.startUs))) }] : [a])),
+  });
 }
 
 export function addClip(tl: Timeline, clip: TimelineClip, index = tl.clips.length): Timeline {
@@ -493,6 +561,12 @@ export function loadTimeline(raw: unknown): Timeline {
     audio: (p.audio ?? []).map((a) => ({ ...newAudioClip(a.path, a.outUs ?? 0), ...a, ...(a.speedKeys ? { speedKeys: fixSpeedKeys(a.speedKeys) } : {}) })),
     overlays: (p.overlays ?? []).map(fixOverlay),
     markers: (p.markers ?? []).filter((m) => m && Number.isFinite(m.t)).map((m) => ({ id: m.id || newId('m'), t: Math.max(0, m.t), note: String(m.note ?? ''), color: MARKER_COLORS.includes(m.color) ? m.color : 'blue' })).sort((a, b) => a.t - b.t),
+    // Version 3 had no compound clips.
+    ...(Array.isArray(p.sequences) && p.sequences.length ? { sequences: p.sequences.filter((x) => x && typeof x.id === 'string').map((x) => {
+      const inner = loadTimeline({ clips: x.clips, connected: x.connected, tracks: x.tracks, audio: x.audio, overlays: x.overlays });
+      return { id: x.id, name: String(x.name ?? 'Compound clip'), clips: inner.clips, connected: inner.connected, tracks: inner.tracks, audio: inner.audio, overlays: inner.overlays };
+    }) } : { sequences: undefined }),
+    multicams: Array.isArray(p.multicams) && p.multicams.length ? p.multicams.filter((g) => g && typeof g.id === 'string' && Array.isArray(g.angles)).map((g) => ({ id: g.id, name: String(g.name ?? 'Multicam'), angles: g.angles.filter((a) => a && typeof a.path === 'string').slice(0, 4).map((a) => ({ path: a.path, offsetUs: Number(a.offsetUs) || 0, durationUs: Number(a.durationUs) || 0 })) })) : undefined,
     // Clips on a track that no longer exists are dropped.
     connected: (p.connected ?? [])
       .filter((c) => c && (p.tracks ?? []).slice(0, MAX_TRACKS).some((t) => t?.id === c.trackId))

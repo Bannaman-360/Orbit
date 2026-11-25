@@ -18,7 +18,7 @@ what to try, then wait for the go-ahead.
 | Milestone | Items | Status |
 |---|---|---|
 | 1. Editing core | 3, 10, 15, 16 + project format 2 | **Done**: released in 0.1.0-beta.5 |
-| 2. Layers | 1, 2, 4, 14 | **In progress**: tracks, N-layer pipeline, Transform and layouts released in beta 7; masks and tracked blur done on `features/m2-masks`; compound clips and multicam next |
+| 2. Layers | 1, 2, 4, 14 | **Done** (0.1.0-beta.8 prepared): tracks, N-layer pipeline, Transform and layouts (beta 7); masks and tracked blur, compound clips, multicam |
 | 3. Motion and sound | 5, 6, 7, 9 | Planned |
 | 4. Colour and finishing | 11, 12, 13, 17 | Planned |
 | 5. AI tools | 8 | Planned |
@@ -91,6 +91,12 @@ pass; "Follow subject" uses the clip's track (`steer: false` = masks only, view 
   - Each mask is drawn per frame as a small mask texture and sampled in the finish pass.
   - "Follow subject" uses the existing tracker. Masks are keyframeable.
   - The same masks become colour power windows in milestone 4.
+Compound clips (`packages/project/src/compound.ts`): a clip's `mediaPath` is `seq:<id>` and its in/out are
+times in `tl.sequences[…]`; `flattenTimeline` expands them for the player, sound, overlays and export (the
+edit view keeps the compound block). Opening one swaps the edited timeline (`nestRef` in `App.tsx`);
+`storeSequence` puts it back. Multicam (`multicam.ts`, `multicamSync.ts`, `Multicam.tsx`): `tl.multicams`
+holds each angle's start on a shared clock; cuts are main-row clips tagged `multicam: {group, angle}`.
+Self-test mode `beta8` covers these and the beta 8 fixes.
 - **Compound clips and nested timelines:**
   - A clip can point to a sequence instead of a file. It's evaluated by flattening into layers, not
     by rendering to a texture.

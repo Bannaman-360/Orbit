@@ -261,6 +261,15 @@ export async function airtimeCheck(api: EditorApi) {
   ok('and holds the jump after landing', Math.abs(r(mid.endUs + 0.5e6).num - mid.airMs / 1000) < 0.006, r(mid.endUs + 0.5e6).value);
   const later = j[j.length - 1]!.endUs + 3.5e6;
   if (later < m.durationUs) ok('then shows the best so far', Math.abs(r(later).num - Math.max(...j.map((x) => x.airMs)) / 1000) < 0.006 && /BEST/.test(r(later).label), [r(later).value, r(later).label]);
+  // A trimmed clip still counts the jumps before its in point (the whole recording counts).
+  {
+    // (Just after a landing, so no jump is under way; the running total doesn't hold the last jump.)
+    const cut = { ...tl, clips: tl.clips.map((c) => ({ ...c, inUs: mid.endUs + 20_000 })) };
+    const tot = { ...gauge, airShow: 'running' as const };
+    const before = j.filter((x) => x.endUs <= mid.endUs + 120_000).reduce((a, x) => a + x.airMs / 1000, 0);
+    const v = gaugeReading(tot, cut, 100_000).num;
+    ok('a trimmed clip counts jumps from the whole recording', Math.abs(v - before) < 0.006 && before > 0, [v, before]);
+  }
   // The jump distance gauge (on GS010004, which has GPS): grows through a jump, then holds it.
   const f4 = (await ace.listFixtures()).find((x) => /GS010004/.test(x));
   if (f4) {

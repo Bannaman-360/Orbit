@@ -5,7 +5,8 @@
 import { AudioBufferSource, canEncodeAudio, canEncodeVideo, Mp4OutputFormat, Output, QUALITY_HIGH, QUALITY_MEDIUM, QUALITY_VERY_HIGH, StreamTarget, VideoSample, VideoSampleSource, type StreamTargetChunk } from 'mediabunny';
 import { TrackDecoder } from '@ace/engine';
 import { parseCube, ReframeRenderer, sharedDevice } from '@ace/media360';
-import { framingAspect, overlayState, stackAt, timelineDuration, type Look, type Timeline, type TimelineClip, type TransitionLook } from '@ace/project';
+import { normalizeLoudness } from './loudness';
+import { framingAspect, overlayState, stackAt, timelineDuration, withOff, type Look, type Timeline, type TimelineClip, type TransitionLook } from '@ace/project';
 import { ace } from './api';
 import { mixTimeline } from './audioEngine';
 import { ordinaryGamma } from './color';
@@ -30,6 +31,12 @@ export interface ExportOptions {
   /** hevc10: 10-bit HEVC (Main10); prores: ProRes 422 HQ in a .mov (both through the bundled ffmpeg). */
   codec: 'avc' | 'hevc' | 'hevc10' | 'prores';
   quality: Quality;
+  /** Export presets: an exact video bit rate (bits a second) instead of the quality's. */
+  bitrate?: number;
+  /** Export presets: bring the sound to this loudness (LUFS), peaks under −1 dB. */
+  loudness?: number;
+  /** Export presets: the output shape for this export only (the edit keeps its own). */
+  framing?: string;
 }
 
 export interface ExportProgress {
@@ -240,7 +247,9 @@ class FileValues {
   }
 }
 
-export async function exportTimeline(tl: Timeline, opts: ExportOptions, onProgress: (p: ExportProgress) => void, signal: AbortSignal): Promise<void> {
+export async function exportTimeline(tlIn: Timeline, opts: ExportOptions, onProgress: (p: ExportProgress) => void, signal: AbortSignal): Promise<void> {
+  // A preset's shape: the clips are reframed to fill it, titles and gauges keep their places.
+  const tl = opts.framing && opts.framing !== tlIn.framing ? { ...tlIn, framing: opts.framing } : tlIn;
   const { width, height } = outputSize(tl.framing, opts.resolution);
   const total = timelineDuration(tl);
   if (!tl.clips.length || total <= 0) throw new Error('The timeline is empty');
@@ -263,6 +272,11 @@ export async function exportTimeline(tl: Timeline, opts: ExportOptions, onProgre
 
   onProgress({ fraction: 0, stage: 'Mixing audio' });
   const mix = await mixTimeline(tl, total);
+  if (mix && opts.loudness !== undefined) {
+    onProgress({ fraction: 0, stage: 'Setting loudness' });
+    const ch = Array.from({ length: mix.numberOfChannels }, (_, i) => mix.getChannelData(i));
+    normalizeLoudness(ch, mix.sampleRate, opts.loudness, -1);
+  }
 
   if (deepKind) return exportDeep(tl, opts, deepKind, layout!, comp, mix, width, height, total, onProgress, signal);
 
@@ -271,7 +285,7 @@ export async function exportTimeline(tl: Timeline, opts: ExportOptions, onProgre
     write: (chunk) => ace.writeAt(opts.path, chunk.position, chunk.data),
   });
   const output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target: new StreamTarget(writable) });
-  const bitrate = opts.quality === 'max' ? QUALITY_VERY_HIGH : opts.quality === 'high' ? QUALITY_HIGH : QUALITY_MEDIUM;
+  const bitrate = opts.bitrate ?? (opts.quality === 'max' ? QUALITY_VERY_HIGH : opts.quality === 'high' ? QUALITY_HIGH : QUALITY_MEDIUM);
   // (Fed with the pictures' values and their label, so players that ignore colour labels show them right too.)
   const video = new VideoSampleSource({ codec, bitrate, keyFrameInterval: 2 });
   const inFlight: (() => Promise<VideoSample>)[] = [];
@@ -312,7 +326,7 @@ export async function exportTimeline(tl: Timeline, opts: ExportOptions, onProgre
 async function exportDeep(tl: Timeline, opts: ExportOptions, kind: 'hevc10' | 'prores', layout: YuvLayout, comp: Compositor, mix: AudioBuffer | null, width: number, height: number, total: number, onProgress: (p: ExportProgress) => void, signal: AbortSignal) {
   // About as many bits per picture element as the 8-bit HEVC export, a little more for 10 bits.
   const bpp = opts.quality === 'max' ? 0.2 : opts.quality === 'high' ? 0.13 : 0.08;
-  const id = await ace.encoderStart({ path: opts.path, width, height, fps: opts.fps, kind, layout, bitrate: width * height * opts.fps * bpp, audio: mix ? wavOf(mix) : undefined });
+  const id = await ace.encoderStart({ path: opts.path, width, height, fps: opts.fps, kind, layout, bitrate: opts.bitrate ?? width * height * opts.fps * bpp, audio: mix ? wavOf(mix) : undefined });
   const inFlight: Promise<Uint8Array>[] = [];
   const handOver = async () => { const px = await inFlight.shift()!; await ace.encoderFrame(id, px); };
   try {
@@ -386,7 +400,7 @@ async function renderFrames(tl: Timeline, opts: ExportOptions, comp: Compositor,
       slot.pushedAny = true;
       slot.next++;
     }
-    return look ?? clipLookAt(clip, slot.times[Math.max(0, slot.next - 1)] ?? clip.inUs);
+    return look ?? withOff(clipLookAt(clip, slot.times[Math.max(0, slot.next - 1)] ?? clip.inUs), clip.off);
   };
 
   try {

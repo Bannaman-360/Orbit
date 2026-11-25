@@ -42,6 +42,7 @@ const winFiles = (v: string, exe = Buffer.from(`installer ${v}`)) => ({ [`Action
 beforeAll(async () => {
   root = await mkdtemp(path.join(os.tmpdir(), 'ace-updater-'));
   server = http.createServer(async (req, res) => {
+    if (req.url!.startsWith('/hang/')) return; // never answers
     try { res.end(await readFile(path.join(root, decodeURIComponent(req.url!.split('?')[0]!)))); } catch { res.statusCode = 404; res.end(); }
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -74,6 +75,16 @@ describe('updates', () => {
     expect(await u.check()).toEqual({ state: 'ready', version: '0.1.0-beta.4' });
     expect((await readdir(path.join(root, 'leftover'))).sort()).toEqual(['updates']);
     expect(await readdir(dir)).not.toContain('new');
+  });
+  it('gives up with a clear message when GitHub never answers, and checks again afresh', async () => {
+    const seen: State[] = [];
+    const u = setupUpdater({ enabled: false, send: (s) => seen.push(s), busy: () => null, test: { feed: `${base}/hang`, current: '0.1.0-beta.3', platform: 'win32', arch: 'arm64', dir: path.join(root, 'dl-hang'), limits: { request: 300, check: 600 } } });
+    const s = await u.check();
+    expect(s.state).toBe('error');
+    expect((s as { message: string }).message).toMatch(/didn’t answer|took too long/);
+    expect(u.state().state).toBe('error');
+    // A second check isn't stuck behind the first.
+    expect((await u.check()).state).toBe('error');
   });
   it('says it is up to date when nothing newer is published', async () => {
     await publish([await release('v0.1.0-beta.3', winFiles('0.1.0-beta.3')), await release('v0.1.0-beta.9', winFiles('0.1.0-beta.9'), { draft: true })]);

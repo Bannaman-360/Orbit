@@ -1,6 +1,7 @@
 // Keyframed looks with per-segment easing.
 
 import { cleanCurve, easeInOut, evalCurve, type Bezier, type Curve, type Easing, type KeyGroup } from './curves';
+import { mixWheels } from './grading';
 import { IDENTITY_XF, NO_EFFECTS, type Effects, type Grade, type Look, type Transform } from './look';
 
 export type { Easing } from './curves';
@@ -70,8 +71,10 @@ export function mixLook(a: Look, b: Look, fr: number | GroupFractions): Look {
   const fx = { ...NO_EFFECTS };
   // (Effects can't go below nothing, even when a curve overshoots.)
   for (const k of Object.keys(fx) as (keyof Effects)[]) fx[k] = Math.max(0, lerp(a.fx?.[k] ?? 0, b.fx?.[k] ?? 0, f.fx));
+  const wheels = mixWheels(a.wheels, b.wheels, f.grade);
   return {
     ...(a.xf || b.xf ? { xf: mixTransform(a.xf ?? IDENTITY_XF, b.xf ?? IDENTITY_XF, f.xf) } : {}),
+    ...(wheels ? { wheels } : {}),
     yaw: lerpAngle(a.yaw, b.yaw, f.view),
     pitch: lerp(a.pitch, b.pitch, f.view),
     roll: lerp(a.roll, b.roll, f.view),

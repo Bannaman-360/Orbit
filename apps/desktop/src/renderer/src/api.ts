@@ -68,7 +68,7 @@ export interface AceApi {
   /** Menu bar choices. */
   onCommand(f: (cmd: string) => void): void;
   onWindowFullscreen(f: (on: boolean) => void): void;
-  saveDialog(kind: 'project' | 'video' | 'mov' | 'image' | 'theme', defaultName: string): Promise<string | null>;
+  saveDialog(kind: 'project' | 'video' | 'mov' | 'image' | 'theme' | 'lut', defaultName: string): Promise<string | null>;
   /** Choose a folder for batch exports (files may then be made in it). */
   exportFolderDialog(): Promise<string | null>;
   /** A free file name in that folder, which may then be written. */
@@ -97,6 +97,8 @@ export interface AceApi {
   onImport(f: (e: ImportEvent) => void): void;
   selftestFiles(what: string, a?: string, b?: string | number | Uint8Array): Promise<unknown>;
   proxyPath(src: string, level: number, tag?: string): Promise<{ path: string; exists: boolean }>;
+  /** Where a file's motion worked out from its picture is kept. */
+  motionPath(src: string): Promise<{ path: string; exists: boolean }>;
   proxyFinish(file: string): Promise<void>;
   proxyDiscard(file: string): Promise<void>;
   listFixtures(): Promise<string[]>;

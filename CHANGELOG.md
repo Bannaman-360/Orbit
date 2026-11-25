@@ -1,5 +1,36 @@
 # Changes
 
+## 0.1.0-beta.11
+
+Milestone 4: colour and finishing.
+
+**Grading** (Color panel)
+- Color wheels: Lift (shadows), Gamma (mid-tones), Gain (highlights) and Offset (everything). Drag a wheel's dot towards a colour to tint that part of the picture (Shift for fine steps, double-click to centre); the slider under each makes it brighter or darker. Wheels keyframe with the rest of the colour.
+- Curves: Luma, Red, Green and Blue, plus Hue vs sat, Hue vs hue and Luma vs sat. Click to add a point and drag it; double-click a point, or drag it away, to remove it. One press for a gentle S-curve.
+- Qualifier: changes one range of colours only, like making the sky bluer or the grass greener. Start from Sky, Greenery, Skin, Dirt or Water, set the hue, saturation and brightness it picks, and see what it picks in white with “Show what is picked”.
+- Power windows: a mask can now have its own colour (Effects ▸ Masks ▸ Color): exposure, contrast, saturation and temperature inside the shape, with soft edges, keyframes and following a tracked rider like any mask.
+- Film looks: nine looks of our own (Warm print, Teal and orange, Faded 70s, Slide film, Bleach bypass, Cross process, Night city, Silver mono, Sepia) with a strength slider, over your grade and LUT. “Save as .cube…” takes a look to other apps.
+- Every new tool has an on/off switch to compare with and without it.
+
+**Scopes** (View ▸ Scopes, or the Color & effects layout)
+- Waveform, RGB parade, vectorscope (with colour targets and the skin-tone line) and histogram of the clip you are grading, worked out on the graphics card as you play and grade.
+
+**Noise reduction** (Color panel)
+- In each frame: smooths grain and colour speckle and keeps edges sharp.
+- Across frames: averages each pixel with the frames before it where nothing moved, the cleanest result for night and indoor shots. It shows while playing and in exports.
+
+**Stabilizing clips without motion data**
+- Phones, action cameras without a gyro and edited files can now be stabilized: Stabilize ▸ “Stabilize from the picture” works out the shake from the picture itself, once per file (it takes about as long as the clip), then Low, Medium, High, Custom and Crop work as for GoPro footage. The result is kept on this computer.
+
+**Effects**
+- New: Bloom and Halation (Film & light), and a Glitch & tape section with VHS, RGB split and Camera shake. New quick looks: VHS tape, Glitch, Film print, Handheld.
+
+**Transitions**
+- 17 more (40 in all): Split open, Corner, Fan, Blinds, Checkerboard, Diamond, Star; Cover from left, Cover up, Cover down, Uncover, Drop in, Whip up, Whip down; Zoom out, Shake and Glitch.
+- The transition picker shows each one as a small picture that plays when you point at it.
+
+Older versions open these projects without the new grading.
+
 ## 0.1.0-beta.10
 
 Milestone 3: motion and sound.

@@ -4,8 +4,10 @@
 // moves the whole shape. Masks keyframe on their own (media times, like the look's keyframes),
 // and can follow the subject the clip is tracking.
 
+import { cleanWindowGrade, type WindowGrade } from './grading';
+
 export type MaskShape = 'rect' | 'ellipse' | 'path';
-export type MaskEffect = 'blur' | 'pixelate' | 'hide';
+export type MaskEffect = 'blur' | 'pixelate' | 'hide' | 'grade';
 
 /** What can change over time. */
 export interface MaskPose {
@@ -39,6 +41,8 @@ export interface Mask extends MaskPose {
   effect: MaskEffect;
   /** Hide: the colour it is filled with. */
   color: string;
+  /** Color (a power window): the grade inside the shape. */
+  grade?: WindowGrade;
   /** Applies outside the shape instead. */
   invert: boolean;
   /** Moves with the subject the clip tracks (Subject tracking). */
@@ -51,7 +55,7 @@ export interface Mask extends MaskPose {
 /** A clip can have this many masks (they share one small texture, one mask per channel). */
 export const MAX_MASKS = 4;
 
-export const MASK_EFFECTS: [MaskEffect, string][] = [['blur', 'Blur'], ['pixelate', 'Pixelate'], ['hide', 'Hide']];
+export const MASK_EFFECTS: [MaskEffect, string][] = [['blur', 'Blur'], ['pixelate', 'Pixelate'], ['hide', 'Hide'], ['grade', 'Color']];
 export const MASK_SHAPES: [MaskShape, string][] = [['rect', 'Rectangle'], ['ellipse', 'Ellipse'], ['path', 'Freehand']];
 
 let counter = 0;
@@ -127,6 +131,7 @@ export function fixMasks(raw: unknown): Mask[] | undefined {
       id: typeof m.id === 'string' ? m.id : base.id,
       effect: MASK_EFFECTS.some(([e]) => e === m.effect) ? m.effect! : 'blur',
       color: typeof m.color === 'string' ? m.color : base.color,
+      ...(m.effect === 'grade' || m.grade ? { grade: cleanWindowGrade(m.grade) } : {}),
       invert: !!m.invert, follow: !!m.follow, ...(m.off ? { off: true } : {}),
       ...(base.shape === 'path' ? { points: Array.isArray(m.points) && m.points.length >= 3 ? m.points.map(([a, b]) => [Number(a) || 0, Number(b) || 0] as [number, number]) : base.points } : {}),
       keys: (Array.isArray(m.keys) ? m.keys : []).filter((k) => k && Number.isFinite(k.t)).map((k) => ({ id: k.id || newId('q'), t: k.t, ...cleanPose({ ...pose, ...poseOf({ ...pose, ...k } as MaskPose) }) })),

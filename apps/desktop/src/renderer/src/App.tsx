@@ -21,6 +21,9 @@ import { onQueue, pendingCount } from './exportQueue';
 import { pauseFilmstrip } from './filmstrip';
 import { ImportWindow } from './ImportWindow';
 import { grabFrame, loadLut, MAX_LAYERS } from './exporter';
+import { gradeView, SCOPE_EVERY_MS } from './gradeView';
+import { ScopesPanel } from './Scopes';
+import { forgetPictureMotion, stabiliseFromPicture } from './flowStab';
 import { adoptReframe, canReframe, lensLookOf, clipLens, clipLookAt, flatDirection, flatShot, FOLLOW_ROOM, ownLookAt, roomFov, shareOf, shownFov, withoutEffects, presentLook, pushClipFrame, reframeSignature } from './frameRender';
 import { angleBetween, directionAt, trackSubject } from './tracker';
 import { InspectorPanel, SelectionPanel, type InspectorProps } from './Inspector';
@@ -371,7 +374,8 @@ export function App() {
       const l = layers[li]!;
       slot.style.visibility = 'visible';
       // (The dip sits between the main row and the tracks above.)
-      slot.style.zIndex = String(li < main ? li + 1 : li + 2);
+      // (Some transitions move the outgoing clip away over the incoming one.)
+      slot.style.zIndex = String(look?.aOnTop && l.role ? (l.role === 'out' ? main : main - 1) : li < main ? li + 1 : li + 2);
       const css = look && l.role
         ? layerCss(l.role === 'out' ? look.a : look.b, W, l.role === 'out' ? null : look.reveal)
         : { opacity: '1', transform: '', filter: '', clipPath: '' };
@@ -555,7 +559,12 @@ export function App() {
             const mark = lensUi();
             r.highlight = mark.highlight && !raw && hasTwoLenses(l.media) ? mark.lens : null;
             applyMasks(r, l.clip, l.media, look, ts);
-            presentLook(r, compareRef.current ? withoutEffects(look) : withOff(look, l.clip.off), { raw: raw && l.media.is360, time: ts });
+            r.showMatte = gradeView.matteClip === l.clip.id && !compareRef.current;
+            const sc = gradeView.scopes;
+            const scoped = !!sc && performance.now() - gradeView.last > SCOPE_EVERY_MS && (gradeView.clipId === l.clip.id || (li === 0 && !res.layers!.some((x) => x.clip.id === gradeView.clipId)));
+            if (scoped) r.tap = sc.analyse;
+            presentLook(r, compareRef.current ? withoutEffects(look) : withOff(look, l.clip.off), { raw: raw && l.media.is360, time: ts, clip: compareRef.current ? null : l.clip });
+            if (scoped) { gradeView.last = performance.now(); sc.drawn(); }
           });
           styleLayersRef.current(res, slots, xfs);
           frames++;
@@ -648,6 +657,32 @@ export function App() {
   /** Keeps a track clip selected while one of its keyframes, speed points or ranges is picked. */
   const keepLayer = (clipId: string) => setSel(tlRef.current.connected.some((c) => c.id === clipId) ? { kind: 'layer', id: clipId } : null);
   const editClip = (patch: Partial<TimelineClip>, key: string) => clip && commit(updateClip(tlRef.current, clip.id, patch), `${key}:${clip.id}`);
+
+  // Stabilising from the picture (clips without motion data): one file at a time.
+  const [motionJob, setMotionJob] = useState<{ clipId: string; progress: number; abort: AbortController } | null>(null);
+  const [motionNote, setMotionNote] = useState<{ clipId: string; text: string } | null>(null);
+  const pictureMotion = async () => {
+    const c0 = clip, m = c0 && mediaNow(c0.mediaPath);
+    if (!c0 || !m || motionJob) return;
+    const abort = new AbortController();
+    setMotionNote(null);
+    setMotionJob({ clipId: c0.id, progress: 0, abort });
+    try {
+      const r = await stabiliseFromPicture(m, c0.inUs, c0.outUs, (f) => setMotionJob((j) => (j ? { ...j, progress: f } : j)), abort.signal);
+      // The clip as it is now (it may have changed meanwhile): reframed through its lens, smoothed.
+      const t = tlRef.current, fresh = t.clips.find((x) => x.id === c0.id) ?? t.connected.find((x) => x.id === c0.id);
+      if (fresh) {
+        const c = adoptReframe(fresh);
+        commit(updateClip(t, fresh.id, { lensMode: c.lensMode, look: c.look, keyframes: c.keyframes, stabilize: { ...fresh.stabilize, smoothing: fresh.stabilize.smoothing === 'off' ? 'medium' : fresh.stabilize.smoothing } }), `picture-motion:${fresh.id}`);
+      }
+      const share = r.frames ? r.lost / r.frames : 0;
+      setMotionNote({ clipId: c0.id, text: share > 0.15 ? `Done, but ${Math.round(share * 100)}% of the frames had too little detail to follow (dark, blurred or blank), so it is steadied less there.` : 'Done: the shake was worked out from the picture.' });
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') setMotionNote({ clipId: c0.id, text: `It couldn’t be worked out: ${(e as Error).message}` });
+    } finally {
+      setMotionJob(null);
+    }
+  };
 
   /** The clip being edited at the playhead: a selected track clip, or else the main-row clip there. */
   const editingAt = (t: Timeline = tlRef.current, T = player.time): Located | null => {
@@ -1723,6 +1758,7 @@ export function App() {
     prevMarker: () => { const m = [...tlRef.current.markers].reverse().find((x) => x.t < player.time - 1000); if (m) seek(m.t); },
     nextMarker: () => { const m = tlRef.current.markers.find((x) => x.t > player.time + 1000); if (m) seek(m.t); },
     markersPanel: () => togglePanel(['markers']),
+    scopesPanel: () => togglePanel(['scopes']),
   };
   const runRef = useRef(run);
   runRef.current = run;
@@ -2154,6 +2190,16 @@ export function App() {
     onPrevKey: () => jumpKey(-1),
     onNextKey: () => jumpKey(1),
     onClip: editClip,
+    motionJob: motionJob && clip && motionJob.clipId === clip.id ? { progress: motionJob.progress } : null,
+    motionBusy: !!motionJob,
+    motionNote: motionNote && clip && motionNote.clipId === clip.id ? motionNote.text : null,
+    onPictureMotion: () => void pictureMotion(),
+    onCancelPictureMotion: () => motionJob?.abort.abort(),
+    onForgetPictureMotion: () => {
+      const m = clip && mediaNow(clip.mediaPath);
+      if (!m) return;
+      void forgetPictureMotion(m).then(() => { setMotionNote(null); editClip({ stabilize: { ...clip!.stabilize, smoothing: 'off' } }, 'picture-motion-off'); });
+    },
     lensBusy,
     onMatchLenses: (which) => void matchLensesNow(which),
     onLensesToAll: () => {
@@ -2398,6 +2444,7 @@ export function App() {
     timeline: { title: 'Timeline', icon: 'timeline', bare: true, render: timelinePanel },
     ...Object.fromEntries((['reframe', 'stabilize', 'color', 'effects', 'clip'] as const).map((id) => [id, { title: PANELS[id], icon: id, render: () => <InspectorPanel {...inspector} panel={id} /> }])),
     selection: { title: PANELS.selection, icon: 'selection', idle: !sel || sel.kind === 'layer', render: () => <SelectionPanel {...inspector} /> },
+    scopes: { title: PANELS.scopes, icon: 'scopes', render: () => <ScopesPanel clipId={clip?.id ?? null} /> },
     markers: { title: PANELS.markers, icon: 'marker', render: () => <MarkersPanel timeline={tl} time={time} onSeek={seek} onAdd={run.marker!} onChange={(id, patch) => commit(updateMarker(tlRef.current, id, patch), `marker:${id}`)} onRemove={(id) => commit(removeMarker(tlRef.current, id))} /> },
     ...Object.fromEntries(customPanels.map((c) => [c.id, { title: c.title, icon: 'custom', render: () => <InspectorPanel {...inspector} panel={c.id} /> }])),
   };

@@ -23,6 +23,7 @@ import { equirectLayout, goproMaxLayout, lensFor, type EacLayout, type SourceLen
 import { alignToFrames, cameraInfo, parseKlv, joinOrientation, smoothGravity, type CameraInfo, Stabilizer, TelemetrySeries, type OrientationData } from '@ace/telemetry';
 import { ace, baseName, ipcReader } from './api';
 import { measureBrowser, mediaColor, type MediaColor } from './color';
+import { loadPictureMotion } from './flowStab';
 
 export interface Media {
   path: string;
@@ -221,6 +222,8 @@ async function loadMedia(path: string): Promise<Media> {
     parts: files.map((f, i) => ({ path: f.path, startUs: starts[i]! })),
     partsNote,
   };
+  // No motion data of its own: perhaps it was worked out from the picture before.
+  await loadPictureMotion(m);
   // (What this computer does to video is measured once, before the first clip is shown.)
   await measureBrowser();
   m.thumbnail = await makeThumbnail(m, (f) => { m.color = mediaColor(f, t0); }).catch(() => undefined);

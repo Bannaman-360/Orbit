@@ -9,6 +9,7 @@ import {
   fisheyeForLook, cleanXf, isIdentityXf, addMaskKey, MASK_EFFECTS, MAX_MASKS, maskPoseAt, newMask, removeMaskKey, setMaskPose, type Mask, type MaskPose, type MaskShape, LAYOUT_TEMPLATES, xfOf, type Transform,
   type AudioClip, type ClipTrack, type Easing, type Effects, type GaugeDesign, type Grade, type InputChoice, type Look, type Overlay, type Smoothing, type Timeline, type TimelineClip, type Transition,
   type OffKey, isCompound, CURVES, setEasing, titleTemplate, applyTitleTemplate, TEXT_PATHS, isNeutralSound,
+  NEUTRAL_WINDOW, type WindowGrade,
 } from '@ace/project';
 import { airtimeStats, CUSTOM_SIGMA_RANGE, DEFAULT_AIRTIME, SMOOTHING_SIGMA_S } from '@ace/telemetry';
 import { baseName } from './api';
@@ -18,6 +19,9 @@ import type { Media } from './media';
 import { FONT_STACK } from './overlayRender';
 import { GaugeLookPicker } from './GaugeLooks';
 import { LensMatchSection } from './LensMatch';
+import { TransitionTile } from './TransitionTiles';
+import { analysed, canAnalyse, motionFromPicture } from './flowStab';
+import { CurvesSection, FilmSection, NoiseSection, QualifierSection, WheelsSection, type GradingProps } from './Grading';
 import { fmtSpeed } from './SpeedLine';
 import { CurveEditor } from './CurveEditor';
 import { SoundTools } from './SoundTools';
@@ -110,6 +114,13 @@ export interface InspectorProps {
   onTrackRange: (from: number, to: number, edge: 'from' | 'to') => void;
   onClearTrack: () => void;
   onTrackPatch: (patch: Partial<ClipTrack>, key: string) => void;
+  /** Stabilising from the picture (clips without motion data). */
+  motionJob: { progress: number } | null;
+  motionBusy: boolean;
+  motionNote: string | null;
+  onPictureMotion: () => void;
+  onCancelPictureMotion: () => void;
+  onForgetPictureMotion: () => void;
   onSplit: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
@@ -142,6 +153,10 @@ const FX_PRESETS: [string, Partial<Effects>][] = [
   ['Retro film', { grain: 0.5, leak: 0.45, glow: 0.2 }],
   ['Cinematic', { bars: 1, grain: 0.2, glow: 0.15 }],
   ['Music video', { chroma: 0.7, glow: 0.35, grain: 0.3 }],
+  ['VHS tape', { vhs: 0.8, grain: 0.15 }],
+  ['Glitch', { rgbSplit: 0.7, shake: 0.35, chroma: 0.3 }],
+  ['Film print', { halation: 0.6, bloom: 0.3, grain: 0.35 }],
+  ['Handheld', { shake: 0.45 }],
 ];
 // Typing units: what the number you type means for each kind of slider.
 const PCT: Units = { to: (v) => v * 100, from: (n) => n / 100, digits: 0 };
@@ -296,12 +311,12 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
   };
   const noZoom = !!tr && !(tr.autoZoom ?? 0) && 'This only matters when the view zooms with the subject. Turn up Auto zoom first.';
   const stitched = !!media?.layout?.equirect;
-  const noMotion = !media?.stabilizer.hasOrientation ? stitched ? 'This 360 video was stitched before you downloaded it. GoPro normally builds its stabilization into these, and the file has no motion data to change it with.' : 'This clip has no motion data from the camera, so it can’t be stabilized.' : false;
+  const noMotion = !media?.stabilizer.hasOrientation ? stitched ? 'This 360 video was stitched before you downloaded it. GoPro normally builds its stabilization into these, and the file has no motion data to change it with.' : flat ? 'This clip has no motion data from the camera: choose “Stabilize from the picture” first.' : 'This clip has no motion data from the camera, so it can’t be stabilized.' : false;
   const stabOn = clip.stabilize.smoothing !== 'off' && !noMotion;
   const levelOn = clip.stabilize.horizon && !!media?.stabilizer.hasGravity;
   const cropLock: string | false = !stabOn && !levelOn && (noMotion || 'Cropping hides the edges that stabilization and leveling uncover. Turn Stabilization or Level horizon on first.');
   const steadyLock: string | false = cropLock || noMotion || (!stabOn && 'This only matters while the picture is stabilized. Turn Stabilization on first.');
-  const rollLock: string | false = steadyLock || (!!media && shutterDoneInCamera(media) && 'This camera already corrects it while recording, so fixing it again would add wobble.') || (!media?.camera.readoutMs && 'The file doesn’t say how fast the sensor is read, so the wobble can’t be worked out.') || (media!.turns !== 0 && 'This isn’t available yet for clips recorded with the camera turned.');
+  const rollLock: string | false = steadyLock || (!!media && shutterDoneInCamera(media) && 'This camera already corrects it while recording, so fixing it again would add wobble.') || (!media?.camera.readoutMs && 'The file doesn’t say how fast the sensor is read, so the wobble can’t be worked out.') || (media!.turns !== 0 && 'This isn’t available yet for clips recorded with the camera turned.') || (!!media && motionFromPicture(media) && 'This needs the camera’s own motion data, which this clip doesn’t have.');
   /** Changes stabilisation (a regular clip becomes reframable first, which doesn't change how it looks). */
   const setStab = (patch: Partial<typeof clip.stabilize>, k: string) => {
     const c = adoptReframe(clip);
@@ -352,6 +367,7 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
         p.onClip({ off: off.length ? off : undefined }, `off-${key}`);
       },
     });
+    const grading: GradingProps = { clip, look, keyed, onLook: p.onLook, onClip: p.onClip, sw };
     const fxSlider = (k: keyof Effects, label: string, hint: string) => (
       <Slider label={label} value={fx[k]} min={0} max={1} reset={0} keyed={keyed} units={PCT} format={pct} hint={hint} toggle={sw(`fx.${k}`)} onChange={set(k)} />
     );
@@ -459,6 +475,27 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
     ),
     'Stabilization': (
         <Section title="Stabilization" defaultOpen badge={off ? undefined : st.smoothing[0]!.toUpperCase() + st.smoothing.slice(1)}>
+          {flat && media && canAnalyse(media) && (
+            <div className="picture-motion">
+              {p.motionJob ? (
+                <>
+                  <p className="hint">Working out the shake from the picture… {Math.round(p.motionJob.progress * 100)}%</p>
+                  <div className="flow-progress"><span style={{ width: `${Math.round(p.motionJob.progress * 100)}%` }} /></div>
+                  <div className="row-buttons"><button onClick={p.onCancelPictureMotion}>Cancel</button></div>
+                </>
+              ) : motionFromPicture(media) && analysed(media, clip.inUs, clip.outUs) ? (
+                <>
+                  <p className="hint">{p.motionNote ?? 'The shake was worked out from the picture (the camera recorded no motion data).'}</p>
+                  <div className="row-buttons"><button className="link" title="Back to no stabilization for this file" onClick={p.onForgetPictureMotion}>Forget it</button></div>
+                </>
+              ) : (
+                <>
+                  <p className="hint">{p.motionNote ?? 'This clip has no motion data from the camera. The shake can be worked out from the picture instead: it takes about as long as playing the clip, once.'}</p>
+                  <div className="row-buttons"><button className="primary" disabled={p.motionBusy} onClick={p.onPictureMotion}>{motionFromPicture(media) ? 'Work out this part too' : 'Stabilize from the picture'}</button></div>
+                </>
+              )}
+            </div>
+          )}
           <Seg<Smoothing>
             value={st.smoothing}
             locked={noMotion}
@@ -601,13 +638,27 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
         </Section>
     ),
     'Film & light': (
-        <Section title="Film & light" badge={['glow' as const, 'leak' as const, 'grain' as const, 'bars' as const].some((k) => look.fx[k] > 0) ? 'On' : undefined}>
+        <Section title="Film & light" badge={['glow' as const, 'leak' as const, 'grain' as const, 'bars' as const, 'bloom' as const, 'halation' as const].some((k) => look.fx[k] > 0) ? 'On' : undefined}>
           {fxSlider('glow', 'Glow', 'Soft light blooming out of bright areas — sun, sky, reflections.')}
+          {fxSlider('bloom', 'Bloom', 'Wide, soft light spreading from the brightest parts of the picture.')}
+          {fxSlider('halation', 'Halation', 'A red-orange fringe round bright edges, like light scattering inside film.')}
           {fxSlider('leak', 'Light leak', 'Warm light drifting in from the edges, like old film.')}
           {fxSlider('grain', 'Film grain', 'Moving film grain, strongest in the mid-tones.')}
           {fxSlider('bars', 'Cinema bars', 'Black bars top and bottom for a widescreen look.')}
         </Section>
     ),
+    'Glitch & tape': (
+        <Section title="Glitch & tape" badge={['vhs' as const, 'shake' as const, 'rgbSplit' as const].some((k) => look.fx[k] > 0) ? 'On' : undefined}>
+          {fxSlider('vhs', 'VHS', 'Old video tape: wobbling lines, smeared colour, scan lines and a rolling glitch.')}
+          {fxSlider('rgbSplit', 'RGB split', 'Red and blue pulled apart sideways.')}
+          {fxSlider('shake', 'Camera shake', 'Handheld shake added to the picture (zooms in a little so no edge shows).')}
+        </Section>
+    ),
+    'Color wheels': <WheelsSection {...grading} />,
+    'Color curves': <CurvesSection {...grading} />,
+    'Qualifier': <QualifierSection {...grading} />,
+    'Noise reduction': <NoiseSection {...grading} />,
+    'Film looks': <FilmSection {...grading} />,
     'Quick looks': (
         <Section title="Quick looks">
           <div className="chips">
@@ -767,7 +818,9 @@ function MasksSection({ p, clip }: { p: InspectorProps; clip: TimelineClip }) {
   };
   const pct = (v: number) => `${Math.round(v * 100)}%`;
   const full = masks.length >= MAX_MASKS;
-  const names: Record<string, string> = { blur: 'Blur', pixelate: 'Pixelate', hide: 'Hide' };
+  const names: Record<string, string> = { blur: 'Blur', pixelate: 'Pixelate', hide: 'Hide', grade: 'Color' };
+  const win = m?.grade ?? NEUTRAL_WINDOW;
+  const setWin = (patch: Partial<WindowGrade>, k: string) => m && change(m.id, (x) => ({ ...x, grade: { ...(x.grade ?? NEUTRAL_WINDOW), ...patch } }), `mask-win-${k}`);
   return (
     <Section title="Masks" badge={masks.length ? String(masks.length) : undefined}>
       <div className="row-buttons">
@@ -787,10 +840,19 @@ function MasksSection({ p, clip }: { p: InspectorProps; clip: TimelineClip }) {
           ))}
         </div>
       )}
-      {!masks.length && <p className="hint">Blur a face or a number plate, pixelate it or hide it. Add a shape, then drag it on the preview and scroll to resize it. Turn on “Follow subject” to keep it on a tracked rider.</p>}
+      {!masks.length && <p className="hint">Blur a face or a number plate, pixelate it, hide it, or give it its own color (a power window). Add a shape, then drag it on the preview and scroll to resize it. Turn on “Follow subject” to keep it on a tracked rider.</p>}
       {m && pose && (
         <>
-          <Seg value={m.effect} options={MASK_EFFECTS} onChange={(e) => change(m.id, (x) => ({ ...x, effect: e }), 'mask-effect')} />
+          <Seg value={m.effect} options={MASK_EFFECTS} onChange={(e) => change(m.id, (x) => ({ ...x, effect: e, ...(e === 'grade' && !x.grade ? { grade: { ...NEUTRAL_WINDOW, exposure: 0.5 }, amount: 1, feather: Math.max(x.feather, 0.06) } : {}) }), 'mask-effect')} />
+          {m.effect === 'grade' && (
+            <>
+              <p className="hint">A power window: its own color inside the shape, like brightening a face or darkening the sky.</p>
+              <Slider label="Exposure" value={win.exposure} min={-3} max={3} reset={0} units={EV} format={(v) => `${v > 0 ? '+' : ''}${v.toFixed(2)} EV`} onChange={(v) => setWin({ exposure: v }, 'exp')} />
+              <Slider label="Contrast" value={win.contrast} min={-1} max={1} reset={0} units={PCT} format={(v) => `${v > 0 ? '+' : ''}${Math.round(v * 100)}`} onChange={(v) => setWin({ contrast: v }, 'con')} />
+              <Slider label="Saturation" value={win.saturation} min={-1} max={1} reset={0} units={PCT} format={(v) => `${v > 0 ? '+' : ''}${Math.round(v * 100)}`} onChange={(v) => setWin({ saturation: v }, 'sat')} />
+              <Slider label="Temperature" value={win.temperature} min={-1} max={1} reset={0} units={PCT} format={(v) => `${v > 0 ? '+' : ''}${Math.round(v * 100)}`} onChange={(v) => setWin({ temperature: v }, 'temp')} />
+            </>
+          )}
           <Slider label={m.effect === 'hide' ? 'Opacity' : 'Strength'} value={pose.amount} min={0} max={1} reset={0.8} keyed={!!keyHere} units={PCT} format={pct} onChange={(v) => setPose({ amount: v }, 'amount')} />
           {m.effect === 'hide' && <label className="field">Colour <input type="color" value={m.color} onChange={(e) => change(m.id, (x) => ({ ...x, color: e.target.value }), 'mask-color')} /></label>}
           <Slider label="Width" value={pose.w} min={0.01} max={1.5} step={0.001} reset={0.25} keyed={!!keyHere} units={PCT} format={pct} onChange={(v) => setPose({ w: v }, 'w')} />
@@ -901,10 +963,8 @@ function TransitionPanel(p: InspectorProps & { clip: TimelineClip; transition: T
           sections={{
             ...Object.fromEntries(TRANSITION_GROUPS.map(([group, list]) => [group, (
           <Section title={group} defaultOpen={list.some(([k]) => k === t.kind)} badge={list.find(([k]) => k === t.kind)?.[1]}>
-            <div className="chips">
-              {list.map(([k, label]) => (
-                <button key={k} className={t.kind === k ? 'on' : ''} onClick={() => p.onTransition({ kind: k }, 'tr-kind')}>{label}</button>
-              ))}
+            <div className="tr-grid">
+              {list.map(([k, label]) => <TransitionTile key={k} kind={k} label={label} on={t.kind === k} onPick={() => p.onTransition({ kind: k }, 'tr-kind')} />)}
             </div>
           </Section>
             )])),

@@ -8,7 +8,7 @@ import { clipLens, flatDirection, worldToClipView } from './frameRender';
 import type { Media } from './media';
 import { directionAt } from './tracker';
 
-const KIND = { blur: 1, pixelate: 2, hide: 3 } as const;
+const KIND = { blur: 1, pixelate: 2, hide: 3, grade: 4 } as const;
 const wrap = (a: number) => ((((a + 180) % 360) + 360) % 360) - 180;
 
 /**
@@ -117,10 +117,12 @@ export function applyMasks(r: ReframeRenderer, clip: TimelineClip, media: Media 
   if (!places.length) { r.setMasks(null); return; }
   const key = `${width}|${aspect.toFixed(4)}|${places.map(({ mask, pose, centre }) => `${mask.id}:${mask.shape}:${mask.invert}:${mask.points?.join(';') ?? ''}:${Object.values(pose).map((v) => v.toFixed(4)).join(',')}:${centre.x.toFixed(4)},${centre.y.toFixed(4)}`).join('|')}`;
   const kinds = places.map((p) => KIND[p.mask.effect]), amounts = places.map((p) => p.pose.amount), colors = places.map((p) => hex(p.mask.color));
+  // Colour masks (power windows): the grade inside each.
+  const grades = places.map((p): [number, number, number, number] => { const g = p.mask.effect === 'grade' && p.mask.grade; return g ? [g.exposure, g.contrast, g.saturation, g.temperature] : [0, 0, 0, 0]; });
   const held = cache.get(r);
-  if (held && held.key === key) { r.setMasks({ ...held.set, kinds, amounts, colors }); return; }
+  if (held && held.key === key) { r.setMasks({ ...held.set, kinds, amounts, colors, grades }); return; }
   const cov = maskCoverage(places, aspect, width);
-  const set: MaskSet = { width: cov.w, height: cov.h, coverage: cov.data, kinds, amounts, colors, key };
+  const set: MaskSet = { width: cov.w, height: cov.h, coverage: cov.data, kinds, amounts, colors, grades, key };
   cache.set(r, { key, set });
   r.setMasks(set);
 }

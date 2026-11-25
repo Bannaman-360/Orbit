@@ -19,7 +19,7 @@ what to try, then wait for the go-ahead.
 |---|---|---|
 | 1. Editing core | 3, 10, 15, 16 + project format 2 | **Done**: released in 0.1.0-beta.5 |
 | 2. Layers | 1, 2, 4, 14 | **Done** (0.1.0-beta.8 prepared): tracks, N-layer pipeline, Transform and layouts (beta 7); masks and tracked blur, compound clips, multicam |
-| 3. Motion and sound | 5, 6, 7, 9 | Planned |
+| 3. Motion and sound | 5, 6, 7, 9 | **Done** (0.1.0-beta.10 prepared): curves, motion titles and text paths, sound tools and ducking, true-peak loudness, export queue, presets and batch |
 | 4. Colour and finishing | 11, 12, 13, 17 | Planned |
 | 5. AI tools | 8 | Planned |
 
@@ -108,6 +108,16 @@ Self-test mode `beta8` covers these and the beta 8 fixes.
     cut later.
 
 ## Milestone 3: Motion and sound (items 5, 6, 7, 9)
+Done (self-test mode `motion`). Curves: `packages/project/src/curves.ts` (named curves and Bézier
+handles; `Keyframe.bezier`, per-group `Keyframe.curves` for view / xf / grade / fx), `CurveEditor.tsx`.
+Titles: `TITLE_TEMPLATES` and `TextPath` in `overlays.ts` (`Overlay.title`, `subtitle`, `path`), drawn
+by `motionTitles.ts`; ride words filled by `fillTokens` in `overlayRender.ts`. Sound: `sound.ts`
+(`SoundFx` on clips and music; wind STFT reducer and ducking gate, pure and unit-tested), run by the
+`soundWorklet.ts` AudioWorklet and Web Audio filters/compressor in `audioEngine.ts` `soundChain`.
+Loudness: true peak by 4× oversampling in `loudness.ts`. Export: `exportQueue.ts` (jobs, pause via
+`ExportOptions.gate`), `QueuePanel.tsx` (queue and batch), user presets in `exportPresets.ts`.
+Not done: curves for mask keyframes and speed points (they keep their own easing); compound
+clips' own sound settings (the clips inside keep theirs).
 - **Curve editor:**
   - Bézier handles per keyframe segment, plus per-value overrides.
   - A Curves panel for any keyframed value.

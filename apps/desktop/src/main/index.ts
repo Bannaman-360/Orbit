@@ -209,6 +209,34 @@ ipcMain.handle('dialog:save', async (_e, kind: 'project' | 'video' | 'mov' | 'im
   return r.filePath;
 });
 
+/** Folders chosen for batch exports: new files may be made inside them. */
+const exportDirs = new Set<string>();
+ipcMain.handle('dialog:export-folder', async () => {
+  const r = await dialog.showOpenDialog(win!, { title: 'Choose a folder for the videos', properties: ['openDirectory', 'createDirectory'] });
+  if (r.canceled || !r.filePaths[0]) return null;
+  exportDirs.add(path.resolve(r.filePaths[0]));
+  return r.filePaths[0];
+});
+/** A free file name inside a chosen export folder ("Name.mp4", else "Name 2.mp4"…), which may then be written. */
+ipcMain.handle('export:path-in-folder', async (_e, dir: string, name: string, ext: 'mp4' | 'mov') => {
+  const d = path.resolve(dir);
+  if (!exportDirs.has(d) && !(SELFTEST && (d === SELFTEST_OUT || inside(d, SELFTEST_OUT)))) throw new Error('Choose the folder first');
+  const base = (path.basename(String(name)).replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').trim() || 'Video').slice(0, 120);
+  const e = ext === 'mov' ? 'mov' : 'mp4';
+  for (let i = 1; i < 10000; i++) {
+    const p = path.join(d, `${base}${i > 1 ? ` ${i}` : ''}.${e}`);
+    if (existsSync(p) || writable.has(p)) continue;
+    writable.add(p);
+    writable.add(`${p}.part`);
+    return p;
+  }
+  throw new Error('No free file name in that folder');
+});
+ipcMain.handle('file:reveal', async (_e, p: string) => {
+  if (!canWrite(p)) throw new Error('File access denied');
+  shell.showItemInFolder(p);
+});
+
 // --- File access ---------------------------------------------------------------
 
 ipcMain.handle('file:stat', async (_e, p: string) => {

@@ -1,5 +1,33 @@
 # Changes
 
+## 0.1.0-beta.10
+
+Milestone 3: motion and sound.
+
+**Curves**
+- A Curves section (Reframe) shows how the picture moves between two keyframes. Pick Ease in and out, Linear, Ease in, Ease out, Overshoot, Bounce or Hold, or drag the two handles for a curve of your own (Shift keeps a handle level).
+- Framing, Position and size, Colour and Effects can each move on a curve of their own (for example, colour holds while the framing glides).
+
+**Motion titles**
+- Toolbar ▸ Titles: 21 titles that move in and out by themselves, in your colours and font. Lower thirds, title cards, end cards (Thanks for watching, Credits roll, Fade out card) and location tags (Map pin, Coordinates, Date stamp, Trail sign). Point at one in the Inspector to see it move.
+- Titles fill in ride words: {gps}, {alt}, {date}, {time} and {speed} come from the camera's GPS and clock.
+- Text path (Inspector, for plain text): text runs along an arc, a wave, a circle, or a line you draw.
+
+**Sound tools** (Inspector ▸ Sound tools, for clips and music)
+- Wind reduction: turns down the low roar of wind across the microphones and keeps voices and engine sound.
+- Low cut, a three-band EQ (bass, middle, treble) and a compressor (Gentle, Voice, Punchy, Even out), with one-press settings for a windy ride, talking, engine sound and a clean-up.
+- Ducking: tick “This is talking” on clips where someone speaks, and set music to “Lower under talking”: the music goes down while they talk and comes back after.
+- What you hear while editing is what you export.
+
+**Export**
+- Sound level for every export (not only the one-press settings): −14 LUFS for YouTube and social media, −16, −23, or as mixed. Peaks are now held under −1 dB true peak (between samples, too), and peaky sound still reaches the level.
+- After an export, a meter shows its loudness and peak.
+- Export queue: “Add to queue…” exports in the background while you keep editing. Toolbar ▸ Queue shows each export with Pause, Resume, Cancel and reordering.
+- New one-press settings: YouTube 1080p and Archive (ProRes). Save your own settings under a name.
+- Media ▸ ••• ▸ Export several videos: each chosen video is exported on its own, with one set of settings, into one folder.
+
+Projects with curves, titles or sound settings open only in this version or later.
+
 ## 0.1.0-beta.9
 
 - Fixed the update check getting stuck on “Checking for updates” on Mac (seen since beta 6). Clearing away the previous update’s download never finished, because of how the app’s own files are stored, and every later check waited for it. It now finishes, and a clean-up that takes too long no longer holds up an update. Macs on beta 6, 7 or 8 need to install this version once by hand (download the .dmg); updates work by themselves after that.

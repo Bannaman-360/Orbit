@@ -1,4 +1,5 @@
 export * from './look';
+export * from './curves';
 export * from './keyframes';
 export * from './timeline';
 export * from './overlays';
@@ -10,3 +11,4 @@ export * from './layers';
 export * from './masks';
 export * from './compound';
 export * from './multicam';
+export * from './sound';

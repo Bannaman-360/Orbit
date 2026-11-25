@@ -1,6 +1,6 @@
 // One rendering step shared by preview, export and frame grabs, so they always match.
 
-import { DEFAULT_CROP, NO_EFFECTS, NEUTRAL_GRADE, withOff, applyTrack, fisheyeForLook, type OwnLens, blurFrames, lookAt, trackWeight, type Look, type ShareOf, type TimelineClip } from '@ace/project';
+import { DEFAULT_CROP, NO_EFFECTS, NEUTRAL_GRADE, withOff, applyTrack, fisheyeForLook, type OwnLens, blurFrames, lookAt, curveOf, trackWeight, type Look, type ShareOf, type TimelineClip } from '@ace/project';
 import { cropAt, DEFAULT_AXIS_MAP, planCrop, smoothUnder, type CropPlan, type CropRequest } from '@ace/telemetry';
 import type { ReframeRenderer, RenderMode } from '@ace/media360';
 import { inputFor } from './color';
@@ -236,7 +236,7 @@ let trackCount = 0;
 const trackId = (tr: object | undefined) => { if (!tr) return 0; let n = trackIds.get(tr); if (!n) trackIds.set(tr, (n = ++trackCount)); return n; };
 function planKey(clip: TimelineClip, media: Media, outAspect: number) {
   const st = clip.stabilize;
-  return [clip.id, media.path, clip.inUs, clip.outUs, outAspect.toFixed(2), clip.fit, clip.lensMode, clip.lensFix?.hfov ?? '', clip.lensFix?.bend ?? '', st.smoothing, st.strength ?? '', st.crop ?? 'auto', st.cropSpeed ?? '', st.maxCrop ?? '', st.cropAmount ?? '', rolling(media, clip), levels(media, clip), trackId(clip.track), viewKey(clip.look), clip.keyframes.map((k) => `${k.t}:${viewKey(k.look)}:${k.easing}`).join(';')].join('|');
+  return [clip.id, media.path, clip.inUs, clip.outUs, outAspect.toFixed(2), clip.fit, clip.lensMode, clip.lensFix?.hfov ?? '', clip.lensFix?.bend ?? '', st.smoothing, st.strength ?? '', st.crop ?? 'auto', st.cropSpeed ?? '', st.maxCrop ?? '', st.cropAmount ?? '', rolling(media, clip), levels(media, clip), trackId(clip.track), viewKey(clip.look), clip.keyframes.map((k) => `${k.t}:${viewKey(k.look)}:${JSON.stringify(curveOf(k, "view"))}`).join(';')].join('|');
 }
 /** How far ahead a followed view starts moving away from an edge (µs). */
 const STEER_US = 500_000;

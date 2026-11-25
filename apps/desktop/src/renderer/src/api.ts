@@ -69,6 +69,12 @@ export interface AceApi {
   onCommand(f: (cmd: string) => void): void;
   onWindowFullscreen(f: (on: boolean) => void): void;
   saveDialog(kind: 'project' | 'video' | 'mov' | 'image' | 'theme', defaultName: string): Promise<string | null>;
+  /** Choose a folder for batch exports (files may then be made in it). */
+  exportFolderDialog(): Promise<string | null>;
+  /** A free file name in that folder, which may then be written. */
+  pathInFolder(dir: string, name: string, ext: 'mp4' | 'mov'): Promise<string>;
+  /** Shows an exported file in Finder / Explorer. */
+  reveal(path: string): Promise<void>;
   stat(path: string): Promise<{ path: string; size: number }>;
   /** Files of the same chaptered recording, in order. */
   chapters(path: string): Promise<{ path: string; part: number }[]>;

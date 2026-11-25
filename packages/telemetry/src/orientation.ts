@@ -122,7 +122,7 @@ export function correctionAt(data: OrientationData | null, t: number, opts: Corr
 export type Smoothing = 'off' | 'low' | 'medium' | 'high' | 'locked' | 'custom';
 
 /** Gaussian smoothing window (σ, seconds) per level. */
-export const SMOOTHING_SIGMA_S: Record<Exclude<Smoothing, 'off' | 'locked' | 'custom'>, number> = { low: 0.1, medium: 0.3, high: 0.8 };
+export const SMOOTHING_SIGMA_S: Record<Exclude<Smoothing, 'off' | 'locked' | 'custom'>, number> = { low: 0.05, medium: 0.1, high: 0.3 };
 
 /** Range of the custom smoothing window (σ, seconds). */
 export const CUSTOM_SIGMA_RANGE = { min: 0.02, max: 30 } as const;

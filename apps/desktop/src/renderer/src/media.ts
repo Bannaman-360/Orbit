@@ -155,9 +155,11 @@ async function loadMedia(path: string): Promise<Media> {
   const size = reader.size;
   const pair = find360Pair(info);
   const tracks = pair ?? info.videoTracks.slice(0, 1);
-  // A stitched 360 video (from GoPro's cloud or other software): tagged, or GoPro's 360 name and shape.
+  // A stitched 360 video (from GoPro's player or other software) says so in its 360 tags. A file's
+  // name and shape alone don't make it 360: a regular video exported from a 360 one (reframed)
+  // keeps GoPro's 360 name and can be 2:1, and must be treated as an ordinary video.
   const one = tracks[0];
-  const stitched = !pair && !!one && (await isEquirect(files[0]!.reader).catch(() => false) || (one.width === 2 * one.height && /^GS\w{2}\d{4}/i.test(baseName(path))));
+  const stitched = !pair && !!one && await isEquirect(files[0]!.reader).catch(() => false);
   if (!tracks.length) throw new Error(`${baseName(path)}: no video track`);
   const support = await Promise.all(tracks.map(probeDecoder));
   const bad = support.find((s) => !s.supported);
@@ -274,7 +276,7 @@ export async function fileThumbnail(path: string): Promise<string> {
     const info = await openMedia(reader);
     const pair = find360Pair(info), tracks = pair ?? info.videoTracks.slice(0, 1);
     const t0 = tracks[0]!;
-    const stitched = !pair && t0.width === 2 * t0.height && /^GS\w{2}\d{4}/i.test(baseName(path));
+    const stitched = !pair && await isEquirect(reader).catch(() => false);
     return await makeThumbnail({ reader, tracks, turns: pair ? 0 : t0.turns, layout: pair ? goproMaxLayout(t0.width, t0.height) : stitched ? equirectLayout(t0.width, t0.height) : null });
   } finally {
     await ace.release(path);

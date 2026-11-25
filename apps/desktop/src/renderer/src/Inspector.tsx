@@ -1080,6 +1080,10 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
                 </label>
               )}
               {(o.kind === 'airtime' || o.kind === 'jumpdist') && <Seg value={o.airShow ?? 'best'} options={[['best', o.kind === 'jumpdist' ? 'Longest' : 'Best'], ['last', 'Last'], ['total', 'Total'], ['running', 'Running total']]} onChange={(v) => p.onOverlay({ airShow: v }, 'ov-air')} />}
+              {(o.kind === 'distance' || o.kind === 'airtime' || o.kind === 'jumpdist' || o.kind === 'timer') && <>
+                <label className="check" title="Off: the count starts again at every cut in the video under the gauge"><input type="checkbox" checked={!!o.keepCounting} onChange={(e) => p.onOverlay({ keepCounting: e.target.checked || undefined }, 'ov-keepcount')} /> Keep counting across cuts</label>
+                <p className="hint">Counts from where the gauge starts on the timeline{o.keepCounting ? ', over the footage shown' : ' and starts again at each cut'}. Cut the gauge (S) to start it again anywhere.</p>
+              </>}
               {hasUnits && <Seg value={o.units} options={[['metric', 'Metric'], ['imperial', 'Imperial']]} onChange={(v) => p.onOverlay({ units: v }, 'ov-units')} />}
               <div className="field-row">
                 {colour('Text', 'color')}
@@ -1101,6 +1105,7 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
               <p className="hint">
                 {o.kind === 'timer' ? 'Counts up from when this overlay starts.'
                   : o.kind === 'clock' ? 'Time of day from the camera’s clock.'
+                  : o.kind === 'sound' ? 'How loud the clip’s own sound is, in decibels. Camera microphones aren’t calibrated, so it’s an estimate: a quiet room reads about 40 dB, loud wind or an engine about 90–100 dB.'
                   : o.kind === 'jumpdist' ? 'How far each jump went: ground speed from the GPS × time in the air. Counts up during the jump and holds it for 3 s after landing; between jumps it shows the longest (or last, or total) so far. How jumps are found is set per clip, under Airtime.'
                   : o.kind === 'airtime' ? 'Counts up while in the air and holds each jump for 3 s after landing; between jumps it shows the best (or last, or total) so far; Running total shows only the total, adding up as you jump. How jumps are found is set per clip, under Airtime.'
                   : 'Shows data from the camera’s GPS / motion sensors for whichever clip is playing. Clips without the data show “--”.'}

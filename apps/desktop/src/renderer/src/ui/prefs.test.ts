@@ -89,3 +89,26 @@ describe('preferences', () => {
     expect(P.sanitizePrefs({ customPanels: [{ id: 'custom:1', title: 'Mine' }] }).customPanels).toEqual([{ id: 'custom:1', title: 'Mine' }]);
   });
 });
+
+describe('experience levels', () => {
+  it('each level is a valid setup, and switching records it', async () => {
+    const { LEVELS, sanitizePrefs, setLevel, getPrefs, isSpacer, PANELS } = await import('./prefs');
+    for (const l of LEVELS) {
+      const p = l.prefs();
+      const clean = sanitizePrefs({ layout: p.layout, bars: p.bars, hiddenSections: p.hiddenSections, level: l.id });
+      expect(clean.layout).toEqual(p.layout);
+      expect(clean.level).toBe(l.id);
+      for (const b of Object.values(p.bars)) {
+        expect(isSpacer(b.items[0]!)).toBe(false);
+        expect(b.items.some((x, i) => isSpacer(x) && isSpacer(b.items[i - 1] ?? ''))).toBe(false);
+      }
+      setLevel(l.id);
+      expect(getPrefs().level).toBe(l.id);
+      expect(getPrefs().hiddenSections).toEqual(p.hiddenSections);
+    }
+    // A beginner gets fewer tools than a pro.
+    const [b, , pro] = LEVELS.map((l) => l.prefs());
+    expect(b!.bars.timeline.items.length).toBeLessThan(pro!.bars.timeline.items.length);
+    expect(Object.keys(PANELS)).toContain('scopes');
+  });
+});

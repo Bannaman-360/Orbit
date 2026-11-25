@@ -14,6 +14,7 @@ import { framesAt } from './calib';
 import { getMedia } from './media';
 import { clipLookAt, cropReady, presentLook, pushClipFrame } from './frameRender';
 import { compositeLayers, drawOverlays, transitionLook, type CompLayer } from './overlayRender';
+import { prepareSoundLevels } from './soundLevels';
 import type { LayerFrame } from './timelinePlayer';
 import { YuvReader, type YuvLayout } from './deepExport';
 import { applyMasks } from './masksRender';
@@ -277,6 +278,9 @@ export async function exportTimeline(tlIn: Timeline, opts: ExportOptions, onProg
   onProgress({ fraction: 0, stage: 'Analysing stabilization' });
   for (const c of [...tl.clips, ...tl.connected]) await cropReady(c, await getMedia(c.mediaPath), width / height);
 
+  // Sound level gauges: every clip's loudness, read before the first frame.
+  await prepareSoundLevels(tl);
+
   onProgress({ fraction: 0, stage: 'Mixing audio' });
   const mix = await mixTimeline(tl, total);
   let sound: LoudnessResult | null = null;
@@ -461,6 +465,7 @@ export async function grabFrame(tl: Timeline, T: number, layers: LayerFrame[], p
     try { return l.frames.map((f) => f.clone()); } catch { return null; }
   });
   const times = layers.map((l) => l.frames[0]!.timestamp);
+  await prepareSoundLevels(tl);
   const comp = await Compositor.create(width, height, tl.lutPath);
   try {
     const looks: ComposeLayer[] = [];

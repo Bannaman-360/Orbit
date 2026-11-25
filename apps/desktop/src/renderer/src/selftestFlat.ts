@@ -374,7 +374,8 @@ export async function stabCheck(api: EditorApi) {
     ok(`${fps} fps: every frame is the right one`, [off, plain, on, low, manual, tight, fixed, quick].every((x) => x.wrongTime === 0 && x.worst < 22) && on.worst < 2.5, [on.wrongTime, on.worst]);
     ok(`${fps} fps: stabilized picture matches a steady camera`, on.err < 3, on.err);
     ok(`${fps} fps: rolling shutter fix helps`, on.err < plain.err * 0.6, [plain.err, on.err]);
-    ok(`${fps} fps: movement is almost only what should be there`, on.motion < on.idealMotion * 1.25 + 0.6 && on.motion < off.motion * 0.5, [off.motion, on.motion, on.idealMotion]);
+    // (High smooths over 300 ms, so it keeps a little more of the ride's own movement than it used to.)
+    ok(`${fps} fps: movement is almost only what should be there`, on.motion < on.idealMotion * 1.25 + 0.6 && on.motion < off.motion * 0.6, [off.motion, on.motion, on.idealMotion]);
     ok(`${fps} fps: never a black edge`, [plain, on, low, manual, tight, fixed, quick].every((x) => x.blackEdge === 0), [plain, on, low, manual, tight, fixed].map((x) => x.blackEdge));
     ok(`${fps} fps: zoom changes gently`, on.zoomStep < 1.2 && quick.zoomStep < 8 && fixed.zoomStep < 0.01 && manual.zoomStep < 0.01, [on.zoomStep, fixed.zoomStep, manual.zoomStep]);
     ok(`${fps} fps: maximum crop is respected`, tight.minFov > 100 * 0.93 * (shownFov(base, media, clipLookAt(base, S), W / H) / 100), tight.minFov);

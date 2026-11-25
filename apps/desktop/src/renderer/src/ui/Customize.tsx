@@ -8,7 +8,7 @@ import { addCombo, comboLabel, combosOf, COMMANDS, joinCombo, keyOf, removeCombo
 import { activate, closePanel, dockAtEdge, dockPanel, floatPanel, groupsOf, groupWith, isFloating, openPanels, type DockLayout } from './dockModel';
 import { Icon } from './Icon';
 import {
-  BAR_NAMES, BUILTIN_THEMES, canUndoPrefs, currentMode, DEFAULT_BARS, defaultPrefs, getPrefs, isInspectorPanel, isSpacer, LAYOUTS, moveSection, PANELS, placeItem, sanitizePrefs,
+  BAR_NAMES, BUILTIN_THEMES, canUndoPrefs, currentMode, DEFAULT_BARS, defaultPrefs, getPrefs, isInspectorPanel, isSpacer, LAYOUTS, LEVELS, moveSection, setLevel, PANELS, placeItem, sanitizePrefs,
   sectionList, setArranging, setBar, setPrefs, setTheme, toggleSectionHidden, undoPrefs, usePrefs, type BarId,
 } from './prefs';
 import { ACCENTS, COLOR_GROUPS, contrast, DEFAULT_THEME, FONTS, RANGES, sanitizeTheme, themeColors, type ColorKey, type Mode, type Theme } from './theme';
@@ -224,10 +224,15 @@ export function reopenPanel(l: DockLayout, id: string): DockLayout {
 
 function LayoutPage() {
   const layout = usePrefs((p) => p.layout), custom = usePrefs((p) => p.customPanels), spaces = usePrefs((p) => p.workspaces);
+  const level = usePrefs((p) => p.level);
   const [name, setName] = useState('');
   const set = (f: (l: DockLayout) => DockLayout) => setPrefs((p) => ({ layout: f(p.layout) }));
   return (
     <>
+      <Group title="Experience level" note="Sets the panels, toolbars and sections to match. Anything hidden can be shown again below or in Sections.">
+        <div className="cz-chips">{LEVELS.map((l) => <button key={l.id} className={level === l.id ? 'on' : ''} title={l.note} onClick={() => setLevel(l.id)}>{l.name}</button>)}</div>
+        {level && <p className="hint">{LEVELS.find((l) => l.id === level)!.note}</p>}
+      </Group>
       <Group title="Ready-made layouts" note="Drag any panel's tab (or the small handle at the top of the preview and timeline) to move it. Hold ⌥ while dropping to float it.">
         <div className="cz-chips">{LAYOUTS.map(([n, f]) => <button key={n} onClick={() => setPrefs({ layout: f() })}>{n}</button>)}</div>
       </Group>

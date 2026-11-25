@@ -4,7 +4,7 @@
 
 import type { TransitionKind } from './timeline';
 
-export type GaugeKind = 'speed' | 'altitude' | 'distance' | 'gforce' | 'airtime' | 'jumpdist' | 'map' | 'timer' | 'clock';
+export type GaugeKind = 'speed' | 'altitude' | 'distance' | 'gforce' | 'airtime' | 'jumpdist' | 'sound' | 'map' | 'timer' | 'clock';
 export type OverlayKind = 'text' | GaugeKind;
 export type OverlayFont =
   | 'sans' | 'rounded' | 'condensed' | 'heavy' | 'impact' | 'futura' | 'avenir' | 'gill' | 'optima'
@@ -58,6 +58,8 @@ export interface Overlay {
   /** Airtime gauge, between jumps: the longest jump so far, all time in the air so far, or the last jump. Missing = longest. */
   /** Between jumps: the best, last or total so far. 'running': only ever the total, growing through each jump. */
   airShow?: 'best' | 'total' | 'last' | 'running';
+  /** Gauges: keep counting (distance, jumps, timer) across cuts in the video. Missing = start again at each cut. */
+  keepCounting?: boolean;
   /** Gauges: read the ride data of this clip on V2–V6. Missing = the main-row clip under the playhead. */
   sourceClipId?: string;
   /** Text: a motion title template (see TITLE_TEMPLATES); it brings its own movement in and out. */
@@ -173,6 +175,7 @@ export const GAUGES: [GaugeKind, string][] = [
   ['gforce', 'G-force'],
   ['airtime', 'Airtime'],
   ['jumpdist', 'Jump distance'],
+  ['sound', 'Sound level'],
   ['map', 'GPS map'],
   ['timer', 'Timer'],
   ['clock', 'Time of day'],
@@ -185,6 +188,7 @@ export const GAUGE_STYLES: Record<GaugeKind, [GaugeStyle, string][]> = {
   distance: [['digital', 'Number'], ['bar', 'Progress']],
   airtime: [['digital', 'Number'], ['bar', 'Bar']],
   jumpdist: [['digital', 'Number'], ['bar', 'Bar']],
+  sound: [['digital', 'Number'], ['dial', 'Dial'], ['needle', 'Meter'], ['bar', 'Bar'], ['graph', 'Graph']],
   map: [['square', 'Square'], ['round', 'Round']],
   timer: [['digital', 'Number']],
   clock: [['digital', 'Number']],
@@ -195,7 +199,7 @@ export const GAUGE_STYLES: Record<GaugeKind, [GaugeStyle, string][]> = {
  * `styles` are the drawing types it comes in, `kinds` the gauges it suits (missing = all but the map).
  */
 export interface GaugeDesignInfo { id: GaugeDesign; name: string; styles: GaugeStyle[]; kinds?: GaugeKind[]; patch: Partial<Overlay> }
-const WITH_VALUE: GaugeKind[] = ['speed', 'gforce', 'altitude', 'distance', 'airtime', 'jumpdist'];
+const WITH_VALUE: GaugeKind[] = ['speed', 'gforce', 'altitude', 'distance', 'airtime', 'jumpdist', 'sound'];
 export const GAUGE_DESIGNS: GaugeDesignInfo[] = [
   { id: 'classic', name: 'Classic', styles: ['digital', 'dial', 'needle', 'bar', 'graph', 'square', 'round'], kinds: [...WITH_VALUE, 'map', 'timer', 'clock'], patch: { color: '#ffffff', accent: '#ff7a1a', bgColor: '#000000', bgOpacity: 0.45, font: 'condensed', bold: true, italic: false, background: 'shadow' } },
   { id: 'minimal', name: 'Minimal', styles: ['digital', 'dial', 'bar', 'graph', 'square', 'round'], kinds: [...WITH_VALUE, 'map', 'timer', 'clock'], patch: { color: '#ffffff', accent: '#ffffff', bgColor: '#000000', bgOpacity: 0, font: 'avenir', bold: false, italic: false, background: 'shadow' } },
@@ -203,7 +207,7 @@ export const GAUGE_DESIGNS: GaugeDesignInfo[] = [
   { id: 'neon', name: 'Neon', styles: ['digital', 'dial', 'needle', 'bar', 'graph', 'square', 'round'], kinds: [...WITH_VALUE, 'map', 'timer', 'clock'], patch: { color: '#e9fdff', accent: '#ff2bd6', bgColor: '#05000f', bgOpacity: 0.35, font: 'rounded', bold: true, italic: false, background: 'glow' } },
   { id: 'carbon', name: 'Carbon', styles: ['digital', 'dial', 'needle', 'bar', 'graph', 'square', 'round'], kinds: [...WITH_VALUE, 'map', 'timer', 'clock'], patch: { color: '#f2f2f2', accent: '#e10600', bgColor: '#16181b', bgOpacity: 0.92, font: 'futura', bold: true, italic: false, background: 'box' } },
   { id: 'lcd', name: 'Retro LCD', styles: ['digital'], patch: { color: '#1d2a12', accent: '#1d2a12', bgColor: '#a8c27a', bgOpacity: 0.95, font: 'mono', bold: true, italic: false, background: 'box' } },
-  { id: 'cockpit', name: 'Cockpit', styles: ['needle'], kinds: ['speed', 'gforce', 'altitude', 'airtime', 'jumpdist'], patch: { color: '#ffffff', accent: '#ff9f0a', bgColor: '#0a0a0a', bgOpacity: 1, font: 'sans', bold: true, italic: false, background: 'box' } },
+  { id: 'cockpit', name: 'Cockpit', styles: ['needle'], kinds: ['speed', 'gforce', 'altitude', 'airtime', 'jumpdist', 'sound'], patch: { color: '#ffffff', accent: '#ff9f0a', bgColor: '#0a0a0a', bgOpacity: 1, font: 'sans', bold: true, italic: false, background: 'box' } },
   { id: 'arc', name: 'Arc', styles: ['dial'], kinds: WITH_VALUE, patch: { color: '#ffffff', accent: '#30d158', bgColor: '#000000', bgOpacity: 0.35, font: 'rounded', bold: true, italic: false, background: 'shadow' } },
   { id: 'ring', name: 'Ring', styles: ['dial'], kinds: WITH_VALUE, patch: { color: '#ffffff', accent: '#0a84ff', bgColor: '#000000', bgOpacity: 0.4, font: 'sans', bold: true, italic: false, background: 'shadow' } },
   { id: 'tape', name: 'Tape', styles: ['digital'], kinds: ['speed', 'gforce', 'altitude'], patch: { color: '#ffffff', accent: '#ffd60a', bgColor: '#000000', bgOpacity: 0.5, font: 'condensed', bold: true, italic: false, background: 'box' } },
@@ -322,6 +326,7 @@ const GAUGE_SPOT: Record<GaugeKind, Partial<Overlay>> = {
   gforce: { x: 0.3, y: 0.87, size: 0.1 },
   airtime: { x: 0.5, y: 0.87, size: 0.1 },
   jumpdist: { x: 0.7, y: 0.87, size: 0.1 },
+  sound: { x: 0.88, y: 0.4, size: 0.1, style: 'bar' },
   map: { x: 0.87, y: 0.78, size: 0.3, style: 'square' },
   timer: { x: 0.5, y: 0.08, size: 0.08 },
   clock: { x: 0.12, y: 0.1, size: 0.08 },
@@ -344,6 +349,29 @@ export const updateOverlay = <T extends { overlays: Overlay[] }>(tl: T, id: stri
   ...tl,
   overlays: tl.overlays.map((o) => (o.id === id ? { ...o, ...patch } : o)),
 });
+
+/** Overlays shorter than this can't be made by cutting. */
+export const MIN_OVERLAY_US = 100_000;
+
+/**
+ * Cuts an overlay in two at T (both halves keep its look; a gauge's second half counts from the
+ * cut). Unchanged when T isn't inside it, or either half would be too short.
+ */
+export function splitOverlay<T extends { overlays: Overlay[] }>(tl: T, id: string, at: number): T {
+  const i = tl.overlays.findIndex((o) => o.id === id);
+  const o = tl.overlays[i];
+  if (!o || at - o.startUs < MIN_OVERLAY_US || o.endUs - at < MIN_OVERLAY_US) return tl;
+  const overlays = [...tl.overlays];
+  overlays.splice(i, 1, { ...o, endUs: at }, { ...o, id: newId(), startUs: at });
+  return { ...tl, overlays };
+}
+
+/** Removes the part of an overlay before (left) or after (right) T. Unchanged when T isn't inside it. */
+export function trimOverlayAt<T extends { overlays: Overlay[] }>(tl: T, id: string, at: number, side: 'left' | 'right'): T {
+  const o = tl.overlays.find((x) => x.id === id);
+  if (!o || at - o.startUs < MIN_OVERLAY_US || o.endUs - at < MIN_OVERLAY_US) return tl;
+  return updateOverlay(tl, id, side === 'left' ? { startUs: at } : { endUs: at });
+}
 
 export const removeOverlay = <T extends { overlays: Overlay[] }>(tl: T, id: string): T => ({ ...tl, overlays: tl.overlays.filter((o) => o.id !== id) });
 

@@ -4,7 +4,7 @@
 
 import { useEffect, useLayoutEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { getPrefs, setPrefs } from './ui/prefs';
+import { getPrefs, LEVELS, setLevel, setPrefs, usePrefs } from './ui/prefs';
 import { openPanels } from './ui/dockModel';
 import { reopenPanel } from './ui/Customize';
 import { Icon } from './ui/Icon';
@@ -127,6 +127,7 @@ export function Welcome({ name, onImport, onCard, onTour, onOpen, onClose }: { n
     addEventListener('keydown', key);
     return () => removeEventListener('keydown', key);
   }, [onClose]);
+  const level = usePrefs((p) => p.level);
   const choice = (icon: string, title: string, sub: string, run: () => void, primary = false) => (
     <button className={`welcome-choice${primary ? ' primary' : ''}`} onClick={() => { onClose(); run(); }}>
       <Icon name={icon} size={26} />
@@ -140,6 +141,13 @@ export function Welcome({ name, onImport, onCard, onTour, onOpen, onClose }: { n
         <div className="welcome-mark"><Icon name="gauge" size={34} /></div>
         <h1>Welcome to {name}</h1>
         <p className="welcome-sub">Edit your GoPro and action-camera rides: aim 360 shots after the fact, smooth out the bumps, add speed and airtime, and share.</p>
+        <div className="welcome-level" role="group" aria-label="How much editing have you done?">
+          <span>How much editing have you done?</span>
+          <div className="seg">
+            {LEVELS.map((l) => <button key={l.id} className={level === l.id ? 'on' : ''} title={l.note} onClick={() => setLevel(l.id)}>{l.name}</button>)}
+          </div>
+          <small>{LEVELS.find((l) => l.id === level)?.note ?? 'Pick one to set up the window to match. You can change it any time under Layouts.'}</small>
+        </div>
         <div className="welcome-choices">
           {choice('import', 'Import videos', 'Or drag them onto the window', onImport, true)}
           {choice('card', 'From a memory card', 'Copies and checks every file', onCard)}

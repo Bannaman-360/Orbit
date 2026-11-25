@@ -13,3 +13,4 @@ export * from './compound';
 export * from './multicam';
 export * from './sound';
 export * from './grading';
+export * from './gaugeSpan';

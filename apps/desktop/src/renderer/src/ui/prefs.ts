@@ -35,6 +35,8 @@ export interface Prefs {
   seen: string[];
   /** The welcome screen has been seen (first launch done). */
   welcomed: boolean;
+  /** The experience level last chosen (missing = never chosen: the full standard setup). */
+  level?: Level;
 }
 
 const INSPECTOR = ['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection'];
@@ -69,6 +71,45 @@ export const DEFAULT_SECTIONS: Record<string, string[]> = {
   'sel:transition': [...TRANSITION_GROUPS.map(([g]) => g), 'Transition timing'],
   'sel:audio': ['Volume & fades', 'Sound tools'],
 };
+
+// --- Experience levels ---------------------------------------------------------------------------
+// Three ready-made setups so a first-time editor isn't faced with every tool at once. Each sets the
+// panels, toolbars and inspector sections; everything stays reachable (Customize, Layouts menu).
+
+export type Level = 'beginner' | 'intermediate' | 'pro';
+/** Drops toolbar items, and spacers left doubled up or at the ends. */
+const without = (items: string[], drop: string[]) => items.filter((x) => !drop.includes(x)).filter((x, i, a) => !(isSpacer(x) && (i === 0 || i === a.length - 1 || isSpacer(a[i - 1]!))));
+/** Sections only experienced editors reach for. */
+const PRO_SECTIONS = ['Curves', 'Lens details', 'Debug', 'Input color', 'Qualifier', 'Color curves', 'Match clips'];
+const BEGINNER_SECTIONS = [...PRO_SECTIONS, 'Color wheels', 'Detail', 'Noise reduction', 'LUT', 'Film looks', 'Lens match', 'Crop', 'Transform', 'Layout', 'Airtime', 'Text path'];
+export const LEVELS: { id: Level; name: string; note: string; prefs: () => Pick<Prefs, 'layout' | 'bars' | 'hiddenSections'> }[] = [
+  {
+    id: 'beginner', name: 'Beginner', note: 'Just the essentials: import, cut, reframe, steady, colour and gauges.',
+    prefs: () => ({
+      layout: { root: split('col', [split('row', [group('media'), 0.18], [group('viewer'), 0.56], [group('reframe', 'stabilize', 'color', 'clip', 'selection'), 0.26]), 0.64], [group('timeline'), 0.36]), floats: [] },
+      bars: {
+        main: { ...DEFAULT_BARS.main, items: without(DEFAULT_BARS.main.items, ['track', 'frame', 'grab', 'queue']) },
+        transport: { ...DEFAULT_BARS.transport, items: without(DEFAULT_BARS.transport.items, ['compare', 'quality', 'fps']) },
+        timeline: { ...DEFAULT_BARS.timeline, items: without(DEFAULT_BARS.timeline.items, ['detach', 'tool', 'speedline', 'jumps', 'snap', 'multicam']) },
+      },
+      hiddenSections: BEGINNER_SECTIONS,
+    }),
+  },
+  {
+    id: 'intermediate', name: 'Intermediate', note: 'Every everyday tool, with the most technical settings tucked away.',
+    prefs: () => ({ layout: LAYOUTS[0]![1](), bars: structuredClone(DEFAULT_BARS), hiddenSections: PRO_SECTIONS }),
+  },
+  {
+    id: 'pro', name: 'Pro', note: 'Everything, with Markers and Scopes open beside the timeline.',
+    prefs: () => ({
+      layout: { root: split('col', [split('row', [group('media', 'markers'), 0.17], [group('viewer'), 0.55], [group(...INSPECTOR), 0.28]), 0.64], [split('row', [group('timeline'), 0.8], [group('scopes'), 0.2]), 0.36]), floats: [] },
+      bars: structuredClone(DEFAULT_BARS),
+      hiddenSections: [],
+    }),
+  },
+];
+/** Switches to an experience level (one undo step; sections moved by hand go back home). */
+export const setLevel = (id: Level) => setPrefs((p) => ({ ...LEVELS.find((l) => l.id === id)!.prefs(), sections: Object.fromEntries(p.customPanels.map((c) => [c.id, p.sections[c.id] ?? []])), rows: {}, hiddenRows: {}, level: id }), `level:${id}`);
 
 /** Toolbar items added later: put into saved toolbars once (next to a neighbour), then left to the user. */
 const NEW_ITEMS: { item: string; bar: BarId; before: string }[] = [{ item: 'projects', bar: 'main', before: 'import' }, { item: 'compare', bar: 'transport', before: 'quality' }, { item: 'card', bar: 'main', before: 'music' }, { item: 'speedline', bar: 'timeline', before: 'delete' }, { item: 'jumps', bar: 'timeline', before: 'delete' }, { item: 'snap', bar: 'timeline', before: 'delete' }, { item: 'tool', bar: 'timeline', before: 'speedline' }, { item: 'multicam', bar: 'timeline', before: 'delete' }, { item: 'titles', bar: 'main', before: 'gauges' }, { item: 'queue', bar: 'main', before: 'export' }];
@@ -121,6 +162,7 @@ export function sanitizePrefs(raw: unknown): Prefs {
     bars: r.bars ? offerNew(sanitizeBars(r.bars), strs(r.seen)) : d.bars,
     seen: d.seen,
     welcomed: r.welcomed === true,
+    ...(r.level === 'beginner' || r.level === 'intermediate' || r.level === 'pro' ? { level: r.level } : {}),
     customPanels, sections: lists(r.sections), hiddenSections: strs(r.hiddenSections), rows: lists(r.rows), hiddenRows: lists(r.hiddenRows), shortcuts,
   };
 }

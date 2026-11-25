@@ -3,12 +3,14 @@
 
 import {
   locate, overlayState, transitionLook, mediaAt, playLength, type TimelineClip,
+  gaugeCount, pieceMedia, pieceTime, type GaugePiece,
   isIdentityXf, shownRect, type Transform,
   type LayerXf, type Overlay, type OverlayFont, type Reveal, type Timeline, type TransitionLook,
 } from '@ace/project';
 import { TelemetrySeries } from '@ace/telemetry';
 import { mediaNow } from './media';
 import { scrollingGraph, smoothAt, textTime } from './gaugeMath';
+import { soundLevelAt, SOUND_SCALE } from './soundLevels';
 import { carbonPanel, designBox, drawDesigned, setFontStack } from './gaugeDesigns';
 import { FONT_STACK, font, rgba } from './textStyle';
 import { drawTextOnPath, drawTitle, pathBox, titleBox } from './motionTitles';
@@ -86,14 +88,26 @@ function rawAt(o: Overlay, tm: TelemetrySeries, t: number): number {
 
 const pad2 = (n: number) => String(Math.floor(n)).padStart(2, '0');
 
+/** What a gauge has counted by T: only footage shown under it, from its start or the last cut. */
+const counted = (o: Overlay, tl: Timeline, T: number) => (forced ? null : gaugeCount(tl, o, T));
+const seriesOf = (p: GaugePiece) => mediaNow(p.clip.mediaPath)?.telemetry;
+/** Metres travelled over part of a piece (NaN without GPS). */
+function travelled(p: GaugePiece, a: number, b: number): number {
+  const tm = seriesOf(p);
+  const d = tm ? tm.distanceAt(b) - tm.distanceAt(a) : NaN;
+  return Number.isFinite(d) ? Math.max(0, d) : NaN;
+}
+/** Adds up numbers, NaN when none of them is a number. */
+const sumOf = (xs: number[]) => xs.reduce((a, x) => (Number.isFinite(x) ? (Number.isFinite(a) ? a + x : x) : a), NaN);
+
 /** Extra calming (± µs) for needles and numbers; the sensors' own noise makes them shiver. */
-const CALM = { speed: 250_000, gforce: 180_000 };
+const CALM = { speed: 250_000, gforce: 180_000, sound: 120_000 };
 
 export function gaugeReading(o: Overlay, tl: Timeline, T: number): GaugeReading {
   const src = telemetryAt(tl, T, o);
   const imp = o.units === 'imperial';
   const tm = src?.t;
-  const t = src?.mediaUs ?? 0;
+  let t = src?.mediaUs ?? 0;
   const label = o.text.trim();
   const blank = (unit: string, def: string, max = 1): GaugeReading => ({ value: '--', unit, label: label || def, fraction: 0, available: false, max, num: NaN });
   switch (o.kind) {
@@ -112,9 +126,12 @@ export function gaugeReading(o: Overlay, tl: Timeline, T: number): GaugeReading 
       return { value: Math.round(v).toLocaleString(), unit: imp ? 'ft' : 'm', label: label || 'ALTITUDE', fraction: hi > lo ? (v - lo) / (hi - lo) : 0.5, available: true, max: hi, num: v };
     }
     case 'distance': {
-      const v = tm ? toDisplay(o, tm.distanceAt(t)) : NaN;
-      if (!Number.isFinite(v)) return blank(imp ? 'mi' : 'km', 'DISTANCE');
-      const total = toDisplay(o, tm!.totalDistance);
+      const c = counted(o, tl, T);
+      // From where the gauge starts (or the last cut), over the footage actually shown.
+      const metres = !c ? tm?.distanceAt(t) ?? NaN : sumOf([...c.done.map((p) => travelled(p, p.m0, p.m1)), c.now ? travelled(c.now, c.now.m0, pieceMedia(c.now, T)) : NaN]);
+      const v = c && !c.done.length && !c.now ? 0 : toDisplay(o, metres);
+      if (!Number.isFinite(v) || !tm?.hasGps) return blank(imp ? 'mi' : 'km', 'DISTANCE');
+      const total = toDisplay(o, c ? sumOf(c.run.map((p) => travelled(p, p.m0, p.m1))) : tm!.totalDistance);
       return { value: v.toFixed(2), unit: imp ? 'mi' : 'km', label: label || 'DISTANCE', fraction: total > 0 ? v / total : 0, available: true, max: total, num: v };
     }
     case 'gforce': {
@@ -127,9 +144,14 @@ export function gaugeReading(o: Overlay, tl: Timeline, T: number): GaugeReading 
     case 'airtime':
     case 'jumpdist': {
       const dist = o.kind === 'jumpdist';
-      const at = forced ? null : gaugeSource(tl, T, o);
-      // Jumps over the whole recording, so totals and bests are right however the clip is trimmed.
-      const all = !tm ? [] : at ? tm.jumps(at.clip.airtime ?? {}) : tm.jumps();
+      const c = counted(o, tl, T);
+      // Only jumps shown under the gauge since it started (or since the last cut), in timeline time.
+      const all = !tm ? [] : !c ? tm.jumps() : c.run.flatMap((p) => {
+        const s = seriesOf(p);
+        if (!s?.hasAccel) return [];
+        return s.jumps(p.clip.airtime ?? {}).filter((j) => j.startUs >= p.m0 && j.startUs < p.m1).map((j) => ({ ...j, startUs: pieceTime(p, j.startUs), endUs: Math.max(pieceTime(p, j.startUs) + 1, Math.min(p.T1, pieceTime(p, j.endUs))) }));
+      });
+      if (c) t = T;
       const unit = dist ? (imp ? 'ft' : 'm') : 's';
       if (!tm?.hasAccel || (dist && !tm.hasGps)) return blank(unit, dist ? 'JUMP' : 'AIRTIME');
       // What each jump is worth, in display units: its time in the air, or how far it went.
@@ -156,8 +178,18 @@ export function gaugeReading(o: Overlay, tl: Timeline, T: number): GaugeReading 
       else { v = done.reduce((a, j) => Math.max(a, of(j)), 0); lab = label || (dist ? 'LONGEST JUMP' : 'BEST AIR'); }
       return { value: v.toFixed(dist ? 1 : 2), unit, label: lab, fraction: Math.min(1, v / best), available: true, max: best, num: v };
     }
+    case 'sound': {
+      // The clip's own sound, how loud it is now (an estimate in dB: the microphone isn't calibrated).
+      const at = forced ? null : gaugeSource(tl, T, o);
+      const [lo, hi] = SOUND_SCALE;
+      const f = (x: number) => (forced ? 62 + 14 * Math.sin(x / 400_000) + 6 * Math.sin(x / 90_000) : at ? soundLevelAt(at.clip.mediaPath, x) : NaN);
+      const mt = forced ? t : at?.mediaUs ?? NaN;
+      const v = smoothAt(f, mt, CALM.sound);
+      if (!Number.isFinite(v)) return blank('dB', 'SOUND', hi);
+      return { value: Math.round(smoothAt(f, textTime(mt), CALM.sound)).toString(), unit: 'dB', label: label || 'SOUND', fraction: Math.max(0, Math.min(1, (v - lo) / (hi - lo))), available: true, max: hi, num: v };
+    }
     case 'timer': {
-      const s = Math.max(0, (T - o.startUs) / 1e6);
+      const s = Math.max(0, (T - (counted(o, tl, T)?.from ?? o.startUs)) / 1e6);
       return { value: `${pad2(s / 60)}:${pad2(s % 60)}.${Math.floor((s * 10) % 10)}`, unit: '', label: label || 'TIME', fraction: 0, available: true, max: 0, num: s };
     }
     case 'clock': {
@@ -467,6 +499,7 @@ function drawGraph(ctx: Ctx2D, o: Overlay, r: GaugeReading, tl: Timeline, T: num
   const x0 = o.x * W - w / 2, y0 = o.y * H - h / 2;
   panel(ctx, o, x0, y0, w, h, s * 0.14);
   const src = telemetryAt(tl, T, o);
+  const sound = o.kind === 'sound' ? (forced ? { path: '', mediaUs: src?.mediaUs ?? 0 } : (() => { const g = gaugeSource(tl, T, o); return g ? { path: g.clip.mediaPath, mediaUs: g.mediaUs } : null; })()) : null;
   const tm = src?.t;
   const pad = s * 0.14;
   ctx.globalAlpha *= r.available ? 1 : 0.55;
@@ -480,7 +513,9 @@ function drawGraph(ctx: Ctx2D, o: Overlay, r: GaugeReading, tl: Timeline, T: num
   ctx.font = font(o, s * 0.26, 700);
   ctx.fillText(`${r.value}${r.unit ? ` ${r.unit}` : ''}`, x0 + w - pad, y0 + pad + s * 0.2);
   noShadow(ctx);
-  if (!tm || !src || !r.available) return;
+  if (!r.available) return;
+  if (o.kind === 'sound') { if (sound) drawGraphLine(ctx, o, r, (x) => (forced ? 62 + 14 * Math.sin(x / 400_000) + 6 * Math.sin(x / 90_000) : soundLevelAt(sound.path, x)), sound.mediaUs, 0, x0, y0, w, h, s, pad); return; }
+  if (!tm || !src) return;
   const range = o.kind === 'gforce' ? tm.accelRange : tm.gpsRange;
   if (!range) return;
   const profile = o.kind === 'altitude';
@@ -523,6 +558,43 @@ function drawGraph(ctx: Ctx2D, o: Overlay, r: GaugeReading, tl: Timeline, T: num
   ctx.restore();
   // Where we are: the right edge for scrolling graphs, a marker on the profile.
   const [mx, my] = profile ? P((src.mediaUs - range[0]) / Math.max(1, range[1] - range[0]), f(src.mediaUs)) : P(1, last.v);
+  ctx.fillStyle = o.color;
+  ctx.beginPath();
+  ctx.arc(mx, my, Math.max(2.5, s * 0.045), 0, Math.PI * 2);
+  ctx.fill();
+}
+
+/** A scrolling line graph of any reading (the last 10 s up to `now`), in the graph area of a panel. */
+function drawGraphLine(ctx: Ctx2D, o: Overlay, r: GaugeReading, f: (t: number) => number, now: number, from: number, x0: number, y0: number, w: number, h: number, s: number, pad: number) {
+  const gx = x0 + pad, gy = y0 + pad + s * 0.32, gw = w - pad * 2, gh = h - pad * 2 - s * 0.32;
+  const N = Math.max(40, Math.min(240, Math.round(gw / 3)));
+  const pts = scrollingGraph(f, now, 10_000_000, N, from);
+  if (pts.length < 2) return;
+  const lo = SOUND_SCALE[0], hi = r.max;
+  const P = (x: number, v: number) => [gx + gw * x, gy + gh - ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) * gh] as const;
+  const g = ctx.createLinearGradient(0, gy, 0, gy + gh);
+  g.addColorStop(0, rgba(o.accent, 0.55));
+  g.addColorStop(1, rgba(o.accent, 0));
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(gx, gy - gh, gw, gh * 2);
+  ctx.clip();
+  const first = pts[0]!, last = pts[pts.length - 1]!;
+  ctx.beginPath();
+  ctx.moveTo(P(first.x, lo)[0], gy + gh);
+  pts.forEach((p) => ctx.lineTo(...P(p.x, p.v)));
+  ctx.lineTo(P(last.x, lo)[0], gy + gh);
+  ctx.closePath();
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.beginPath();
+  pts.forEach((p, i) => (i ? ctx.lineTo(...P(p.x, p.v)) : ctx.moveTo(...P(p.x, p.v))));
+  ctx.strokeStyle = o.accent;
+  ctx.lineWidth = Math.max(1.5, s * 0.025);
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+  ctx.restore();
+  const [mx, my] = P(1, last.v);
   ctx.fillStyle = o.color;
   ctx.beginPath();
   ctx.arc(mx, my, Math.max(2.5, s * 0.045), 0, Math.PI * 2);

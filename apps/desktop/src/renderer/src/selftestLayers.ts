@@ -3,7 +3,7 @@
 // muted; projects keep them; two 4K layers play in real time.
 
 import {
-  addClip, applyLayout, emptyTimeline, LAYOUT_TEMPLATES, loadTimeline, newClip, placeConnected, shownRect, stackAt,
+  addClip, applyLayout, emptyTimeline, LAYOUT_TEMPLATES, loadTimeline, newClip, placeConnected, shownRect, stackAt, TIMELINE_VERSION,
   updateClip, updateTrack, type Timeline, type Transform,
 } from '@ace/project';
 import { ace } from './api';
@@ -195,7 +195,7 @@ export async function layersCheck(api: EditorApi) {
   await sleep(200);
   const text = api.saveText!();
   const saved = JSON.parse(text);
-  ok('saves tracks and their clips', saved.timeline.version === 3 && saved.timeline.tracks.length === 3 && saved.timeline.connected.length === 3, { version: saved.timeline.version, tracks: saved.timeline.tracks.length });
+  ok('saves tracks and their clips', saved.timeline.version === TIMELINE_VERSION && saved.timeline.tracks.length === 3 && saved.timeline.connected.length === 3, { version: saved.timeline.version, tracks: saved.timeline.tracks.length });
   await api.restore!(text);
   await sleep(800);
   const back = api.getTimeline();

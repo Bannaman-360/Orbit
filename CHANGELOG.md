@@ -1,5 +1,41 @@
 # Changes
 
+## 0.1.0-beta.8
+
+Fixes from testing beta 7, and the rest of milestone 2 (layers).
+
+**Fixes**
+- The update check no longer stays on “Checking for updates”: it gives up after a while with a clear message, and the next check starts afresh. A download that stops arriving is given up too.
+- Airtime and jump distance count every jump in the recording, so totals and bests are right when a clip is trimmed.
+- Split, delete left and delete right act on the selected clip on V2–V6 (and say why when the playhead isn’t over it or its track is locked).
+- Gauges and titles are trimmed with the footage: after a cut or a deleted clip they end with the video, and those only over the cut part go. Deleting a clip closes the gap for everything after it.
+- Track buttons (show, lock, mute) sit in a column beside the tracks, so the start of a clip on V2–V6 can be trimmed.
+
+**Tracks V2–V6**
+- Tracks are nearly as tall as the main row, and show keyframes, speed ramps, jumps and the tracked part, all editable as on the main row.
+- Subject tracking, speed ramps and keyframes work on clips on V2–V6 (right-click ▸ Track subject from here).
+- Gauges can show a V2–V6 clip’s ride data (Gauge ▸ Look ▸ Ride data from). A gauge added while such a clip is selected uses it.
+- Solo sound (Clip ▸ Audio, or right-click): while that clip plays, the other clips are silent.
+
+**Colour and effects**
+- A small switch beside each setting in Color and Effects turns it off to compare (the setting is kept).
+
+**Interface**
+- Two new layouts where the timeline runs under one side panel: Tall inspector and Tall media.
+- The timeline zooms out much further (an hour fits on screen).
+
+**Export**
+- One-press settings for YouTube, YouTube Shorts, TikTok, Instagram Reels, Facebook and Snapchat: size, frame rate, bit rate, and sound brought to −14 LUFS with peaks under −1 dB. The edit is reframed to the platform’s shape for that export only, and you’re warned when it’s longer than the platform takes.
+
+**Compound clips**
+- Right-click a clip ▸ Make compound clip (with the next clip, or to the end): the clips, with what is over them on V2–V6, become one clip. Double-click it to open it; a bar above the timeline leads back. Break it apart again from the same menu.
+
+**Multicam**
+- Timeline toolbar ▸ Multicam: pick 2 to 4 videos of the same moment; they’re lined up by sound (or the cameras’ clocks).
+- While it plays, press 1–4 (or click an angle above the timeline) to cut to that camera. Right-click any cut ▸ Switch angle to change it later.
+
+Projects with compound clips or multicam open only in this version or later.
+
 ## 0.1.0-beta.7
 
 The first part of milestone 2 (layers): clips over the main row.

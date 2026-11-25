@@ -65,6 +65,25 @@ function voices(ctx: Ctx, dest: AudioNode, tl: Timeline, T: number, when: number
     });
   };
   const starts = clipStarts(tl);
+  // Solo sound: while a clip set to solo plays, the other clips' sound is silent (music isn't).
+  const solos = mergeSpans(soloSpans(tl).filter((x) => x.end > T));
+  const ct = (t: number) => when + Math.max(0, t - T) / 1e6;
+  /** Where a clip's sound goes: straight out, or through a gate that is shut while another clip is solo. */
+  const outFor = (id: string, from: number, to: number): AudioNode => {
+    // (Clips set to solo are all heard, like solo in a mixer.)
+    if (solos.some((x) => x.ids.includes(id))) return dest;
+    const shut = solos.filter((x) => x.end > Math.max(from, T) && x.start < to);
+    if (!shut.length) return dest;
+    const q = ctx.createGain(), F = MUTE_FADE_S;
+    q.connect(dest);
+    q.gain.setValueAtTime(shut.some((x) => x.start <= T && x.end > T) ? 0 : 1, when);
+    for (const x of shut) {
+      if (x.start > T) { q.gain.setValueAtTime(1, Math.max(when, ct(x.start) - F)); q.gain.linearRampToValueAtTime(0, ct(x.start)); }
+      q.gain.setValueAtTime(0, ct(x.end));
+      q.gain.linearRampToValueAtTime(1, ct(x.end) + F);
+    }
+    return q;
+  };
   tl.clips.forEach((c, i) => {
     const sound = sounds.get(c.mediaPath);
     if (!sound || c.volume <= 0 || c.audioDetached) return;
@@ -72,7 +91,7 @@ function voices(ctx: Ctx, dest: AudioNode, tl: Timeline, T: number, when: number
     if (s + d <= T) return;
     const skip = Math.max(0, T - s); // timeline µs already played
     const g = ctx.createGain();
-    g.connect(dest);
+    g.connect(outFor(c.id, s, s + d));
     const at = when + Math.max(0, s - T) / 1e6;
     // Crossfade the sound across transitions (fade in over the incoming overlap, out over the outgoing one).
     const fin = transitionUs(tl, i) / 1e6, fout = transitionUs(tl, i + 1) / 1e6, len = d / 1e6;
@@ -98,7 +117,7 @@ function voices(ctx: Ctx, dest: AudioNode, tl: Timeline, T: number, when: number
     if (!sound || c.volume <= 0 || d <= 0 || s + d <= T) continue;
     const skip = Math.max(0, T - s);
     const g = ctx.createGain();
-    g.connect(dest);
+    g.connect(outFor(c.id, s, s + d));
     const at = when + Math.max(0, s - T) / 1e6;
     g.gain.setValueAtTime(c.volume, at);
     add(sound, g, at, c, skip, d - skip, c.muteBelow, c.mediaPath);
@@ -111,7 +130,8 @@ function voices(ctx: Ctx, dest: AudioNode, tl: Timeline, T: number, when: number
     if (end <= T || end <= start) continue;
     const skip = Math.max(0, T - start);
     const g = ctx.createGain();
-    g.connect(dest);
+    // (A clip's own detached sound is silenced like the clip; music plays on.)
+    g.connect(a.linkedClipId ? outFor(a.linkedClipId, start, end) : dest);
     const at = when + Math.max(0, start - T) / 1e6;
     const len = (end - start) / 1e6;
     // Volume envelope in timeline seconds relative to the music's start.
@@ -126,6 +146,25 @@ function voices(ctx: Ctx, dest: AudioNode, tl: Timeline, T: number, when: number
     g.gain.setValueAtTime(env(t0), at);
     for (let x = Math.ceil(t0 * 10) / 10; x <= len; x += 0.1) g.gain.linearRampToValueAtTime(env(x), at + (x - t0));
     add(m.sound, g, at, a, skip, end - start - skip, a.muteBelow, a.path);
+  }
+  return out;
+}
+
+interface SoloSpan { start: number; end: number; ids: string[] }
+/** Where clips set to solo play (timeline µs). */
+export function soloSpans(tl: Timeline): SoloSpan[] {
+  const out: SoloSpan[] = [];
+  const starts = clipStarts(tl);
+  tl.clips.forEach((c, i) => { if (c.soloSound) out.push({ start: starts[i]!, end: starts[i]! + clipDuration(c), ids: [c.id] }); });
+  for (const c of heardConnected(tl)) if (c.soloSound) out.push({ start: c.startUs, end: c.startUs + playLength(c), ids: [c.id] });
+  return out;
+}
+/** Overlapping spans joined (keeping which clips each came from). */
+function mergeSpans(list: SoloSpan[]): SoloSpan[] {
+  const out: SoloSpan[] = [];
+  for (const x of [...list].sort((a, b) => a.start - b.start)) {
+    const last = out[out.length - 1];
+    if (last && x.start <= last.end) { last.end = Math.max(last.end, x.end); last.ids = [...last.ids, ...x.ids]; } else out.push({ ...x, ids: [...x.ids] });
   }
   return out;
 }

@@ -38,6 +38,8 @@ export interface SliderProps {
   hint?: string;
   /** Display units for typing a value in (defaults to the raw value). */
   units?: Units;
+  /** A small switch to see the picture without this change (the value is kept). */
+  toggle?: { on: boolean; onToggle: () => void };
 }
 
 /** An explanation that appears as soon as the pointer (or keyboard focus) is on something. */
@@ -90,11 +92,21 @@ export function Range({ value, min, max, step, disabled, label, onChange, onDoub
   );
 }
 
-export function Slider({ label, value, min, max, step = 0.01, reset, format, onChange, keyed, disabled: off, locked, hint, units }: SliderProps) {
+export function Slider({ label, value, min, max, step = 0.01, reset, format, onChange, keyed, disabled: off, locked, hint, units, toggle }: SliderProps) {
   const disabled = off || !!locked;
   return (
-    <div className={`slider${disabled ? ' disabled' : ''}`} title={locked ? undefined : hint ?? (reset !== undefined ? 'Double-click to reset' : undefined)}>
+    <div className={`slider${disabled ? ' disabled' : ''}${toggle && !toggle.on ? ' is-off' : ''}`} title={locked ? undefined : hint ?? (reset !== undefined ? 'Double-click to reset' : undefined)}>
       <span className="slider-label">
+        {toggle && (
+          <button
+            className={`slider-toggle${toggle.on ? '' : ' off'}`}
+            role="switch"
+            aria-checked={toggle.on}
+            aria-label={`${label} ${toggle.on ? 'on' : 'off'}`}
+            title={toggle.on ? `Turn ${label.toLowerCase()} off to compare (the setting is kept)` : `${label} is off: turn it back on`}
+            onClick={(e) => { e.stopPropagation(); toggle.onToggle(); }}
+          />
+        )}
         {keyed && <i className="kf-dot" title="Keyframed" />}
         <span className="slider-name">{label}</span>
         {locked && <Lock reason={locked} />}

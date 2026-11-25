@@ -91,13 +91,27 @@ export const removeConnected = (tl: Timeline, id: string): Timeline => ({ ...tl,
 /** Splits the clip on the tracks at timeline time T in two. */
 export function splitConnected(tl: Timeline, id: string, T: number): Timeline {
   const c = tl.connected.find((x) => x.id === id);
-  if (!c) return tl;
+  if (!c || tl.tracks.find((t) => t.id === c.trackId)?.locked) return tl;
   const local = T - c.startUs;
   if (local < MIN_CLIP_US || playLength(c) - local < MIN_CLIP_US) return tl;
   const m = Math.round(mediaAt(c, local));
   const left: ConnectedClip = { ...c, outUs: m };
   const right: ConnectedClip = { ...c, id: newId('v'), inUs: m, startUs: c.startUs + playLength(left) };
   return { ...tl, connected: tl.connected.flatMap((x) => (x.id === id ? [left, right] : [x])) };
+}
+
+/**
+ * Cuts the track clip at timeline time T and deletes the part on one side. The part that stays
+ * keeps its place in time (deleting left moves the clip's start to T).
+ */
+export function deleteSideConnected(tl: Timeline, id: string, T: number, side: 'left' | 'right'): Timeline {
+  const c = tl.connected.find((x) => x.id === id);
+  if (!c || tl.tracks.find((t) => t.id === c.trackId)?.locked) return tl;
+  const local = T - c.startUs;
+  if (local < MIN_CLIP_US || playLength(c) - local < MIN_CLIP_US) return tl;
+  const m = Math.round(mediaAt(c, local));
+  const next: ConnectedClip = side === 'left' ? { ...c, inUs: m, startUs: Math.round(T) } : { ...c, outUs: m };
+  return { ...tl, connected: tl.connected.map((x) => (x.id === id ? next : x)) };
 }
 
 /** Copies a main-row or track clip onto the lowest free track at T. */
@@ -271,3 +285,20 @@ export function cleanXf(x: Transform): Transform {
 
 /** A look with a transform patch applied. */
 export const withXf = (look: Look, patch: Partial<Transform>): Look => ({ ...look, xf: cleanXf({ ...xfOf(look), ...patch }) });
+
+/** A point of a clip's own picture (fractions) → where it is in the frame, after its transform. */
+export function layerToFrame(xf: Transform | undefined, aspect: number, u: number, v: number): [number, number] {
+  if (!xf) return [u, v];
+  const a = (xf.rotate * Math.PI) / 180, cos = Math.cos(a), sin = Math.sin(a);
+  const px = (u - 0.5) * xf.scale * aspect, py = (v - 0.5) * xf.scale;
+  return [0.5 + xf.x + (px * cos - py * sin) / aspect, 0.5 + xf.y + px * sin + py * cos];
+}
+
+/** The other way: a frame point → the clip's own picture. */
+export function frameToLayer(xf: Transform | undefined, aspect: number, x: number, y: number): [number, number] {
+  if (!xf) return [x, y];
+  const a = (-xf.rotate * Math.PI) / 180, cos = Math.cos(a), sin = Math.sin(a);
+  const px = (x - 0.5 - xf.x) * aspect, py = y - 0.5 - xf.y;
+  const s = Math.max(1e-6, xf.scale);
+  return [0.5 + (px * cos - py * sin) / aspect / s, 0.5 + (px * sin + py * cos) / s];
+}

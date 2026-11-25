@@ -115,6 +115,25 @@ export function gradeFromPreset(name: string): Grade {
   return { ...NEUTRAL_GRADE, ...(GRADE_PRESETS[name] ?? {}) };
 }
 
+/**
+ * Changes switched off for comparison (like the eye buttons in Lightroom): 'grade.exposure',
+ * 'grade.lutMix' (the LUT), 'fx.grain', 'motionBlur'… The settings are kept; they just aren't applied.
+ */
+export type OffKey = `grade.${keyof Grade}` | `fx.${keyof Effects}` | 'motionBlur';
+
+/** The look as shown, with the switched-off changes left out. */
+export function withOff(look: Look, off: readonly string[] | undefined): Look {
+  if (!off?.length) return look;
+  const grade = { ...look.grade }, fx = { ...look.fx };
+  let motionBlur = look.motionBlur;
+  for (const k of off) {
+    if (k === 'motionBlur') motionBlur = 0;
+    else if (k.startsWith('grade.')) { const g = k.slice(6) as keyof Grade; if (g in grade) grade[g] = g === 'lutMix' ? 0 : NEUTRAL_GRADE[g]; }
+    else if (k.startsWith('fx.')) { const f = k.slice(3) as keyof Effects; if (f in fx) fx[f] = 0; }
+  }
+  return { ...look, grade, fx, motionBlur };
+}
+
 /** Motion blur amount → number of source frames blended (1 = off). */
 export function blurFrames(motionBlur: number): number {
   return 1 + Math.round(Math.max(0, Math.min(1, motionBlur)) * 7);

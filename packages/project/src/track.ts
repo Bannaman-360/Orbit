@@ -43,6 +43,8 @@ export interface ClipTrack {
   lens?: number;
   /** Auto zoom never goes wider than this (degrees). */
   maxFov?: number;
+  /** false: the path only moves masks that follow it; the view stays where it is. */
+  steer?: boolean;
 }
 
 export const DEFAULT_TRACK_LENS = 0.6;
@@ -183,7 +185,7 @@ const SETTLE_US = 500_000;
  */
 export function trackWeight(tr: ClipTrack, t: number): number {
   const r = trackRange(tr);
-  if (!r || t < r[0]) return 0;
+  if (!r || t < r[0] || tr.steer === false) return 0;
   const easeUs = Math.max(1, (tr.ease ?? DEFAULT_TRACK_EASE_S) * 1e6);
   if (t <= r[1]) return smoothstep((t - r[0]) / Math.min(easeUs, Math.max(1, (r[1] - r[0]) / 2)));
   return trackHeld(tr, t) ? 1 : smoothstep(1 - (t - r[1]) / easeUs);
@@ -208,7 +210,7 @@ export function fovForShare(tr: ClipTrack, size: number, frac: number, ownFishey
  * start; after the end it either settles on the last view or eases back to the clip's own.
  */
 export function applyTrack(look: Look, tr: ClipTrack | undefined, t: number, toView?: ToView, share: ShareOf = linearShare, ownLens: OwnLens = look.fisheye): Look {
-  if (!tr) return look;
+  if (!tr || tr.steer === false) return look;
   const r = trackRange(tr), ext = trackExtent(tr);
   if (!r || !ext) return look;
   const weight = trackWeight(tr, t);

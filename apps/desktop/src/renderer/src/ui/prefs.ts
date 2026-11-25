@@ -41,6 +41,9 @@ const INSPECTOR = ['reframe', 'stabilize', 'color', 'effects', 'clip', 'selectio
 export const LAYOUTS: [string, () => DockLayout][] = [
   ['Standard', () => ({ root: split('col', [split('row', [group('media'), 0.17], [group('viewer'), 0.57], [group(...INSPECTOR), 0.26]), 0.64], [group('timeline'), 0.36]), floats: [] })],
   ['Big preview', () => ({ root: split('row', [split('col', [group('viewer'), 0.72], [group('timeline'), 0.28]), 0.76], [group(...INSPECTOR, 'media'), 0.24]), floats: [] })],
+  // The timeline runs under one side panel; the other side panel is full height.
+  ['Tall inspector', () => ({ root: split('row', [split('col', [split('row', [group('media'), 0.23], [group('viewer'), 0.77]), 0.64], [group('timeline'), 0.36]), 0.74], [group(...INSPECTOR), 0.26]), floats: [] })],
+  ['Tall media', () => ({ root: split('row', [group('media'), 0.17], [split('col', [split('row', [group('viewer'), 0.69], [group(...INSPECTOR), 0.31]), 0.64], [group('timeline'), 0.36]), 0.83]), floats: [] })],
   ['Tall sidebars', () => ({ root: split('row', [group('media'), 0.16], [split('col', [group('viewer'), 0.62], [group('timeline'), 0.38]), 0.58], [group(...INSPECTOR), 0.26]), floats: [] })],
   ['Color & effects', () => ({ root: split('col', [split('row', [group('viewer', 'media'), 0.5], [group('color'), 0.25], [group('effects', 'reframe', 'stabilize', 'clip', 'selection'), 0.25]), 0.68], [group('timeline'), 0.32]), floats: [] })],
   ['Reframe', () => ({ root: split('col', [split('row', [group('reframe', 'stabilize'), 0.24], [group('viewer'), 0.54], [group('color', 'effects', 'clip', 'selection', 'media'), 0.22]), 0.66], [group('timeline'), 0.34]), floats: [] })],
@@ -51,7 +54,7 @@ export const DEFAULT_BARS: Record<BarId, BarPrefs> = {
   // (On a Mac the menu bar does the menu's job.)
   main: { items: [...(navigator.platform.toLowerCase().includes('mac') ? [] : ['menu']), 'projects', 'space', 'import', 'card', 'music', 'space', 'undo', 'redo', 'space', 'text', 'gauges', 'track', 'flex', 'status', 'flex', 'frame', 'grab', 'space', 'workspaces', 'customize', 'space', 'export'], position: 'top', hidden: false },
   transport: { items: ['time', 'flex', 'start', 'prev', 'play', 'next', 'end', 'flex', 'compare', 'quality', 'fps', 'fullscreen'], position: 'bottom', hidden: false },
-  timeline: { items: ['split', 'delLeft', 'delRight', 'space', 'detach', 'tool', 'speedline', 'jumps', 'snap', 'delete', 'flex', 'tlinfo', 'tlzoom'], position: 'top', hidden: false },
+  timeline: { items: ['split', 'delLeft', 'delRight', 'space', 'detach', 'tool', 'speedline', 'jumps', 'snap', 'multicam', 'delete', 'flex', 'tlinfo', 'tlzoom'], position: 'top', hidden: false },
 };
 
 /** Which sections each panel shows to begin with. */
@@ -59,7 +62,7 @@ export const DEFAULT_SECTIONS: Record<string, string[]> = {
   reframe: ['Keyframes', 'Subject tracking', 'View', 'Framing', 'Lens', 'Lens details', 'Debug'],
   stabilize: ['Stabilization', 'Crop', 'Horizon'],
   color: ['Input color', 'Presets', 'Light', 'Color', 'Detail', 'LUT', 'Lens match', 'Match clips'],
-  effects: ['Motion blur (ND filter)', 'Speed & lens', 'Film & light', 'Quick looks'],
+  effects: ['Masks', 'Motion blur (ND filter)', 'Speed & lens', 'Film & light', 'Quick looks'],
   clip: ['Transform', 'Layout', 'Speed', 'Airtime', 'Audio', 'Trim'],
   'sel:text': ['Text', 'Font', 'Colour & effect', 'Position', 'Overlay timing'],
   'sel:gauge': ['Look', 'Position', 'Overlay timing'],
@@ -68,7 +71,7 @@ export const DEFAULT_SECTIONS: Record<string, string[]> = {
 };
 
 /** Toolbar items added later: put into saved toolbars once (next to a neighbour), then left to the user. */
-const NEW_ITEMS: { item: string; bar: BarId; before: string }[] = [{ item: 'projects', bar: 'main', before: 'import' }, { item: 'compare', bar: 'transport', before: 'quality' }, { item: 'card', bar: 'main', before: 'music' }, { item: 'speedline', bar: 'timeline', before: 'delete' }, { item: 'jumps', bar: 'timeline', before: 'delete' }, { item: 'snap', bar: 'timeline', before: 'delete' }, { item: 'tool', bar: 'timeline', before: 'speedline' }];
+const NEW_ITEMS: { item: string; bar: BarId; before: string }[] = [{ item: 'projects', bar: 'main', before: 'import' }, { item: 'compare', bar: 'transport', before: 'quality' }, { item: 'card', bar: 'main', before: 'music' }, { item: 'speedline', bar: 'timeline', before: 'delete' }, { item: 'jumps', bar: 'timeline', before: 'delete' }, { item: 'snap', bar: 'timeline', before: 'delete' }, { item: 'tool', bar: 'timeline', before: 'speedline' }, { item: 'multicam', bar: 'timeline', before: 'delete' }];
 function offerNew(bars: Record<BarId, BarPrefs>, seen: string[]) {
   for (const n of NEW_ITEMS) {
     if (seen.includes(n.item) || Object.values(bars).some((b) => b.items.includes(n.item))) continue;

@@ -58,6 +58,8 @@ export interface Overlay {
   /** Airtime gauge, between jumps: the longest jump so far, all time in the air so far, or the last jump. Missing = longest. */
   /** Between jumps: the best, last or total so far. 'running': only ever the total, growing through each jump. */
   airShow?: 'best' | 'total' | 'last' | 'running';
+  /** Gauges: read the ride data of this clip on V2–V6. Missing = the main-row clip under the playhead. */
+  sourceClipId?: string;
 }
 
 export const GAUGES: [GaugeKind, string][] = [

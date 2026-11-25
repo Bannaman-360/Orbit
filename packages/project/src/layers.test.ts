@@ -154,3 +154,15 @@ describe('transform', () => {
     expect(mixLook(DEFAULT_LOOK, DEFAULT_LOOK, 0.5).xf).toBeUndefined();
   });
 });
+
+describe('layer ↔ frame', () => {
+  it('round-trips through a moved, scaled, turned clip', async () => {
+    const { layerToFrame, frameToLayer } = await import('./layers');
+    const xf = { ...IDENTITY_XF, x: 0.2, y: -0.1, scale: 0.4, rotate: 30 };
+    const [x, y] = layerToFrame(xf, 16 / 9, 0.3, 0.8);
+    const [u, v] = frameToLayer(xf, 16 / 9, x, y);
+    expect(u).toBeCloseTo(0.3, 9);
+    expect(v).toBeCloseTo(0.8, 9);
+    expect(layerToFrame(xf, 16 / 9, 0.5, 0.5)).toEqual([0.7, 0.4]);
+  });
+});

@@ -24,7 +24,7 @@ type Show = 'all' | 'fav' | 'rated' | 'notRejected';
 const SHOWS: [Show, string][] = [['all', 'All'], ['notRejected', 'Hide rejected'], ['fav', 'Favourites'], ['rated', '3 stars or more']];
 const fmtBytes = (b: number) => (b > 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
 
-export function MediaBin({ items, folders = [], onAdd, onConnect, onImport, onRemove, onSource, onItem, onFolders, onRelink, onProxiesCleared, level }: {
+export function MediaBin({ items, folders = [], onAdd, onConnect, onImport, onRemove, onSource, onItem, onFolders, onRelink, onProxiesCleared, onBatchExport, level }: {
   items: BinItem[];
   folders?: MediaFolder[];
   onAdd: (path: string) => void;
@@ -38,6 +38,8 @@ export function MediaBin({ items, folders = [], onAdd, onConnect, onImport, onRe
   /** Look for missing files. */
   onRelink?: () => void;
   onProxiesCleared?: () => void;
+  /** Export several videos at once (each on its own). */
+  onBatchExport?: () => void;
   level: PreviewLevel;
 }) {
   const levelLabel = PREVIEW_LEVELS.find(([l]) => l === level)?.[1] ?? '';
@@ -157,6 +159,7 @@ export function MediaBin({ items, folders = [], onAdd, onConnect, onImport, onRe
         <div className="bin-menu" onMouseLeave={() => setMenu(false)}>
           <button onClick={() => { setMenu(false); newFolder(); }}><Icon name="folder" size={14} /> New folder</button>
           <button disabled={!missing} onClick={() => { setMenu(false); onRelink?.(); }}><Icon name="media" size={14} /> {missing ? `Find ${missing} missing video${missing === 1 ? '' : 's'}…` : 'No missing videos'}</button>
+          {onBatchExport && <button disabled={!items.some((i) => i.media)} onClick={() => { setMenu(false); onBatchExport(); }}><Icon name="export" size={14} /> Export several videos…</button>}
           <div className="bin-menu-sep" />
           <p className="muted small">Preview copies{usage ? `: ${usage.files} file${usage.files === 1 ? '' : 's'}, ${fmtBytes(usage.bytes)}` : ''}. Smaller copies for smooth previews; the originals are never changed.</p>
           <button onClick={() => { void ace.proxyReveal(); setMenu(false); }}>Show in {navigator.platform.toLowerCase().includes('mac') ? 'Finder' : 'Explorer'}</button>

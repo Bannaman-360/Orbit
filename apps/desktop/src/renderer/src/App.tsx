@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { MIN_FISHEYE, parseCube, ReframeRenderer } from '@ace/media360';
 import {
   addClip, designFor, GAUGE_DESIGNS, gaugeSet, clipDuration, clipStarts, localAt, deleteSideAt, detachAudio, duplicateClip, emptyTimeline, FRAMINGS, framingAspect, GAUGES, keyframeNear, loadTimeline, locate,
   mediaToTimeline, moveClip, newAudioClip, newClip, newGaugeOverlay, newTextOverlay, nextKeyTime, prevKeyTime, reattachAudio, removeAudio,
-  removeClip, removeClipRipple, withOff, removeKeyframe, removeOverlay, setEasing, setKeyframe, splitAt, timelineDuration, transitionLook, trimClip, updateAudio, type Transform,
+  removeClip, removeClipRipple, withOff, removeKeyframe, removeOverlay, setEasing, CURVES, TITLE_CATEGORIES, TITLE_TEMPLATES, newTitleOverlay, setKeyframe, splitAt, timelineDuration, transitionLook, trimClip, updateAudio, type Transform,
   updateClip, updateOverlay, addMarker, updateMarker, removeMarker, rollCut, slipClip, slideClip, insertClipAt, overwriteClipAt,
   hasRamp, mediaAt, moveSpeedKey, rippleItems, DEFAULT_LENS_LOOK, fisheyeForLook, lookAt, removeSpeedKey, setClipSpeed, setSpeedEase, setSpeedKey, speedAt, speedKeyNear,
   COMFORT_FOV, fitSubjectFrac, fracForFov, moveKeyframe, trackWeight, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, setTrackRange, trackActive, trackExtent, trackHeld, trackRange,
@@ -16,6 +16,8 @@ import { AudioPlayer } from './audioEngine';
 import { hasTwoLenses, lensUi, matchClipLenses, setLensUi } from './lensMatching';
 import { cardOf, running, startCards, useCards } from './cardImport';
 import { ExportDialog } from './ExportDialog';
+import { BatchDialog, QueuePanel } from './QueuePanel';
+import { onQueue, pendingCount } from './exportQueue';
 import { pauseFilmstrip } from './filmstrip';
 import { ImportWindow } from './ImportWindow';
 import { grabFrame, loadLut, MAX_LAYERS } from './exporter';
@@ -281,6 +283,9 @@ export function App() {
   const selRef = useRef(sel);
   selRef.current = sel;
   const [exportOpen, setExportOpen] = useState(false);
+  const [queueOpen, setQueueOpen] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const queuePending = useSyncExternalStore(onQueue, pendingCount);
   /** New pictures shown per second while playing, and how often the screen is redrawn. */
   const [rate, setRate] = useState({ video: 0, screen: 0 });
 
@@ -1032,6 +1037,18 @@ export function App() {
     commit({ ...t, overlays: [...t.overlays, o] });
     setSel({ kind: 'overlay', id: o.id });
   };
+  const addTitle = (templateId: string) => {
+    const t = tlRef.current;
+    const total = timelineDuration(t);
+    if (!t.clips.length) return;
+    const tpl = TITLE_TEMPLATES.find((x) => x.id === templateId);
+    // End cards go at the end; the rest at the playhead.
+    const len = tpl?.id === 'end-credits' ? Math.min(12_000_000, total) : 4_000_000;
+    const T = tpl?.category === 'end' ? Math.max(0, total - len) : Math.min(player.time, Math.max(0, total - 500_000));
+    const o = newTitleOverlay(templateId, T, Math.min(total, T + len));
+    commit({ ...t, overlays: [...t.overlays, o] });
+    setSel({ kind: 'overlay', id: o.id });
+  };
   const addGauge = (kind: GaugeKind) => {
     const t = tlRef.current;
     if (!t.clips.length) return;
@@ -1690,7 +1707,7 @@ export function App() {
   const run: Record<string, () => void> = {
     shuttleBack: () => shuttleTo(-1), shuttleStop: () => { stopShuttle(); player.pause(); }, shuttleFwd: () => shuttleTo(1),
     play: togglePlay, prevFrame: () => step(-1), nextFrame: () => step(1), back10: () => step(-10), fwd10: () => step(10), start: () => seek(0), end: () => seek(timelineDuration(tlRef.current)), fullscreen: () => { if (tlRef.current.clips.length) toggleFullscreen(); },
-    split: () => split(), delLeft: () => deleteSide('left'), delRight: () => deleteSide('right'), keyframe: () => { if (player.playing || shuttle.current.dir) { stopShuttle(); player.pause(); } else addKeyframe(); }, delKey: deleteKeyframe, prevKey: () => jumpKey(-1), nextKey: () => jumpKey(1), text: addText, track: startTrackPick, detach: toggleDetach,
+    split: () => split(), delLeft: () => deleteSide('left'), delRight: () => deleteSide('right'), keyframe: () => { if (player.playing || shuttle.current.dir) { stopShuttle(); player.pause(); } else addKeyframe(); }, delKey: deleteKeyframe, prevKey: () => jumpKey(-1), nextKey: () => jumpKey(1), text: addText, titles: () => addTitle("lt-bar"), track: startTrackPick, detach: toggleDetach,
     duplicate: duplicateCurrent, delete: deleteCurrent, undo, redo, connect: connectToTrack,
     import: () => void importDialog(), card: () => setCardOpen(true), music: () => void addMusic(), open: () => void openProject(), save: () => void saveProject(), saveAs: () => void saveProjectAs(), newProject: () => void newProject(), projects: () => { setWelcome(false); setProjectsOpen((v) => !v); }, export: () => {
       if (!tlRef.current.clips.length) return;
@@ -2012,6 +2029,7 @@ export function App() {
     undo: cmdItem('undo', 'Undo', 'undo', { disabled: !hist.current.past.length }),
     redo: cmdItem('redo', 'Redo', 'redo', { disabled: !hist.current.future.length }),
     text: cmdItem('text', 'Text', 'text', { locked: noClips }),
+    titles: { label: 'Titles', icon: 'text', title: 'Add a motion title: lower thirds, title cards, end cards, location tags', locked: noClips, menu: TITLE_CATEGORIES.flatMap(([cat, name], i) => [...(i ? ['sep' as const] : []), { label: `${name}:`, disabled: true, onClick: () => {} }, ...TITLE_TEMPLATES.filter((t) => t.category === cat).map((t) => ({ label: t.name, onClick: () => addTitle(t.id) }))]) },
     gauges: { label: 'Gauges', icon: 'gauge', title: 'Add a telemetry gauge', locked: noClips, menu: [...GAUGES.map(([k, label]) => ({ label, onClick: () => addGauge(k) })), 'sep' as const, { label: 'A matching set of gauges:', disabled: true, onClick: () => {} }, ...GAUGE_DESIGNS.map((d) => ({ label: `${d.name} set`, onClick: () => addGaugeSet(d.id) }))] },
     track: cmdItem('track', 'Track', 'track', { locked: noClips ?? (trackJob ? 'A subject is being tracked. Wait for it to finish, or press Stop.' : undefined), on: trackPick }),
     status: { label: 'Messages', control: status, wide: true },
@@ -2033,6 +2051,7 @@ export function App() {
     },
     customize: cmdItem('customize', 'Customize', 'customize', { on: !!customize }),
     export: cmdItem('export', 'Export', 'export', { primary: true, locked: noClips }),
+    queue: { label: queuePending ? `Queue (${queuePending})` : 'Queue', icon: 'export', title: 'Export queue: exports running in the background', on: queueOpen, run: () => setQueueOpen((o) => !o) },
     start: cmdItem('start', 'Start', 'start'),
     prev: cmdItem('prevFrame', 'Previous', 'prev'),
     play: cmdItem('play', playing ? 'Pause' : 'Play', playing ? 'pause' : 'play', { disabled: !has }),
@@ -2374,7 +2393,7 @@ export function App() {
       </div>
   );
   const panels: Record<string, PanelDef> = {
-    media: { title: 'Media', icon: 'media', render: () => <MediaBin level={level} items={bin} folders={bins} onFolders={setBins} onItem={(path, patch) => setBin((b) => b.map((x) => (x.path === path ? { ...x, ...patch } : x)))} onRelink={() => void relinkMissing()} onProxiesCleared={() => { forgetProxies(); ensureProxies(binMedia()); }} onImport={importDialog} onAdd={(p) => addToTimeline(p)} onConnect={(p) => connectToTrack(p)} onSource={openSource} onRemove={(p) => setBin((b) => b.filter((x) => x.path !== p))} /> },
+    media: { title: 'Media', icon: 'media', render: () => <MediaBin level={level} items={bin} folders={bins} onFolders={setBins} onItem={(path, patch) => setBin((b) => b.map((x) => (x.path === path ? { ...x, ...patch } : x)))} onRelink={() => void relinkMissing()} onProxiesCleared={() => { forgetProxies(); ensureProxies(binMedia()); }} onImport={importDialog} onBatchExport={() => setBatchOpen(true)} onAdd={(p) => addToTimeline(p)} onConnect={(p) => connectToTrack(p)} onSource={openSource} onRemove={(p) => setBin((b) => b.filter((x) => x.path !== p))} /> },
     viewer: { title: 'Preview', icon: 'viewer', bare: true, keep: true, render: viewerPanel },
     timeline: { title: 'Timeline', icon: 'timeline', bare: true, render: timelinePanel },
     ...Object.fromEntries((['reframe', 'stabilize', 'color', 'effects', 'clip'] as const).map((id) => [id, { title: PANELS[id], icon: id, render: () => <InspectorPanel {...inspector} panel={id} /> }])),
@@ -2475,9 +2494,7 @@ export function App() {
           return [
             { label: 'Delete keyframe', icon: 'trash', hint: '⌫', onClick: () => deleteKeyframeById(c.id, k.id) },
             'sep',
-            { label: 'Ease in / out', checked: k.easing === 'smooth', onClick: ease('smooth') },
-            { label: 'Linear', checked: k.easing === 'linear', onClick: ease('linear') },
-            { label: 'Hold', checked: k.easing === 'hold', onClick: ease('hold') },
+            ...CURVES.map(([id, label]) => ({ label, checked: k.easing === id, onClick: ease(id) })),
             'sep',
             { label: `Delete all ${c.keyframes.length} keyframes`, onClick: () => commit(updateClip(tlRef.current, c.id, { keyframes: [], look: k.look })) },
           ];
@@ -2513,7 +2530,9 @@ export function App() {
       {arranging && <ArrangeBar items={items} drag={(e, id, label) => dragItem(e, id, label, null)} onCustomize={() => setCustomize('layout')} onDone={() => setArranging(false)} />}
       {customize && <Customize page={customize} onPage={setCustomize} onClose={() => setCustomize(null)} items={items} />}
       {multicamOpen && <MulticamDialog files={bin.filter((b) => b.media).map((b) => b.path)} busy={multicamBusy} onMake={(ps, m) => void makeMulticam(ps, m)} onClose={() => setMulticamOpen(false)} />}
-      {exportOpen && <ExportDialog timeline={flattenTimeline(rootTimeline())} onClose={() => setExportOpen(false)} />}
+      {exportOpen && <ExportDialog timeline={flattenTimeline(rootTimeline())} onClose={() => setExportOpen(false)} onShowQueue={() => setQueueOpen(true)} />}
+      {queueOpen && <QueuePanel onClose={() => setQueueOpen(false)} />}
+      {batchOpen && <BatchDialog items={bin.filter((b) => b.media).map((b) => ({ path: b.path, rating: b.rating, flag: b.flag }))} onClose={() => setBatchOpen(false)} onQueued={(n) => { setNotice(`${n} video${n === 1 ? '' : 's'} added to the export queue.`); setQueueOpen(true); }} />}
       {cardOpen && <ImportWindow onClose={() => setCardOpen(false)} />}
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
       {reportOpen && <ReportProblem onClose={() => setReportOpen(false)} />}

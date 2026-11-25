@@ -61,32 +61,100 @@ export function measureLufs(channels: Float32Array[], sampleRate: number): numbe
   return lufs(mean(kept.length ? kept : loud));
 }
 
-/**
- * Brings the sound to `target` LUFS, with peaks held under `ceilingDb` (dBFS) by a limiter that
- * turns down just ahead of each peak and recovers smoothly. Changes the channels in place and
- * returns the loudness before and the gain applied (dB). Silence is left alone.
- */
-export function normalizeLoudness(channels: Float32Array[], sampleRate: number, target: number, ceilingDb = -1): { before: number; gainDb: number } {
-  const before = measureLufs(channels, sampleRate);
-  if (!Number.isFinite(before)) return { before, gainDb: 0 };
-  // (Never more than +24 dB: very quiet sound is mostly noise.)
-  const gainDb = Math.max(-40, Math.min(24, target - before));
-  const g = 10 ** (gainDb / 20);
-  for (const c of channels) for (let i = 0; i < c.length; i++) c[i]! *= g;
-  limit(channels, sampleRate, 10 ** (ceilingDb / 20));
-  return { before, gainDb };
+// ---- True peak (BS.1770-4 annex 2): the peak between samples, found by 4× oversampling ---------
+
+const OVER = 4, TAPS = 12; // taps per phase (48 in all)
+/** Polyphase interpolation filter: phase p gives the value p/4 of the way to the next sample. */
+const PHASES: Float32Array[] = Array.from({ length: OVER - 1 }, (_, k) => {
+  const frac = (k + 1) / OVER, h = new Float32Array(TAPS);
+  for (let j = 0; j < TAPS; j++) {
+    const x = j - (TAPS / 2 - 1) - frac; // sample offset from the point
+    const sinc = Math.abs(x) < 1e-9 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x);
+    const w = 0.5 + 0.5 * Math.cos((Math.PI * x) / (TAPS / 2)); // Hann window
+    h[j] = sinc * w;
+  }
+  const sum = h.reduce((a, b) => a + b, 0);
+  return h.map((v) => v / sum);
+});
+
+/** The highest peak at or just after each sample (the sample and the three points to the next one). */
+function peaksBetween(c: Float32Array): Float32Array {
+  const n = c.length, out = new Float32Array(n);
+  const at = (i: number) => (i < 0 || i >= n ? 0 : c[i]!);
+  for (let i = 0; i < n; i++) {
+    let p = Math.abs(c[i]!);
+    for (const h of PHASES) {
+      let v = 0;
+      for (let j = 0; j < TAPS; j++) v += h[j]! * at(i + j - (TAPS / 2 - 1));
+      p = Math.max(p, Math.abs(v));
+    }
+    out[i] = p;
+  }
+  return out;
 }
 
-/** Holds every sample under `ceiling`: a gain that ramps down 5 ms before a peak and back up over 80 ms. */
+/** True peak of the sound, dBTP (−Infinity for silence). */
+export function truePeakDb(channels: Float32Array[]): number {
+  let p = 0;
+  for (const c of channels) { const q = peaksBetween(c); for (let i = 0; i < q.length; i++) if (q[i]! > p) p = q[i]!; }
+  return p > 0 ? 20 * Math.log10(p) : -Infinity;
+}
+
+export interface LoudnessResult {
+  /** Loudness before (LUFS) and after; gain applied (dB); true peak after (dBTP). */
+  before: number;
+  after: number;
+  gainDb: number;
+  truePeak: number;
+}
+
+/**
+ * Brings the sound to `target` LUFS (or leaves its level when target is null), with true peaks held
+ * under `ceilingDb` dBTP by a limiter that turns down just ahead of each peak and recovers
+ * smoothly. Changes the channels in place. Silence is left alone.
+ */
+export function normalizeLoudness(channels: Float32Array[], sampleRate: number, target: number | null, ceilingDb = -1): LoudnessResult {
+  const before = measureLufs(channels, sampleRate);
+  if (!Number.isFinite(before)) return { before, after: before, gainDb: 0, truePeak: -Infinity };
+  // (Never more than +24 dB: very quiet sound is mostly noise.)
+  let gainDb = target === null ? 0 : Math.max(-40, Math.min(24, target - before));
+  const scale = (db: number) => { const g = 10 ** (db / 20); for (const c of channels) for (let i = 0; i < c.length; i++) c[i]! *= g; };
+  if (gainDb) scale(gainDb);
+  limit(channels, sampleRate, 10 ** (ceilingDb / 20));
+  let after = measureLufs(channels, sampleRate);
+  // Peaky sound (drums, knocks on the mic) loses loudness in the limiter: make up for it a few
+  // times, until it lands within half a dB of the target (or the gain limit is reached).
+  for (let i = 0; i < 10 && target !== null && after < target - 0.5 && gainDb < 24; i++) {
+    const more = Math.min(24 - gainDb, (target - after) * 1.5);
+    scale(more);
+    gainDb += more;
+    limit(channels, sampleRate, 10 ** (ceilingDb / 20));
+    after = measureLufs(channels, sampleRate);
+  }
+  // (Pushed a little past it: turning down needs no limiting.)
+  if (target !== null && after > target + 0.3) {
+    scale(target - after);
+    gainDb += target - after;
+    after = measureLufs(channels, sampleRate);
+  }
+  return { before, after, gainDb, truePeak: truePeakDb(channels) };
+}
+
+/**
+ * Holds every true peak under `ceiling`: a gain that ramps down 5 ms before a peak and back up
+ * over 80 ms. (Aims a little under, since turning down changes the in-between points slightly.)
+ */
 export function limit(channels: Float32Array[], sampleRate: number, ceiling: number) {
   const n = channels[0]?.length ?? 0;
   const need = new Float32Array(n);
   let over = false;
+  const aim = ceiling * 0.985;
+  const peaks = channels.map(peaksBetween);
   for (let i = 0; i < n; i++) {
     let p = 0;
-    for (const c of channels) p = Math.max(p, Math.abs(c[i]!));
-    need[i] = p > ceiling ? ceiling / p : 1;
-    if (p > ceiling) over = true;
+    for (const q of peaks) p = Math.max(p, q[i]!, i > 0 ? q[i - 1]! : 0);
+    need[i] = p > aim ? aim / p : 1;
+    if (p > aim) over = true;
   }
   if (!over) return;
   const attack = 1 / Math.max(1, 0.005 * sampleRate), release = 1 / Math.max(1, 0.08 * sampleRate);

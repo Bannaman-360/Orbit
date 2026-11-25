@@ -4,7 +4,7 @@
 // position in the finished edit. Both are microseconds. A clip shows media
 // [inUs, outUs) and lasts (outUs − inUs) / speed on the timeline (see speed.ts for ramps).
 
-import type { Keyframe } from './keyframes';
+import { cleanKeyCurves, type Keyframe } from './keyframes';
 import { DEFAULT_LOOK, IDENTITY_XF, NEUTRAL_GRADE, NO_EFFECTS, type Look } from './look';
 import { fixOverlay, type Overlay } from './overlays';
 import { fixSpeedKeys, localAt, mediaAt, playLength, speedAt, type SpeedKey } from './speed';
@@ -13,6 +13,7 @@ import type { LensLook } from './lensLook';
 import { fixMasks, type Mask } from './masks';
 import type { Sequence } from './compound';
 import type { MulticamGroup } from './multicam';
+import { cleanSound, type SoundFx } from './sound';
 
 export type TransitionKind =
   | 'crossfade' | 'dip-black' | 'dip-white' | 'flash' | 'blur'
@@ -126,6 +127,8 @@ export interface TimelineClip {
   masks?: Mask[];
   /** Solo sound: while this clip plays, every other clip playing at the same time is silent. */
   soloSound?: boolean;
+  /** EQ, compressor, wind reduction (see sound.ts). */
+  sound?: SoundFx;
   /** Colour and effect settings switched off to compare (see `withOff` in look.ts). */
   off?: string[];
   /** A cut of a multicam group: which group, and which camera it shows (see multicam.ts). */
@@ -150,6 +153,8 @@ export interface AudioClip {
   keepPitch?: boolean;
   /** Set when this is a video clip's own sound, detached onto the audio track. */
   linkedClipId?: string;
+  /** EQ, compressor, wind reduction; music: ducking under talking (see sound.ts). */
+  sound?: SoundFx;
 }
 
 /** A note at a point in time (M key). Colours are a small fixed set, like Finder tags. */
@@ -489,7 +494,7 @@ export function detachAudio(tl: Timeline, clipId: string): Timeline {
   const start = clipStarts(tl)[i]!;
   const a: AudioClip = {
     id: newId('a'), path: c.mediaPath, startUs: start, inUs: c.inUs, outUs: c.outUs,
-    volume: c.volume, fadeInUs: 0, fadeOutUs: 0, speed: c.speed, linkedClipId: c.id, ...(c.speedKeys ? { speedKeys: c.speedKeys } : {}), ...(c.muteBelow ? { muteBelow: c.muteBelow } : {}), ...(c.keepPitch === false ? { keepPitch: false } : {}),
+    volume: c.volume, fadeInUs: 0, fadeOutUs: 0, speed: c.speed, linkedClipId: c.id, ...(c.speedKeys ? { speedKeys: c.speedKeys } : {}), ...(c.muteBelow ? { muteBelow: c.muteBelow } : {}), ...(c.keepPitch === false ? { keepPitch: false } : {}), ...(c.sound ? { sound: c.sound } : {}),
   };
   return { ...updateClip(tl, c.id, { audioDetached: true }), audio: [...tl.audio, a] };
 }
@@ -498,7 +503,7 @@ export function detachAudio(tl: Timeline, clipId: string): Timeline {
 export function reattachAudio(tl: Timeline, clipId: string): Timeline {
   const linked = tl.audio.find((a) => a.linkedClipId === clipId);
   return {
-    ...updateClip(tl, clipId, { audioDetached: false, ...(linked ? { volume: linked.volume } : {}) }),
+    ...updateClip(tl, clipId, { audioDetached: false, ...(linked ? { volume: linked.volume, sound: linked.sound } : {}) }),
     audio: tl.audio.filter((a) => a.linkedClipId !== clipId),
   };
 }
@@ -537,15 +542,21 @@ const fixLook = (l?: Partial<Look>): Look => ({
   ...(l?.xf ? { xf: { ...IDENTITY_XF, ...l.xf, crop: (Array.isArray(l.xf.crop) && l.xf.crop.length === 4 ? l.xf.crop : IDENTITY_XF.crop) } } : {}),
 });
 
-const fixClip = (c: TimelineClip): TimelineClip => ({
+const fixClip = (c: TimelineClip): TimelineClip => withSound({
   ...newClip(c.mediaPath, c.outUs ?? 0, true),
   ...c,
   look: fixLook(c.look),
-  keyframes: (c.keyframes ?? []).map((k) => ({ ...k, easing: k.easing ?? 'smooth', look: fixLook(k.look) })),
+  keyframes: (c.keyframes ?? []).map((k) => cleanKeyCurves({ ...k, look: fixLook(k.look) })),
   stabilize: { ...{ smoothing: 'off' as const, horizon: false }, ...(c.stabilize ?? {}) },
   ...(c.speedKeys ? { speedKeys: fixSpeedKeys(c.speedKeys) } : {}),
   masks: fixMasks(c.masks),
 });
+/** Clip or music with its sound settings made safe (or dropped). */
+function withSound<T extends { sound?: SoundFx }>(x: T): T {
+  const sound = cleanSound(x.sound);
+  const { sound: _s, ...rest } = x;
+  return (sound ? { ...rest, sound } : rest) as T;
+}
 
 /** Accepts anything previously saved and returns a complete, current timeline. */
 export function loadTimeline(raw: unknown): Timeline {
@@ -558,7 +569,7 @@ export function loadTimeline(raw: unknown): Timeline {
     version: TIMELINE_VERSION,
     clips: (p.clips ?? []).map(fixClip),
     tracks: (p.tracks ?? []).filter((t) => t && t.id).slice(0, MAX_TRACKS).map((t) => ({ id: String(t.id), ...(t.hidden ? { hidden: true } : {}), ...(t.locked ? { locked: true } : {}), ...(t.muted ? { muted: true } : {}) })),
-    audio: (p.audio ?? []).map((a) => ({ ...newAudioClip(a.path, a.outUs ?? 0), ...a, ...(a.speedKeys ? { speedKeys: fixSpeedKeys(a.speedKeys) } : {}) })),
+    audio: (p.audio ?? []).map((a) => withSound({ ...newAudioClip(a.path, a.outUs ?? 0), ...a, ...(a.speedKeys ? { speedKeys: fixSpeedKeys(a.speedKeys) } : {}) })),
     overlays: (p.overlays ?? []).map(fixOverlay),
     markers: (p.markers ?? []).filter((m) => m && Number.isFinite(m.t)).map((m) => ({ id: m.id || newId('m'), t: Math.max(0, m.t), note: String(m.note ?? ''), color: MARKER_COLORS.includes(m.color) ? m.color : 'blue' })).sort((a, b) => a.t - b.t),
     // Version 3 had no compound clips.

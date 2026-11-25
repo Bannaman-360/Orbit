@@ -69,6 +69,8 @@ export class TelemetrySeries {
   private distV: Float64Array<ArrayBuffer> = new Float64Array(0);
   private xV: Float64Array<ArrayBuffer> = new Float64Array(0);
   private yV: Float64Array<ArrayBuffer> = new Float64Array(0);
+  private latV: Float64Array<ArrayBuffer> = new Float64Array(0);
+  private lonV: Float64Array<ArrayBuffer> = new Float64Array(0);
   private aT: Float64Array<ArrayBuffer> = new Float64Array(0);
   private gV: Float64Array<ArrayBuffer> = new Float64Array(0);
   /** G without the readout smoothing (for airtime). */
@@ -93,6 +95,8 @@ export class TelemetrySeries {
         this.distV[i] = this.distV[i - 1]! + (this.speedV[i]! > 0.5 ? step : 0);
       }
       // Map projection (equirectangular around the middle), fitted into a unit square.
+      this.latV = Float64Array.from(fixes, (s) => s.lat);
+      this.lonV = Float64Array.from(fixes, (s) => s.lon);
       const lat0 = (fixes.reduce((a, s) => a + s.lat, 0) / n) * (Math.PI / 180);
       const px = fixes.map((s) => s.lon * Math.cos(lat0));
       const py = fixes.map((s) => -s.lat);
@@ -151,6 +155,10 @@ export class TelemetrySeries {
       this.jumpCache.set(key, j);
     }
     return j;
+  }
+  /** Where the camera was (degrees), or null without GPS. */
+  latLonAt(t: number): { lat: number; lon: number } | null {
+    return this.hasGps ? { lat: interp(this.gT, this.latV, t), lon: interp(this.gT, this.lonV, t) } : null;
   }
   /** Position on the fitted map (0–1). */
   positionAt(t: number): { x: number; y: number } | null {

@@ -10,42 +10,14 @@ import { TelemetrySeries } from '@ace/telemetry';
 import { mediaNow } from './media';
 import { scrollingGraph, smoothAt, textTime } from './gaugeMath';
 import { carbonPanel, designBox, drawDesigned, setFontStack } from './gaugeDesigns';
+import { FONT_STACK, font, rgba } from './textStyle';
+import { drawTextOnPath, drawTitle, pathBox, titleBox } from './motionTitles';
+
+export { FONT_STACK };
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
-/** Font stacks: macOS fonts first, Windows equivalents after. */
-export const FONT_STACK: Record<OverlayFont, string> = {
-  sans: '-apple-system, "SF Pro Display", "Segoe UI", system-ui, sans-serif',
-  rounded: 'ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", system-ui, sans-serif',
-  condensed: '"Avenir Next Condensed", "DIN Condensed", "Bahnschrift SemiCondensed", "Arial Narrow", sans-serif',
-  heavy: '"Arial Black", "Helvetica Neue", Arial, sans-serif',
-  impact: 'Impact, Haettenschweiler, "Arial Narrow", sans-serif',
-  futura: 'Futura, "Century Gothic", "Trebuchet MS", sans-serif',
-  avenir: '"Avenir Next", Avenir, "Segoe UI", sans-serif',
-  gill: '"Gill Sans", "Gill Sans MT", Calibri, sans-serif',
-  optima: 'Optima, Candara, "Segoe UI", sans-serif',
-  serif: 'ui-serif, "New York", Georgia, "Times New Roman", serif',
-  didot: 'Didot, "Bodoni 72", "Bodoni MT", Georgia, serif',
-  baskerville: 'Baskerville, "Baskerville Old Face", Georgia, serif',
-  rockwell: 'Rockwell, "Rockwell Nova", "American Typewriter", Georgia, serif',
-  copperplate: 'Copperplate, "Copperplate Gothic Light", "Copperplate Gothic", serif',
-  mono: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
-  typewriter: '"American Typewriter", "Courier New", Courier, monospace',
-  marker: '"Marker Felt", "Ink Free", "Comic Sans MS", cursive',
-  chalk: '"Chalkboard SE", Chalkduster, "Segoe Print", cursive',
-  script: '"Snell Roundhand", "Brush Script MT", "Segoe Script", cursive',
-};
-
 setFontStack(FONT_STACK);
-
-const font = (o: Overlay, px: number, weight?: number) =>
-  `${o.italic ? 'italic ' : ''}${weight ?? (o.bold ? (o.font === 'heavy' ? 900 : 700) : 400)} ${Math.max(1, px)}px ${FONT_STACK[o.font]}`;
-
-const rgba = (hex: string, a: number) => {
-  const h = hex.replace('#', '');
-  const n = parseInt(h.length === 3 ? h.split('').map((c) => c + c).join('') : h, 16);
-  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
-};
 
 /** Sample telemetry used instead of the timeline's while drawing a look preview. */
 let forced: { t: TelemetrySeries; mediaUs: number } | null = null;
@@ -198,6 +170,46 @@ export function gaugeReading(o: Overlay, tl: Timeline, T: number): GaugeReading 
   }
 }
 
+const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+/**
+ * Fills in ride words in a title: {gps}, {alt} and {date} as they were when the title starts,
+ * {time} and {speed} as they are now. Left as "--" when the footage has no such data.
+ */
+export function fillTokens(s: string, o: Overlay, tl: Timeline, T: number): string {
+  if (!s.includes('{')) return s;
+  const imp = o.units === 'imperial';
+  const at0 = s.match(/\{(gps|alt|date)\}/) ? telemetryAt(tl, o.startUs, { ...o, sourceClipId: undefined }) : null;
+  const now = s.match(/\{(time|speed)\}/) ? telemetryAt(tl, T, { ...o, sourceClipId: undefined }) : null;
+  const real = (d?: Date) => !!d && d.getTime() > 86_400_000 * 365;
+  return s.replace(/\{(gps|alt|date|time|speed)\}/g, (_, k: string) => {
+    switch (k) {
+      case 'gps': {
+        const p = at0?.t.latLonAt(at0.mediaUs);
+        if (!p) return '--';
+        return `${Math.abs(p.lat).toFixed(4)}° ${p.lat >= 0 ? 'N' : 'S'}  ${Math.abs(p.lon).toFixed(4)}° ${p.lon >= 0 ? 'E' : 'W'}`;
+      }
+      case 'alt': {
+        const a = at0?.t.altitudeAt(at0.mediaUs) ?? NaN;
+        return Number.isFinite(a) ? `${Math.round(a * (imp ? 3.28084 : 1)).toLocaleString()} ${imp ? 'ft' : 'm'}` : '--';
+      }
+      case 'date': {
+        if (!real(at0?.created)) return '--';
+        const d = new Date(at0!.created!.getTime() + at0!.mediaUs / 1000);
+        return `${pad2(d.getDate())} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+      }
+      case 'time': {
+        if (!real(now?.created)) return '--';
+        const d = new Date(now!.created!.getTime() + now!.mediaUs / 1000);
+        return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+      }
+      default: {
+        const v = now?.t.speedAt(now.mediaUs) ?? NaN;
+        return Number.isFinite(v) ? `${Math.round(v * (imp ? 2.23694 : 3.6))} ${imp ? 'mph' : 'km/h'}` : '--';
+      }
+    }
+  });
+}
+
 function withShadow(ctx: Ctx2D, o: Overlay, px: number) {
   if (o.background === 'shadow') {
     ctx.shadowColor = 'rgba(0,0,0,0.65)';
@@ -237,6 +249,8 @@ const isRound = (o: Overlay) => (o.kind === 'speed' || o.kind === 'gforce') && (
 
 /** Bounding box of an overlay in pixels (for hit-testing and selection outlines). */
 export function overlayBox(o: Overlay, W: number, H: number): { x: number; y: number; w: number; h: number } {
+  if (o.kind === 'text' && o.title) return titleBox(o, W, H);
+  if (o.kind === 'text' && o.path) return pathBox(o, W, H);
   const s = o.size * H;
   const d = o.kind !== 'text' && o.kind !== 'map' ? designBox(o) : null;
   if (d) return { x: o.x * W - (d.w * s) / 2, y: o.y * H - (d.h * s) / 2, w: d.w * s, h: d.h * s };
@@ -624,25 +638,33 @@ export function drawOverlays(ctx: Ctx2D, W: number, H: number, tl: Timeline, T: 
   for (const o of tl.overlays) {
     const st = overlayState(o, T);
     if (!st) continue;
+    if (o.kind === 'text' && o.title) {
+      drawTitle(ctx, { ...o, text: fillTokens(o.text, o, tl, T), subtitle: fillTokens(o.subtitle ?? '', o, tl, T) }, W, H, T);
+      if (o.id === selectedId) outline(ctx, overlayBox(o, W, H));
+      continue;
+    }
     ctx.save();
     ctx.globalAlpha = st.alpha;
     const cx = o.x * W, cy = o.y * H;
     ctx.translate(cx, cy + st.dy * H);
     ctx.scale(st.scale, st.scale);
     ctx.translate(-cx, -cy);
-    if (o.kind === 'text') drawText(ctx, o, W, H, st.reveal);
+    if (o.kind === 'text' && o.path) drawTextOnPath(ctx, { ...o, text: fillTokens(o.text, o, tl, T) }, W, H, st.reveal);
+    else if (o.kind === 'text') drawText(ctx, { ...o, text: fillTokens(o.text, o, tl, T) }, W, H, st.reveal);
     else drawGauge(ctx, o, tl, T, W, H);
     ctx.restore();
-    if (o.id === selectedId) {
-      const b = overlayBox(o, W, H);
-      ctx.save();
-      ctx.strokeStyle = '#3d8bfd';
-      ctx.setLineDash([6, 4]);
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(b.x, b.y, b.w, b.h);
-      ctx.restore();
-    }
+    if (o.id === selectedId) outline(ctx, overlayBox(o, W, H));
   }
+}
+
+/** The dashed outline round the selected overlay. */
+function outline(ctx: Ctx2D, b: { x: number; y: number; w: number; h: number }) {
+  ctx.save();
+  ctx.strokeStyle = '#3d8bfd';
+  ctx.setLineDash([6, 4]);
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(b.x, b.y, b.w, b.h);
+  ctx.restore();
 }
 
 /** Topmost overlay under a point (pixels), for click-to-select on the preview. */

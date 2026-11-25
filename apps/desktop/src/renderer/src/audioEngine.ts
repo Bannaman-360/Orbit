@@ -4,8 +4,79 @@
 import { audioSpan, clipDuration, clipStarts, hasRamp, localAt, mediaAt, playLength, slowSpans, speedAt, speedBreaks, timelineDuration, transitionUs, type ConnectedClip, type Timed, type Timeline } from '@ace/project';
 import { keepsPitch, stretchedSound } from './stretch';
 import { BLOCK_PAD_S, clipSound, getMedia, getMusic, mediaNow, musicNow, type Sound } from './media';
+import { compSettings, isNeutralSound, type SoundFx } from '@ace/project';
+import workletUrl from './soundWorklet.ts?worker&url';
 
 type Ctx = BaseAudioContext;
+
+/** Contexts with the sound tools' worklet loaded (wind reduction and ducking need it). */
+const workletReady = new WeakMap<BaseAudioContext, Promise<boolean>>();
+export function loadSoundWorklet(ctx: BaseAudioContext): Promise<boolean> {
+  let p = workletReady.get(ctx);
+  if (!p) {
+    p = ctx.audioWorklet.addModule(workletUrl).then(() => { hasWorklet.add(ctx); return true; }, (e) => { console.warn('Sound tools worklet failed to load', e); return false; });
+    workletReady.set(ctx, p);
+  }
+  return p;
+}
+const hasWorklet = new WeakSet<BaseAudioContext>();
+
+/** Worklet nodes made for one playback, so they can be stopped (they would run on otherwise). */
+type Made = AudioWorkletNode[];
+
+/**
+ * A sound's tools as a chain of nodes ending in `dest`: wind reduction, low cut, 3-band EQ,
+ * compressor. Returns the node to connect the sound to (`dest` itself when there's nothing to do).
+ * With `tap`, the processed sound also goes there (talking that music ducks under).
+ */
+function soundChain(ctx: Ctx, fx: SoundFx | undefined, dest: AudioNode, made: Made, tap?: AudioNode): AudioNode {
+  if (isNeutralSound(fx)) { if (tap) { const g = ctx.createGain(); g.connect(dest); g.connect(tap); return g; } return dest; }
+  const nodes: AudioNode[] = [];
+  if (fx!.wind > 0 && hasWorklet.has(ctx)) {
+    const w = new AudioWorkletNode(ctx, 'ace-wind', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: { strength: fx!.wind } });
+    made.push(w);
+    nodes.push(w);
+  }
+  if (fx!.lowCut > 0) {
+    const f = ctx.createBiquadFilter();
+    f.type = 'highpass'; f.frequency.value = fx!.lowCut; f.Q.value = 0.707;
+    nodes.push(f);
+  }
+  const band = (type: BiquadFilterType, freq: number, gain: number, q?: number) => {
+    if (!gain) return;
+    const f = ctx.createBiquadFilter();
+    f.type = type; f.frequency.value = freq; f.gain.value = gain;
+    if (q) f.Q.value = q;
+    nodes.push(f);
+  };
+  band('lowshelf', 150, fx!.low);
+  band('peaking', 1000, fx!.mid, 0.9);
+  band('highshelf', 6000, fx!.high);
+  const cs = compSettings(fx!.comp);
+  if (cs) {
+    const c = ctx.createDynamicsCompressor();
+    c.threshold.value = cs.threshold; c.knee.value = cs.knee; c.ratio.value = cs.ratio; c.attack.value = cs.attack; c.release.value = cs.release;
+    const up = ctx.createGain();
+    up.gain.value = 10 ** (cs.makeup / 20);
+    nodes.push(c, up);
+  }
+  if (!nodes.length) return dest;
+  for (let i = 0; i + 1 < nodes.length; i++) nodes[i]!.connect(nodes[i + 1]!);
+  const last = nodes[nodes.length - 1]!;
+  last.connect(dest);
+  if (tap) last.connect(tap);
+  return nodes[0]!;
+}
+
+/** Music that ducks under talking: music → duck ← talking (speech band only). */
+function duckChain(ctx: Ctx, depthDb: number, dest: AudioNode, key: AudioNode, made: Made): AudioNode {
+  if (!hasWorklet.has(ctx) || depthDb <= 0) return dest;
+  const d = new AudioWorkletNode(ctx, 'ace-duck', { numberOfInputs: 2, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: { depth: depthDb } });
+  made.push(d);
+  key.connect(d, 0, 1);
+  d.connect(dest);
+  return d;
+}
 
 /** One stretch of one sound: what is heard, when, and how far it has been scheduled. */
 interface Voice {
@@ -31,8 +102,18 @@ const MUTE_FADE_S = 0.12;
  * Everything audible from timeline time T onwards, starting at context time `when`
  * (volumes and fades are set up; the sound itself is scheduled by `feed`).
  */
-function voices(ctx: Ctx, dest: AudioNode, tl: Timeline, T: number, when: number, sounds: Map<string, Sound | null>): Voice[] {
+function voices(ctx: Ctx, dest: AudioNode, tl: Timeline, T: number, when: number, sounds: Map<string, Sound | null>, made: Made = []): Voice[] {
   const out: Voice[] = [];
+  // Talking that music ducks under: only built when some music ducks.
+  const ducks = tl.audio.some((a) => (a.sound?.duck ?? 0) > 0) && hasWorklet.has(ctx);
+  let key: AudioNode | undefined;
+  if (ducks) {
+    // Just the speech band, so footsteps and rumble don't duck the music.
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 1200; bp.Q.value = 0.6;
+    key = bp;
+  }
+  const tapFor = (fx: SoundFx | undefined) => (key && fx?.voice ? key : undefined);
   /** `c` from `skip` µs after its start, `len` µs long, heard from context time `at`. */
   const add = (base: Sound, gain: GainNode, at: number, clip: Timed & { keepPitch?: boolean }, skip: number, len: number, muteBelow = 0, id = '') => {
     // Pitch kept: the sound is already in clip time, played as it is.
@@ -91,7 +172,7 @@ function voices(ctx: Ctx, dest: AudioNode, tl: Timeline, T: number, when: number
     if (s + d <= T) return;
     const skip = Math.max(0, T - s); // timeline µs already played
     const g = ctx.createGain();
-    g.connect(outFor(c.id, s, s + d));
+    g.connect(soundChain(ctx, c.sound, outFor(c.id, s, s + d), made, tapFor(c.sound)));
     const at = when + Math.max(0, s - T) / 1e6;
     // Crossfade the sound across transitions (fade in over the incoming overlap, out over the outgoing one).
     const fin = transitionUs(tl, i) / 1e6, fout = transitionUs(tl, i + 1) / 1e6, len = d / 1e6;
@@ -117,7 +198,7 @@ function voices(ctx: Ctx, dest: AudioNode, tl: Timeline, T: number, when: number
     if (!sound || c.volume <= 0 || d <= 0 || s + d <= T) continue;
     const skip = Math.max(0, T - s);
     const g = ctx.createGain();
-    g.connect(outFor(c.id, s, s + d));
+    g.connect(soundChain(ctx, c.sound, outFor(c.id, s, s + d), made, tapFor(c.sound)));
     const at = when + Math.max(0, s - T) / 1e6;
     g.gain.setValueAtTime(c.volume, at);
     add(sound, g, at, c, skip, d - skip, c.muteBelow, c.mediaPath);
@@ -131,7 +212,9 @@ function voices(ctx: Ctx, dest: AudioNode, tl: Timeline, T: number, when: number
     const skip = Math.max(0, T - start);
     const g = ctx.createGain();
     // (A clip's own detached sound is silenced like the clip; music plays on.)
-    g.connect(a.linkedClipId ? outFor(a.linkedClipId, start, end) : dest);
+    const after = a.linkedClipId ? outFor(a.linkedClipId, start, end) : dest;
+    const ducked = key && (a.sound?.duck ?? 0) > 0 && !a.linkedClipId ? duckChain(ctx, a.sound!.duck!, after, key, made) : after;
+    g.connect(soundChain(ctx, a.sound, ducked, made, a.linkedClipId ? tapFor(a.sound) : undefined));
     const at = when + Math.max(0, start - T) / 1e6;
     const len = (end - start) / 1e6;
     // Volume envelope in timeline seconds relative to the music's start.
@@ -251,6 +334,7 @@ export class AudioPlayer {
   private sounds = new Map<string, Sound | null>();
   private master = this.ctx.createGain();
   private live: Voice[] = [];
+  private made: Made = [];
   private run = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
 
@@ -260,6 +344,7 @@ export class AudioPlayer {
 
   /** Call after the timeline's media changes; loading happens in the background. */
   async prepare(tl: Timeline) {
+    await loadSoundWorklet(this.ctx);
     this.sounds = await loadTimelineAudio(tl);
   }
 
@@ -292,7 +377,7 @@ export class AudioPlayer {
   play(tl: Timeline, T: number) {
     this.stop();
     void this.ctx.resume();
-    this.live = voices(this.ctx, this.master, tl, T, this.ctx.currentTime + 0.03, this.sounds);
+    this.live = voices(this.ctx, this.master, tl, T, this.ctx.currentTime + 0.03, this.sounds, this.made);
     this.more();
     this.timer = setInterval(() => this.more(), 1000);
   }
@@ -318,6 +403,8 @@ export class AudioPlayer {
       }
     }
     this.nodes = [];
+    for (const w of this.made) { w.port.postMessage('stop'); w.disconnect(); }
+    this.made = [];
   }
 
   set muted(m: boolean) {
@@ -331,6 +418,7 @@ export async function mixTimeline(tl: Timeline, durationUs: number, sampleRate =
   const anything = [...sounds.values()].some(Boolean) || tl.audio.some((a) => musicNow.has(a.path));
   if (!anything || durationUs <= 0) return null;
   const ctx = new OfflineAudioContext(2, Math.ceil((durationUs / 1e6) * sampleRate), sampleRate);
+  await loadSoundWorklet(ctx);
   const held = new Map<Sound, Map<number, AudioBuffer | null>>();
   for (const v of voices(ctx, ctx.destination, tl, 0, 0, sounds)) {
     for (;;) {

@@ -52,26 +52,26 @@ export const LAYOUTS: [string, () => DockLayout][] = [
 
 export const DEFAULT_BARS: Record<BarId, BarPrefs> = {
   // (On a Mac the menu bar does the menu's job.)
-  main: { items: [...(navigator.platform.toLowerCase().includes('mac') ? [] : ['menu']), 'projects', 'space', 'import', 'card', 'music', 'space', 'undo', 'redo', 'space', 'text', 'gauges', 'track', 'flex', 'status', 'flex', 'frame', 'grab', 'space', 'workspaces', 'customize', 'space', 'export'], position: 'top', hidden: false },
+  main: { items: [...(navigator.platform.toLowerCase().includes('mac') ? [] : ['menu']), 'projects', 'space', 'import', 'card', 'music', 'space', 'undo', 'redo', 'space', 'text', 'titles', 'gauges', 'track', 'flex', 'status', 'flex', 'frame', 'grab', 'space', 'workspaces', 'customize', 'space', 'export'], position: 'top', hidden: false },
   transport: { items: ['time', 'flex', 'start', 'prev', 'play', 'next', 'end', 'flex', 'compare', 'quality', 'fps', 'fullscreen'], position: 'bottom', hidden: false },
   timeline: { items: ['split', 'delLeft', 'delRight', 'space', 'detach', 'tool', 'speedline', 'jumps', 'snap', 'multicam', 'delete', 'flex', 'tlinfo', 'tlzoom'], position: 'top', hidden: false },
 };
 
 /** Which sections each panel shows to begin with. */
 export const DEFAULT_SECTIONS: Record<string, string[]> = {
-  reframe: ['Keyframes', 'Subject tracking', 'View', 'Framing', 'Lens', 'Lens details', 'Debug'],
+  reframe: ['Keyframes', 'Curves', 'Subject tracking', 'View', 'Framing', 'Lens', 'Lens details', 'Debug'],
   stabilize: ['Stabilization', 'Crop', 'Horizon'],
   color: ['Input color', 'Presets', 'Light', 'Color', 'Detail', 'LUT', 'Lens match', 'Match clips'],
   effects: ['Masks', 'Motion blur (ND filter)', 'Speed & lens', 'Film & light', 'Quick looks'],
-  clip: ['Transform', 'Layout', 'Speed', 'Airtime', 'Audio', 'Trim'],
-  'sel:text': ['Text', 'Font', 'Colour & effect', 'Position', 'Overlay timing'],
+  clip: ['Transform', 'Layout', 'Speed', 'Airtime', 'Audio', 'Sound tools', 'Trim'],
+  'sel:text': ['Text', 'Motion title', 'Font', 'Colour & effect', 'Text path', 'Position', 'Overlay timing'],
   'sel:gauge': ['Look', 'Position', 'Overlay timing'],
   'sel:transition': [...TRANSITION_GROUPS.map(([g]) => g), 'Transition timing'],
-  'sel:audio': ['Volume & fades'],
+  'sel:audio': ['Volume & fades', 'Sound tools'],
 };
 
 /** Toolbar items added later: put into saved toolbars once (next to a neighbour), then left to the user. */
-const NEW_ITEMS: { item: string; bar: BarId; before: string }[] = [{ item: 'projects', bar: 'main', before: 'import' }, { item: 'compare', bar: 'transport', before: 'quality' }, { item: 'card', bar: 'main', before: 'music' }, { item: 'speedline', bar: 'timeline', before: 'delete' }, { item: 'jumps', bar: 'timeline', before: 'delete' }, { item: 'snap', bar: 'timeline', before: 'delete' }, { item: 'tool', bar: 'timeline', before: 'speedline' }, { item: 'multicam', bar: 'timeline', before: 'delete' }];
+const NEW_ITEMS: { item: string; bar: BarId; before: string }[] = [{ item: 'projects', bar: 'main', before: 'import' }, { item: 'compare', bar: 'transport', before: 'quality' }, { item: 'card', bar: 'main', before: 'music' }, { item: 'speedline', bar: 'timeline', before: 'delete' }, { item: 'jumps', bar: 'timeline', before: 'delete' }, { item: 'snap', bar: 'timeline', before: 'delete' }, { item: 'tool', bar: 'timeline', before: 'speedline' }, { item: 'multicam', bar: 'timeline', before: 'delete' }, { item: 'titles', bar: 'main', before: 'gauges' }, { item: 'queue', bar: 'main', before: 'export' }];
 function offerNew(bars: Record<BarId, BarPrefs>, seen: string[]) {
   for (const n of NEW_ITEMS) {
     if (seen.includes(n.item) || Object.values(bars).some((b) => b.items.includes(n.item))) continue;

@@ -5,7 +5,7 @@
 import { AudioBufferSource, canEncodeAudio, canEncodeVideo, Mp4OutputFormat, Output, QUALITY_HIGH, QUALITY_MEDIUM, QUALITY_VERY_HIGH, StreamTarget, VideoSample, VideoSampleSource, type StreamTargetChunk } from 'mediabunny';
 import { TrackDecoder } from '@ace/engine';
 import { parseCube, ReframeRenderer, sharedDevice } from '@ace/media360';
-import { normalizeLoudness } from './loudness';
+import { normalizeLoudness, type LoudnessResult } from './loudness';
 import { framingAspect, overlayState, stackAt, timelineDuration, withOff, type Look, type Timeline, type TimelineClip, type TransitionLook } from '@ace/project';
 import { ace } from './api';
 import { mixTimeline } from './audioEngine';
@@ -33,10 +33,17 @@ export interface ExportOptions {
   quality: Quality;
   /** Export presets: an exact video bit rate (bits a second) instead of the quality's. */
   bitrate?: number;
-  /** Export presets: bring the sound to this loudness (LUFS), peaks under −1 dB. */
-  loudness?: number;
+  /** Bring the sound to this loudness (LUFS); null or missing leaves its level. True peaks are always kept under −1 dBTP. */
+  loudness?: number | null;
   /** Export presets: the output shape for this export only (the edit keeps its own). */
   framing?: string;
+  /** Awaited after each frame: the queue holds a paused export here. */
+  gate?: () => Promise<void>;
+}
+
+export interface ExportResult {
+  /** The exported sound's loudness and peak (null when the edit is silent). */
+  sound: LoudnessResult | null;
 }
 
 export interface ExportProgress {
@@ -247,7 +254,7 @@ class FileValues {
   }
 }
 
-export async function exportTimeline(tlIn: Timeline, opts: ExportOptions, onProgress: (p: ExportProgress) => void, signal: AbortSignal): Promise<void> {
+export async function exportTimeline(tlIn: Timeline, opts: ExportOptions, onProgress: (p: ExportProgress) => void, signal: AbortSignal): Promise<ExportResult> {
   // A preset's shape: the clips are reframed to fill it, titles and gauges keep their places.
   const tl = opts.framing && opts.framing !== tlIn.framing ? { ...tlIn, framing: opts.framing } : tlIn;
   const { width, height } = outputSize(tl.framing, opts.resolution);
@@ -272,13 +279,15 @@ export async function exportTimeline(tlIn: Timeline, opts: ExportOptions, onProg
 
   onProgress({ fraction: 0, stage: 'Mixing audio' });
   const mix = await mixTimeline(tl, total);
-  if (mix && opts.loudness !== undefined) {
-    onProgress({ fraction: 0, stage: 'Setting loudness' });
+  let sound: LoudnessResult | null = null;
+  if (mix) {
+    onProgress({ fraction: 0, stage: opts.loudness != null ? 'Setting loudness' : 'Checking sound peaks' });
     const ch = Array.from({ length: mix.numberOfChannels }, (_, i) => mix.getChannelData(i));
-    normalizeLoudness(ch, mix.sampleRate, opts.loudness, -1);
+    sound = normalizeLoudness(ch, mix.sampleRate, opts.loudness ?? null, -1);
   }
+  signal.throwIfAborted();
 
-  if (deepKind) return exportDeep(tl, opts, deepKind, layout!, comp, mix, width, height, total, onProgress, signal);
+  if (deepKind) { await exportDeep(tl, opts, deepKind, layout!, comp, mix, width, height, total, onProgress, signal); return { sound }; }
 
   await ace.createFile(opts.path);
   const writable = new WritableStream<StreamTargetChunk>({
@@ -313,6 +322,7 @@ export async function exportTimeline(tlIn: Timeline, opts: ExportOptions, onProg
     await output.finalize();
     await ace.closeFile(opts.path);
     onProgress({ fraction: 1, stage: 'Done' });
+    return { sound };
   } catch (e) {
     await output.cancel().catch(() => {});
     await ace.closeFile(opts.path).catch(() => {});
@@ -432,6 +442,9 @@ async function renderFrames(tl: Timeline, opts: ExportOptions, comp: Compositor,
       exportCost.readMs += performance.now() - r0;
       exportCost.frames++;
       written++;
+      // Paused in the queue: wait here (the decoders keep their place).
+      if (opts.gate) await opts.gate();
+      if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
       onProgress({ fraction: Math.min(0.99, T / total), stage: `Rendering clip ${visible[0]!.index + 1} of ${tl.clips.length}`, fps: written / ((performance.now() - t0) / 1000) });
     }
   } finally {

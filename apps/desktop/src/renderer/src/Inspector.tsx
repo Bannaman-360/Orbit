@@ -8,7 +8,7 @@ import {
   cleanSpeed, hasRamp, localAt, mediaAt, MAX_SPEED, MIN_SPEED, RAMP_PRESETS, rampPreset, removeSpeedKey, setSpeedEase, setSpeedKey, speedAt, speedKeyNear, speedRange,
   fisheyeForLook, cleanXf, isIdentityXf, addMaskKey, MASK_EFFECTS, MAX_MASKS, maskPoseAt, newMask, removeMaskKey, setMaskPose, type Mask, type MaskPose, type MaskShape, LAYOUT_TEMPLATES, xfOf, type Transform,
   type AudioClip, type ClipTrack, type Easing, type Effects, type GaugeDesign, type Grade, type InputChoice, type Look, type Overlay, type Smoothing, type Timeline, type TimelineClip, type Transition,
-  type OffKey, isCompound,
+  type OffKey, isCompound, CURVES, setEasing, titleTemplate, applyTitleTemplate, TEXT_PATHS, isNeutralSound,
 } from '@ace/project';
 import { airtimeStats, CUSTOM_SIGMA_RANGE, DEFAULT_AIRTIME, SMOOTHING_SIGMA_S } from '@ace/telemetry';
 import { baseName } from './api';
@@ -19,6 +19,9 @@ import { FONT_STACK } from './overlayRender';
 import { GaugeLookPicker } from './GaugeLooks';
 import { LensMatchSection } from './LensMatch';
 import { fmtSpeed } from './SpeedLine';
+import { CurveEditor } from './CurveEditor';
+import { SoundTools } from './SoundTools';
+import { TextPathControls, TitlePicker } from './TitlePicker';
 import { fmtTime, Lock, Section, SectionList, Seg, Slider, toggleAllSections, type Units } from './ui';
 import { Icon } from './ui/Icon';
 import { fmtJumpLength } from './gaugeMath';
@@ -312,10 +315,9 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
       <button className={keyed ? 'on' : ''} title={keyed ? 'Update this keyframe with the current settings' : 'Add a keyframe here (K)'} onClick={p.onAddKeyframe}>◆ {keyed ? 'Keyframe' : 'Add keyframe'}</button>
       <button title="Next keyframe" onClick={p.onNextKey} disabled={!keyCount}>▶</button>
       {keyed && (
-        <select value={key!.easing} onChange={(e) => p.onEasing(e.target.value as Easing)} title="How the move into the next keyframe accelerates">
-          <option value="smooth">Ease in/out</option>
-          <option value="linear">Linear</option>
-          <option value="hold">Hold</option>
+        <select value={key!.easing} onChange={(e) => p.onEasing(e.target.value as Easing)} title="How the move into the next keyframe accelerates (shape it in Curves)">
+          {CURVES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+          {key!.easing === 'custom' && <option value="custom">Custom</option>}
         </select>
       )}
       <span className="grow" />
@@ -359,6 +361,12 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
         <Section title="Keyframes" badge={keyCount ? `${keyCount}${keyed ? ' · here' : ''}` : undefined}>{keyBar}
           {keyList}
           <p className="hint">{keyCount ? 'Changes now set a keyframe at the playhead. Delete one with its bin, or click its ◆ on the timeline and press ⌫.' : 'Add a keyframe to animate the view, lens and color over time.'}</p>
+        </Section>
+    ),
+    'Curves': (
+        <Section title="Curves" badge={keyCount > 1 ? undefined : 'Needs 2 keyframes'}>
+          <CurveEditor keyframes={clip.keyframes} mediaUs={p.mediaUs} toTimeline={(t) => mediaToTimeline(start, clip, t)}
+            onCurve={(id, c, g) => p.onClip({ keyframes: setEasing(clip.keyframes, id, c, g) }, `curve-${id}-${g ?? 'all'}`)} />
         </Section>
     ),
     'Subject tracking': canMove && (
@@ -701,6 +709,11 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
         )}
       </Section>
     ),
+    'Sound tools': hasSound && !clip.audioDetached && (
+        <Section title="Sound tools" badge={clip.sound?.voice ? 'Talking' : isNeutralSound(clip.sound) ? undefined : 'On'}>
+          <SoundTools sound={clip.sound} onSound={(sound, key) => p.onClip({ sound }, key)} />
+        </Section>
+    ),
     'Transform': <TransformSection p={p} look={look} keyed={keyed} />,
     'Masks': <MasksSection p={p} clip={clip} />,
     'Layout': (
@@ -861,6 +874,10 @@ function AudioPanel(p: InspectorProps & { audio: AudioClip }) {
           <Slider label="Fade out" value={a.fadeOutUs / 1e6} min={0} max={10} step={0.1} reset={linked ? 0 : 1.5} format={secs} units={SEC} onChange={(v) => p.onAudio({ fadeOutUs: v * 1e6 }, 'm-fo')} />
           <p className="hint">Drag it on the timeline to move it, or drag its edges to trim. It stops where the video ends.</p>
         </Section>
+        ), 'Sound tools': (
+        <Section title="Sound tools" badge={a.sound?.duck ? 'Ducking' : isNeutralSound(a.sound) ? undefined : 'On'}>
+          <SoundTools sound={a.sound} music={!linked} hasVoiceClips={[...p.timeline.clips, ...p.timeline.connected, ...p.timeline.audio].some((c) => c.sound?.voice)} onSound={(sound, key) => p.onAudio({ sound }, key)} />
+        </Section>
         ) }} />
         <div className="row-buttons">
           {linked && <button onClick={() => p.onReattachAudio(linked.id)}>Reattach to clip</button>}
@@ -928,11 +945,31 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
             'Text': isText && (
             <Section title="Text" defaultOpen>
               <textarea className="text-input" rows={3} value={o.text} onChange={(e) => p.onOverlay({ text: e.target.value }, 'ov-text')} placeholder="Type your text" />
-              <div className="chips">
-                {TEXT_PRESETS.map(([name, patch]) => (
-                  <button key={name} onClick={() => p.onOverlay(patch, `ov-preset-${name}`)}>{name}</button>
-                ))}
-              </div>
+              {titleTemplate(o.title)?.hasSubtitle && (
+                <label className="field">Second line
+                  <input value={o.subtitle ?? ''} placeholder="(none)" onChange={(e) => p.onOverlay({ subtitle: e.target.value }, 'ov-subtitle')} />
+                </label>
+              )}
+              {o.title ? (
+                <p className="hint">Words in braces are filled in from the ride: {'{gps}'}, {'{alt}'}, {'{date}'}, {'{time}'}, {'{speed}'}.</p>
+              ) : (
+                <div className="chips">
+                  {TEXT_PRESETS.map(([name, patch]) => (
+                    <button key={name} onClick={() => p.onOverlay(patch, `ov-preset-${name}`)}>{name}</button>
+                  ))}
+                </div>
+              )}
+            </Section>
+            ),
+            'Motion title': isText && (
+            <Section title="Motion title" badge={titleTemplate(o.title)?.name}>
+              <TitlePicker o={o} onPick={(id) => { p.onOverlay(applyTitleTemplate(o, id), 'ov-title'); if (id) p.onPreviewAt(o.startUs); }} />
+              <p className="hint">Titles move in and out by themselves, in your colours and font. Point at one to see it move.</p>
+            </Section>
+            ),
+            'Text path': isText && !o.title && (
+            <Section title="Text path" badge={o.path ? TEXT_PATHS.find(([k]) => k === o.path!.kind)?.[1] : undefined}>
+              <TextPathControls o={o} onPath={(path, key) => p.onOverlay({ path }, key)} />
             </Section>
             ),
             'Font': isText && (
@@ -959,8 +996,10 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
               <div className="field-row">
                 {colour('Text', 'color')}
                 {colour('Outline', 'outlineColor')}
-                {colour('Box', 'bgColor')}
+                {o.title && colour('Accent', 'accent')}
+                {colour(o.title ? 'Panel' : 'Box', 'bgColor')}
               </div>
+              {o.title && <Slider label="Panel opacity" value={o.bgOpacity} min={0} max={1} reset={titleTemplate(o.title)?.patch.bgOpacity ?? 0.45} units={PCT} format={pct} onChange={(v) => p.onOverlay({ bgOpacity: v }, 'ov-bgop')} />}
               <Slider label="Outline" value={o.outline} min={0} max={0.2} step={0.002} reset={0} units={PCT} format={pct} onChange={(v) => p.onOverlay({ outline: v }, 'ov-outline')} />
               <Seg value={o.background} options={[['none', 'Plain'], ['shadow', 'Shadow'], ['glow', 'Glow'], ['box', 'Box']]} onChange={(v) => p.onOverlay({ background: v }, 'ov-bg')} />
               {o.background === 'box' && <Slider label="Box opacity" value={o.bgOpacity} min={0} max={1} reset={0.45} units={PCT} format={pct} onChange={(v) => p.onOverlay({ bgOpacity: v }, 'ov-bgop')} />}
@@ -1017,9 +1056,15 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
             ),
             'Overlay timing': (
             <Section title="Timing" id="Overlay timing">
-          <Seg value={o.animation} options={o.kind === 'text' ? ANIMATIONS : ANIMATIONS.filter(([a]) => a !== 'typewriter')} onChange={(v) => { p.onOverlay({ animation: v }, 'ov-anim'); if (v !== 'none') p.onPreviewAt(o.startUs); }} />
-          <p className="hint">How the {o.kind === 'text' ? 'text' : 'gauge'} appears at its start and leaves at its end. It doesn’t move in between.
-            {o.animation !== 'none' && <> <button className="link" onClick={() => p.onPreviewAt(o.startUs)}>Play it</button></>}</p>
+          {o.title ? (
+            <p className="hint">The title moves in at its start and out at its end. <button className="link" onClick={() => p.onPreviewAt(o.startUs)}>Play it</button></p>
+          ) : (
+            <>
+              <Seg value={o.animation} options={o.kind === 'text' ? ANIMATIONS : ANIMATIONS.filter(([a]) => a !== 'typewriter')} onChange={(v) => { p.onOverlay({ animation: v }, 'ov-anim'); if (v !== 'none') p.onPreviewAt(o.startUs); }} />
+              <p className="hint">How the {o.kind === 'text' ? 'text' : 'gauge'} appears at its start and leaves at its end. It doesn’t move in between.
+                {o.animation !== 'none' && <> <button className="link" onClick={() => p.onPreviewAt(o.startUs)}>Play it</button></>}</p>
+            </>
+          )}
           <Slider label="Start" value={o.startUs / 1e6} min={0} max={total} step={0.05} format={secs} units={SEC} onChange={(v) => p.onOverlay({ startUs: Math.round(v * 1e6), endUs: Math.round(v * 1e6) + (o.endUs - o.startUs) }, 'ov-start')} />
           <Slider label="Duration" value={(o.endUs - o.startUs) / 1e6} min={0.2} max={total} step={0.05} format={secs} units={SEC} onChange={(v) => p.onOverlay({ endUs: o.startUs + Math.round(v * 1e6) }, 'ov-dur')} />
         </Section>

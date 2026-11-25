@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { limit, measureLufs, normalizeLoudness } from './loudness';
+import { limit, measureLufs, normalizeLoudness, truePeakDb } from './loudness';
 
 const FS = 48000;
 const sine = (amp: number, hz = 997, s = 5) => {
@@ -35,5 +35,38 @@ describe('loudness (BS.1770)', () => {
     const a = sine(0.2), b = a.slice();
     limit([a], FS, 0.9);
     expect(a).toEqual(b);
+  });
+});
+
+describe('true peak', () => {
+  it('finds the peak between samples', () => {
+    // A sine at a quarter of the sample rate, sampled 45° off its peaks: samples read 0.707, the wave reaches 1.
+    const a = Float32Array.from({ length: 4800 }, (_, i) => Math.sin((Math.PI / 2) * i + Math.PI / 4));
+    expect(Math.max(...a)).toBeCloseTo(0.7071, 3);
+    expect(truePeakDb([a])).toBeGreaterThan(-0.6);
+  });
+  it('the limiter holds true peaks under −1 dBTP', () => {
+    const a = Float32Array.from({ length: FS }, (_, i) => 0.95 * Math.sin((2 * Math.PI * 11025 * i) / FS + Math.PI / 4));
+    const r = normalizeLoudness([a], FS, -14, -1);
+    expect(r.truePeak).toBeLessThanOrEqual(-0.9);
+    expect(truePeakDb([a])).toBeLessThanOrEqual(-0.9);
+  });
+  it('can leave the level and only limit', () => {
+    const a = sine(0.1);
+    const r = normalizeLoudness([a, a.slice()], FS, null);
+    expect(r.gainDb).toBe(0);
+    expect(r.after).toBeCloseTo(r.before, 3);
+  });
+});
+
+describe('peaky sound', () => {
+  it('still reaches the target after limiting', () => {
+    // A quiet tone with loud clicks every half second, like drums or knocks on the microphone.
+    const a = sine(0.02, 440, 6);
+    for (let i = 0; i < a.length; i += FS / 2) for (let k = 0; k < 400; k++) a[i + k] = (k % 2 ? 0.9 : -0.9) * (1 - k / 400);
+    const b = a.slice();
+    const r = normalizeLoudness([a, b], FS, -14, -1);
+    expect(Math.abs(r.after + 14)).toBeLessThan(0.6);
+    expect(r.truePeak).toBeLessThanOrEqual(-0.9);
   });
 });

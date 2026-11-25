@@ -60,6 +60,110 @@ export interface Overlay {
   airShow?: 'best' | 'total' | 'last' | 'running';
   /** Gauges: read the ride data of this clip on V2–V6. Missing = the main-row clip under the playhead. */
   sourceClipId?: string;
+  /** Text: a motion title template (see TITLE_TEMPLATES); it brings its own movement in and out. */
+  title?: string;
+  /** Motion titles: the second line (a role, place, date…). */
+  subtitle?: string;
+  /** Text: runs along a path instead of a straight line. */
+  path?: TextPath;
+}
+
+/** A path for text: an arc, a wave, a full circle, or a line drawn by hand. */
+export interface TextPath {
+  kind: 'arc' | 'wave' | 'circle' | 'freehand';
+  /** Arc and wave: how much it bends, −1…1 (negative bends the other way). Circle: −1 runs the text inside. */
+  bend: number;
+  /** Freehand: the line, each point −0.5…0.5 across and down a box twice as wide as high. */
+  points?: [number, number][];
+}
+export const TEXT_PATHS: [TextPath['kind'] | 'none', string][] = [['none', 'Straight'], ['arc', 'Arc'], ['wave', 'Wave'], ['circle', 'Circle'], ['freehand', 'Drawn']];
+
+export type TitleCategory = 'lower' | 'card' | 'end' | 'place';
+export const TITLE_CATEGORIES: [TitleCategory, string][] = [['lower', 'Lower thirds'], ['card', 'Title cards'], ['end', 'End cards'], ['place', 'Location tags']];
+export interface TitleTemplate {
+  id: string;
+  name: string;
+  category: TitleCategory;
+  /** Starting text and second line. Second line words in braces are filled in from the ride: {gps}, {date}, {time}, {alt}, {speed}. */
+  text: string;
+  subtitle: string;
+  /** Uses the second line. */
+  hasSubtitle: boolean;
+  patch: Partial<Overlay>;
+}
+
+const LT: Partial<Overlay> = { x: 0.06, y: 0.8, size: 0.065, align: 'left', background: 'none', outline: 0, tracking: 0, italic: false };
+const CARD: Partial<Overlay> = { x: 0.5, y: 0.5, size: 0.12, align: 'center', background: 'none', outline: 0, italic: false };
+export const TITLE_TEMPLATES: TitleTemplate[] = [
+  // Lower thirds: the anchor is their left edge.
+  { id: 'lt-bar', name: 'Accent bar', category: 'lower', text: 'Your name', subtitle: 'Rider · Team', hasSubtitle: true, patch: { ...LT, font: 'avenir', bold: true, color: '#ffffff', accent: '#ff7a1a', bgColor: '#000000', bgOpacity: 0.5 } },
+  { id: 'lt-line', name: 'Underline', category: 'lower', text: 'Your name', subtitle: 'Where or what', hasSubtitle: true, patch: { ...LT, font: 'futura', bold: true, uppercase: true, tracking: 0.06, color: '#ffffff', accent: '#ffd60a', bgColor: '#000000', bgOpacity: 0 } },
+  { id: 'lt-box', name: 'Solid box', category: 'lower', text: 'Your name', subtitle: 'Rider', hasSubtitle: true, patch: { ...LT, font: 'sans', bold: true, color: '#111111', accent: '#ff375f', bgColor: '#ffffff', bgOpacity: 0.95 } },
+  { id: 'lt-tag', name: 'Name tag', category: 'lower', text: 'Your name', subtitle: 'Pro rider', hasSubtitle: true, patch: { ...LT, font: 'condensed', bold: true, uppercase: true, italic: true, color: '#ffffff', accent: '#e10600', bgColor: '#111111', bgOpacity: 0.9 } },
+  { id: 'lt-stack', name: 'Stacked', category: 'lower', text: 'Your name', subtitle: 'Riding since 2012', hasSubtitle: true, patch: { ...LT, font: 'rounded', bold: true, color: '#ffffff', accent: '#0a84ff', bgColor: '#1c1c1e', bgOpacity: 0.85 } },
+  { id: 'lt-minimal', name: 'Minimal', category: 'lower', text: 'Your name', subtitle: 'Second line', hasSubtitle: true, patch: { ...LT, font: 'avenir', bold: false, tracking: 0.04, color: '#ffffff', accent: '#ffffff', bgColor: '#000000', bgOpacity: 0, background: 'shadow' } },
+  // Title cards: the anchor is their centre.
+  { id: 'tc-spread', name: 'Spread', category: 'card', text: 'SEND IT', subtitle: 'Summer session', hasSubtitle: true, patch: { ...CARD, font: 'futura', bold: true, uppercase: true, tracking: 0.12, color: '#ffffff', accent: '#ffffff', background: 'shadow' } },
+  { id: 'tc-drop', name: 'Letter drop', category: 'card', text: 'DROP IN', subtitle: '', hasSubtitle: false, patch: { ...CARD, font: 'impact', bold: false, uppercase: true, outline: 0.06, outlineColor: '#000000', color: '#ffd400', accent: '#ffd400' } },
+  { id: 'tc-cinema', name: 'Cinematic', category: 'card', text: 'The Long Way Down', subtitle: 'A ride film', hasSubtitle: true, patch: { ...CARD, size: 0.09, font: 'didot', bold: false, uppercase: true, tracking: 0.25, color: '#f4efe6', accent: '#f4efe6', bgColor: '#000000', bgOpacity: 1 } },
+  { id: 'tc-glitch', name: 'Glitch', category: 'card', text: 'FULL SEND', subtitle: '', hasSubtitle: false, patch: { ...CARD, font: 'heavy', bold: true, uppercase: true, color: '#ffffff', accent: '#ff2bd6', bgColor: '#00e5ff' } },
+  { id: 'tc-punch', name: 'Zoom punch', category: 'card', text: 'BIG AIR', subtitle: '', hasSubtitle: false, patch: { ...CARD, size: 0.16, font: 'impact', bold: false, italic: true, uppercase: true, outline: 0.05, outlineColor: '#000000', color: '#ffffff', accent: '#ff3b30', background: 'shadow' } },
+  { id: 'tc-outline', name: 'Outline fill', category: 'card', text: 'ENDURO', subtitle: '', hasSubtitle: false, patch: { ...CARD, font: 'heavy', bold: true, uppercase: true, tracking: 0.04, color: '#ffffff', accent: '#ffffff' } },
+  { id: 'tc-split', name: 'Split line', category: 'card', text: 'DAY ONE', subtitle: 'Whistler bike park', hasSubtitle: true, patch: { ...CARD, size: 0.1, font: 'futura', bold: true, uppercase: true, tracking: 0.1, color: '#ffffff', accent: '#30d158', background: 'shadow' } },
+  { id: 'tc-type', name: 'Typed', category: 'card', text: 'Lap 1', subtitle: 'Warm-up run', hasSubtitle: true, patch: { ...CARD, size: 0.09, font: 'mono', bold: true, color: '#ffffff', accent: '#30d158', background: 'shadow' } },
+  // End cards.
+  { id: 'end-thanks', name: 'Thanks for watching', category: 'end', text: 'Thanks for watching', subtitle: 'Subscribe for more rides', hasSubtitle: true, patch: { ...CARD, size: 0.09, font: 'rounded', bold: true, color: '#ffffff', accent: '#ff3b30', bgColor: '#000000', bgOpacity: 0.55 } },
+  { id: 'end-credits', name: 'Credits roll', category: 'end', text: 'Filmed by\nYour name\n\nRiders\nFirst rider\nSecond rider\n\nMusic\nSong name', subtitle: '', hasSubtitle: false, patch: { ...CARD, size: 0.055, font: 'avenir', bold: false, color: '#ffffff', accent: '#ffffff', bgColor: '#000000', bgOpacity: 0.6 } },
+  { id: 'end-card', name: 'Fade out card', category: 'end', text: 'See you on the trail', subtitle: '@yourchannel', hasSubtitle: true, patch: { ...CARD, size: 0.08, font: 'futura', bold: true, color: '#ffffff', accent: '#ff7a1a', bgColor: '#0b0b0d', bgOpacity: 1 } },
+  // Location tags.
+  { id: 'loc-pin', name: 'Map pin', category: 'place', text: 'Place name', subtitle: '{gps}', hasSubtitle: true, patch: { ...LT, y: 0.14, font: 'avenir', bold: true, color: '#ffffff', accent: '#ff3b30', bgColor: '#000000', bgOpacity: 0.45 } },
+  { id: 'loc-coords', name: 'Coordinates', category: 'place', text: '{gps}', subtitle: '{alt}', hasSubtitle: true, patch: { ...LT, y: 0.88, size: 0.045, font: 'mono', bold: true, color: '#ffffff', accent: '#30d158', bgColor: '#000000', bgOpacity: 0.5 } },
+  { id: 'loc-stamp', name: 'Date stamp', category: 'place', text: '{date}', subtitle: '{time}', hasSubtitle: true, patch: { ...LT, x: 0.72, y: 0.9, size: 0.05, font: 'mono', bold: true, color: '#ffb000', accent: '#ff3b30', bgColor: '#000000', bgOpacity: 0, background: 'shadow' } },
+  { id: 'loc-sign', name: 'Trail sign', category: 'place', text: 'Trail name', subtitle: 'Black · 4.2 km', hasSubtitle: true, patch: { ...LT, y: 0.2, size: 0.06, font: 'condensed', bold: true, uppercase: true, color: '#ffffff', accent: '#ffffff', bgColor: '#1f5f3a', bgOpacity: 1 } },
+];
+export const titleTemplate = (id: string | undefined) => (id ? TITLE_TEMPLATES.find((t) => t.id === id) : undefined);
+
+/** A motion title from a template (its starting words, look and place). */
+export function newTitleOverlay(templateId: string, startUs: number, endUs: number): Overlay {
+  const t = titleTemplate(templateId) ?? TITLE_TEMPLATES[0]!;
+  return { ...newTextOverlay(startUs, endUs, t.text), ...t.patch, title: t.id, subtitle: t.subtitle, animation: 'none' };
+}
+
+/**
+ * Changes a title's template, keeping its words when they were changed from the old template's
+ * (and its place when it stays the same kind of title).
+ */
+export function applyTitleTemplate(o: Overlay, templateId: string | null): Partial<Overlay> {
+  if (!templateId) return { title: undefined, animation: 'fade' };
+  const t = titleTemplate(templateId);
+  if (!t) return {};
+  const old = titleTemplate(o.title);
+  const keepText = old ? o.text !== old.text : o.kind === 'text' && o.text !== 'Your text';
+  const keepSub = !!o.subtitle && (!old || o.subtitle !== old.subtitle);
+  const { x, y, ...look } = t.patch;
+  const samePlace = old?.category === t.category;
+  return { ...look, ...(samePlace ? {} : { x, y }), title: t.id, animation: 'none', text: keepText ? o.text : t.text, subtitle: keepSub ? o.subtitle : t.subtitle, path: undefined };
+}
+
+/** How far a title's movement in and out has gone at timeline time T (seconds since it started, and its length). */
+export interface TitleTime { t: number; len: number; tin: number; tout: number }
+export function titleTime(o: Pick<Overlay, 'startUs' | 'endUs'>, T: number, inS = 0.8, outS = 0.5): TitleTime {
+  const len = (o.endUs - o.startUs) / 1e6, t = (T - o.startUs) / 1e6;
+  const scale = Math.min(1, len / (inS + outS + 0.2));
+  return { t, len, tin: Math.max(0, Math.min(1, t / (inS * scale))), tout: Math.max(0, Math.min(1, (len - t) / (outS * scale))) };
+}
+
+/** A text path made safe (from a file). */
+export function cleanTextPath(p: unknown): TextPath | undefined {
+  if (!p || typeof p !== 'object') return undefined;
+  const r = p as Partial<TextPath>;
+  if (!['arc', 'wave', 'circle', 'freehand'].includes(r.kind as string)) return undefined;
+  const bend = Number.isFinite(r.bend) ? Math.max(-1, Math.min(1, r.bend!)) : 0.5;
+  const points = Array.isArray(r.points)
+    ? r.points.filter((q): q is [number, number] => Array.isArray(q) && q.length === 2 && q.every((v) => typeof v === 'number' && Number.isFinite(v))).map(([a, b]) => [Math.max(-0.5, Math.min(0.5, a)), Math.max(-0.5, Math.min(0.5, b))] as [number, number]).slice(0, 400)
+    : undefined;
+  if (r.kind === 'freehand' && (!points || points.length < 2)) return undefined;
+  return { kind: r.kind!, bend, ...(r.kind === 'freehand' ? { points } : {}) };
 }
 
 export const GAUGES: [GaugeKind, string][] = [
@@ -229,7 +333,11 @@ export function newGaugeOverlay(kind: GaugeKind, startUs: number, endUs: number)
 
 /** Fills in anything missing from an overlay loaded from an older project. */
 export function fixOverlay(o: Partial<Overlay>): Overlay {
-  return { ...BASE, id: newId(), kind: 'text', startUs: 0, endUs: 3_000_000, ...o } as Overlay;
+  const out = { ...BASE, id: newId(), kind: 'text', startUs: 0, endUs: 3_000_000, ...o } as Overlay;
+  if (out.title !== undefined && !titleTemplate(out.title)) delete out.title;
+  if (out.subtitle !== undefined && typeof out.subtitle !== 'string') delete out.subtitle;
+  if (out.path !== undefined) { const p = cleanTextPath(out.path); if (p) out.path = p; else delete out.path; }
+  return out;
 }
 
 export const updateOverlay = <T extends { overlays: Overlay[] }>(tl: T, id: string, patch: Partial<Overlay>): T => ({

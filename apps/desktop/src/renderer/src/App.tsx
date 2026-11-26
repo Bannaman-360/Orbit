@@ -24,7 +24,7 @@ import { grabFrame, loadLut, MAX_LAYERS } from './exporter';
 import { gradeView, SCOPE_EVERY_MS } from './gradeView';
 import { ScopesPanel } from './Scopes';
 import { forgetPictureMotion, stabiliseFromPicture } from './flowStab';
-import { adoptReframe, canReframe, lensLookOf, clipLens, clipLookAt, flatDirection, flatShot, FOLLOW_ROOM, ownLookAt, roomFov, shareOf, shownFov, withoutEffects, presentLook, pushClipFrame, reframeSignature } from './frameRender';
+import { adoptReframe, canReframe, lensLookOf, clipLens, clipLookAt, flatDirection, flatShot, FOLLOW_ROOM, ownLookAt, roomFov, shareOf, shownFov, withoutEffects, presentLook, pushClipFrame, reframeSignature, shownXf } from './frameRender';
 import { angleBetween, directionAt, trackSubject } from './tracker';
 import { InspectorPanel, SelectionPanel, type InspectorProps } from './Inspector';
 import { MediaBin, type BinItem } from './MediaBin';
@@ -94,6 +94,19 @@ const audioKey = (tl: Timeline) =>
     .map((a) => `${a.path}:${a.startUs}:${a.inUs}:${a.outUs}:${a.volume}:${a.fadeInUs}:${a.fadeOutUs}:${speedId(a)}:${a.muteBelow ?? ''}:${a.keepPitch === false ? 'p' : ''}`)
     .join('|')}`;
 
+/**
+ * A new project takes the shape of its first regular video, as in other editors: a phone clip
+ * held upright makes a 9:16 project. Only while the frame shape is still the one it started with.
+ */
+function firstClipShape(prev: Timeline, next: Timeline): Timeline {
+  if (prev.clips.length || prev.connected.length || !next.clips.length || next.framing !== prev.framing || prev.framing !== emptyTimeline().framing) return next;
+  const m = mediaNow(next.clips[0]!.mediaPath);
+  if (!m || m.is360 || !(m.width > 0 && m.height > 0)) return next;
+  const a = m.width / m.height, off = (f: { aspect: number }) => Math.abs(Math.log(f.aspect / a));
+  const best = FRAMINGS.reduce((x, f) => (off(f) < off(x) ? f : x));
+  return best.label === next.framing ? next : { ...next, framing: best.label };
+}
+
 export function App() {
   // --- Timeline state with undo -------------------------------------------------------------
   const [tl, setTl] = useState<Timeline>(emptyTimeline());
@@ -102,7 +115,9 @@ export function App() {
   const hist = useRef({ past: [] as Timeline[], future: [] as Timeline[], lastKey: '', lastAt: 0 });
 
   /** Applies an edit. Edits with the same `key` within a second merge into one undo step. */
-  const commit = useCallback((next: Timeline, key = '') => {
+  const commit = useCallback((given: Timeline, key = '') => {
+    const next = firstClipShape(tlRef.current, given);
+    if (next !== given) setNotice(`The frame shape is now ${next.framing} to match ${baseName(next.clips[0]!.mediaPath)}. Change it with Frame shape in the toolbar.`);
     const h = hist.current;
     const now = performance.now();
     if (!key || key !== h.lastKey || now - h.lastAt > 1000) {
@@ -242,7 +257,8 @@ export function App() {
   function clipFor(path: string) {
     const m = mediaNow(path);
     if (!m) return null;
-    const made0 = newClip(path, m.durationUs, m.is360);
+    // Regular videos start whole (Fit), as in other editors: nothing is cut off until asked.
+    const made0 = { ...newClip(path, m.durationUs, m.is360), ...(m.is360 ? {} : { fit: 'fit' as const }) };
     // 360 clips keep their lens look while zooming.
     const made = m.is360 ? { ...made0, lensLook: DEFAULT_LENS_LOOK } : made0;
     // Without motion data there is nothing to stabilize with (stitched videos have it built in).
@@ -543,7 +559,7 @@ export function App() {
             const ts = l.frames[0]!.timestamp;
             const raw = showRawRef.current && li === 0;
             const look = clipLookAt(l.clip, ts);
-            xfs[li] = look.xf;
+            xfs[li] = shownXf(l.clip, l.media, look, framingAspect(tlRef.current.framing));
             // (Before / after also leaves out what is done to each lens.)
             const shownClip = compareRef.current && l.clip.lenses ? { ...l.clip, lenses: undefined } : l.clip;
             const sig = reframeSignature(shownClip, look, `${raw}|${r.canvas.width}x${r.canvas.height}`);
@@ -1854,10 +1870,17 @@ export function App() {
     for (const l of [...st.layers].reverse()) {
       if (l.track === 0) break;
       if (tlRef.current.tracks[l.track - 1]?.locked) continue;
-      const xf = xfOf(clipLookAt(l.clip, l.mediaUs));
-      if (xf.opacity > 0.02 && hitsLayer(xf, fx, fy, aspect)) return { clip: l.clip, xf };
+      const lk = clipLookAt(l.clip, l.mediaUs), xf = xfOf(lk);
+      const shown = shownXf(l.clip, mediaNow(l.clip.mediaPath), lk, aspect) ?? xf;
+      if (xf.opacity > 0.02 && hitsLayer(shown, fx, fy, aspect)) return { clip: l.clip, xf };
     }
     return null;
+  };
+  /** A regular video at the playhead moves and sizes as a picture when dragged or scrolled on the preview (its transform), as in other editors. */
+  const pictureAt = () => {
+    const cur = editingAt(), m = cur && mediaNow(cur.clip.mediaPath);
+    if (!cur || !m || m.is360 || (cur.clip.track && trackWeight(cur.clip.track, cur.mediaUs) > 0)) return null;
+    return xfOf(clipLookAt(cur.clip, cur.mediaUs));
   };
   const boxStart = useRef<{ x: number; y: number } | null>(null);
   /** Alignment lines shown while dragging text or a gauge on the picture. */
@@ -1910,6 +1933,9 @@ export function App() {
       return;
     }
     if (sel?.kind === 'overlay' || sel?.kind === 'layer') { setSel(null); selRef.current = null; }
+    // A regular clip moves as a picture, as in other editors (unless subject tracking aims it here).
+    const picture = pictureAt();
+    if (picture) { drag.current = { kind: 'layer', x: e.clientX, y: e.clientY, xf: picture }; return; }
     if (look && media && canReframe(media)) drag.current = { kind: 'look', x: e.clientX, y: e.clientY, look };
   };
   const onPointerMove = (e: React.PointerEvent) => {
@@ -1985,6 +2011,11 @@ export function App() {
     }
     if (selectedOverlay) {
       editOverlay({ size: Math.max(0.02, Math.min(1, selectedOverlay.size * Math.exp(-e.deltaY * 0.0015))) }, 'ov-size');
+      return;
+    }
+    const xf = pictureAt();
+    if (xf) {
+      editLook({ xf: cleanXf({ ...xf, scale: xf.scale * Math.exp(-e.deltaY * 0.0015) }) }, 'xf-wheel');
       return;
     }
     if (!look || !media || !clip || !canReframe(media)) return;
@@ -2311,7 +2342,7 @@ export function App() {
       <div className="stage" ref={stageRef}>
           <div
             style={{ visibility: tl.clips.length ? 'visible' : 'hidden' }}
-            className={`frame${trackPick ? ' picking' : media && canReframe(media) ? ' grab' : ''}`}
+            className={`frame${trackPick ? ' picking' : media ? ' grab' : ''}`}
             ref={frameRef}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}

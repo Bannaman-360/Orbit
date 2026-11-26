@@ -32,6 +32,7 @@ Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:
     - playback and editing: `perf`, `full`, `speed`, `scrubback`, `strip`, `zoom`, `follow`, `stab`, `flat`, `protrim` (roll/slip/slide, JKL, Source view), `snap` (snapping, beats), `markers` (markers, project v2, missing files)
     - colour, lens and 360: `color`, `lens`, `lenslook`, `equirect`, `seamcheck`
     - files: `chapters`, `card`, `odd`, `long`, `pool` (ratings, folders, relink, preview copies)
+    - regular videos: `regular` (360 vs regular detection, project shape from the first clip, Fit by default, drag/scroll/crop as a picture; preview vs export)
     - layers: `layers` (tracks V2–V6, picture in picture, split screen; preview vs export, 2×4K playback)
     - masks: `masks` (blur, pixelate, hide; soft edge, invert, keyframes, follow subject; preview vs export)
     - beta 8 and the rest of milestone 2: `beta8` (track header column, cuts on track clips, gauge trimming and source, solo sound, on/off switches, social export presets and loudness, compound clips, multicam)

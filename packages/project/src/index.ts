@@ -16,3 +16,4 @@ export * from './grading';
 export * from './gaugeSpan';
 export * from './reframe';
 export * from './captions';
+export * from './enhance';

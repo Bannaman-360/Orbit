@@ -11,6 +11,10 @@ import { grabFrame } from './exporter';
 import { getMedia } from './media';
 import type { EditorApi } from './selftest';
 import { lastShifts, plannedAt, smartReframe } from './smartReframe';
+import { aiSource, between, copyFor, enhanceEp, lastBuild, rifeVariant } from './aiCopy';
+import { exportTimeline } from './exporter';
+import { openMedia, TrackDecoder } from '@ace/engine';
+import { ipcReader } from './api';
 import { openSection } from './ui';
 import type { LayerFrame } from './timelinePlayer';
 
@@ -118,6 +122,30 @@ async function speechClip(): Promise<string | null> {
   return ace.writeFile(path, new Uint8Array((output.target as BufferTarget).buffer!));
 }
 
+
+/** Every frame of a video file (first track), as small pictures, in order. */
+async function framesOf(path: string, w: number, h: number, from = 0, to = Infinity): Promise<{ t: number; pic: Pic }[]> {
+  const { size } = await ace.stat(path);
+  const reader = ipcReader(path, size);
+  const info = await openMedia(reader);
+  const track = info.videoTracks[0]!;
+  const times = track.samples.map((s) => s.timestamp).sort((a, b) => a - b).filter((t) => t >= from && t < to);
+  const dec = new TrackDecoder(reader, track);
+  dec.maxAhead = 6;
+  dec.seek(times[0]!);
+  const cv = new OffscreenCanvas(w, h), x = cv.getContext('2d', { willReadFrequently: true })!;
+  const out: { t: number; pic: Pic }[] = [];
+  for (const t of times) {
+    let f: VideoFrame | null = null;
+    for (let i = 0; i < 3000 && !f; i++) { void dec.pump(); f = dec.frameAt(t); if (!f) await sleep(2); }
+    if (!f) break;
+    x.drawImage(f, 0, 0, w, h);
+    out.push({ t, pic: { w, h, d: x.getImageData(0, 0, w, h).data } });
+  }
+  dec.close();
+  return out;
+}
+
 export async function aiCheck(api: EditorApi) {
   const out: Record<string, unknown> = {};
   const fails: string[] = [];
@@ -186,6 +214,135 @@ export async function aiCheck(api: EditorApi) {
   const same = await smartReframe(clip0, m, 16 / 9, () => {}, new AbortController().signal);
   ok('a clip already the frame’s shape is left whole', same.how === 'whole' && !same.patch.keyframes, same.how);
 
+
+
+  // --- In-between frames on two pictures: a textured background panning 1 px, a disc moving 3.2 px ---
+  {
+    const W = 640, H = 384, R = 23;
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    const blobs = Array.from({ length: 300 }, () => [rnd() * (W + 200), rnd() * H, 2 + rnd() * 11, 0.25 + rnd() * 0.45] as const);
+    const pic = (pan: number, cx: number) => {
+      const d = new Uint8ClampedArray(W * H * 4);
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        let g = 0.4;
+        for (const [bx, by, br, v] of blobs) if ((x + pan - bx) ** 2 + (y - by) ** 2 < br * br) g = v;
+        let c = [g * 0.8, g, g * 0.7];
+        if ((x - cx) ** 2 + (y - 200) ** 2 < R * R) c = [0.91, 0.15, 0.1];
+        const i = (y * W + x) * 4;
+        d[i] = c[0]! * 255; d[i + 1] = c[1]! * 255; d[i + 2] = c[2]! * 255; d[i + 3] = 255;
+      }
+      return d;
+    };
+    try {
+      await rifeVariant({});
+      const t = performance.now();
+      const mids = await between(pic(0, 300), pic(1, 303.2), W, H, [0.25, 0.5, 0.75]);
+      const xs = mids.map((d) => redAt({ w: W, h: H, d }));
+      out['test pictures: disc at ¼ ½ ¾ (want 300.8 301.6 302.4)'] = `${xs.map((x) => (x === null ? 'none' : (x * W).toFixed(2))).join(' ')} in ${(performance.now() - t).toFixed(0)} ms`;
+      ok('in-between frames move a disc evenly', xs.every((x, i) => x !== null && Math.abs(x * W - (300.8 + 0.8 * i)) < 0.3), xs.map((x) => x && +(x * W).toFixed(2)));
+    } catch (e) { ok('in-between frames on test pictures', false, String(e)); }
+  }
+
+  // --- Smooth slow motion -------------------------------------------------------------------------
+  {
+    // The ball moves steadily from 1 s to 5 s: in-between frames must put it where it really was.
+    const slow = { ...clip0, inUs: 2 * S, outUs: 2.5 * S, speed: 0.25, enhance: { smooth: true } };
+    const t2 = performance.now();
+    let src: Awaited<ReturnType<typeof copyFor>> | null = null;
+    try { src = await copyFor(slow); } catch (e) { ok('smooth slow motion is made', false, String(e)); }
+    if (src) {
+      const took = (performance.now() - t2) / 1000;
+      out['smooth slow motion took (s, incl. any download)'] = +took.toFixed(1);
+      out['models run on'] = enhanceEp;
+      ok('it makes 4 pictures for each recorded one at ¼ speed', lastBuild.made >= lastBuild.frames * 4 - 8, [lastBuild.frames, lastBuild.made]);
+      // Read the copy back: each picture's ball where it was at that moment.
+      const frames: { t: number; x: number | null }[] = [];
+      {
+        const dec = new TrackDecoder(src.reader, src.tracks[0]!);
+        const times = src.tracks[0]!.samples.map((x) => x.timestamp).sort((a, b) => a - b);
+        dec.maxAhead = 6; dec.seek(times[0]!);
+        const cv = new OffscreenCanvas(320, 180), x = cv.getContext('2d', { willReadFrequently: true })!;
+        for (const t of times) {
+          let f: VideoFrame | null = null;
+          for (let i = 0; i < 3000 && !f; i++) { void dec.pump(); f = dec.frameAt(t); if (!f) await sleep(2); }
+          if (!f) break;
+          x.drawImage(f, 0, 0, 320, 180);
+          frames.push({ t, x: redAt({ w: 320, h: 180, d: x.getImageData(0, 0, 320, 180).data }) });
+        }
+        dec.close();
+      }
+      // (Measuring a blurry, compressed ball reads it a little to one side; the recorded frames show how much.)
+      const off = (f: { t: number; x: number | null }) => (f.x! - subjectX(f.t / S)) * 1280;
+      const recorded = frames.filter((f, i) => f.x !== null && i % 4 === 0).map(off).sort((a, b) => a - b);
+      const bias = recorded[recorded.length >> 1] ?? 0;
+      out['measuring bias (px)'] = +bias.toFixed(2);
+      const errs = frames.filter((f) => f.x !== null).map((f) => Math.abs(off(f) - bias));
+      out['ball across in the copy (time ms: got−true px)'] = frames.slice(0, 24).map((f) => `${((f.t - 2 * S) / 1000).toFixed(1)}:${f.x === null ? 'none' : ((f.x - subjectX(f.t / S)) * 1280).toFixed(1)}`).join(' ');
+      const worst = Math.max(...errs), mean = errs.reduce((a, b) => a + b, 0) / errs.length;
+      ok('the copy has the recording’s own times, 4 times as many', frames.length >= 60 && Math.abs(frames[0]!.t - 2 * S) < 40_000, [frames.length, frames[0]?.t]);
+      ok('in-between frames put the ball where it really was (within 1 px of 1280)', mean < 0.5 && worst < 1, { mean: +mean.toFixed(2), worst: +worst.toFixed(2), holdWouldBe: 4.8 });
+
+      // The preview plays the copy.
+      api.setTimeline(addClip(emptyTimeline(), slow));
+      for (let i = 0; i < 50 && !aiSource(slow); i++) await sleep(100);
+      ok('the preview uses the copy', !!aiSource(slow));
+      const mid = 2 * S + (3 * S) / 30 + (S / 30) * 0.5; // half way between two recorded frames
+      api.player.seek((mid - 2 * S) * 4);
+      await settle(api, 8);
+      const frameBox = document.querySelector<HTMLElement>('.frame')!.getBoundingClientRect();
+      const shot = await ace.capture('ai-smooth-preview');
+      const sx = (await createImageBitmap(new Blob([(await ace.readAll(shot)) as Uint8Array<ArrayBuffer>]))).width / window.innerWidth;
+      const px = redAt(await readPicture(shot, { x: frameBox.left * sx, y: frameBox.top * sx, w: frameBox.width * sx, h: frameBox.height * sx }));
+      document.querySelector<HTMLElement>('.dock-tab[data-panel="clip"]')?.click();
+      openSection('Smooth & sharp');
+      await sleep(400);
+      const sect = document.querySelector('[data-section="Smooth & sharp"]')?.textContent ?? '';
+      ok('the Clip panel shows Smooth & sharp, ready', sect.includes('Smooth slow motion') && sect.includes('Ready'), sect.slice(0, 160));
+      await ace.capture('ai-smooth-section');
+      ok('the preview shows the in-between frame half way between recorded ones', px !== null && Math.abs(px - subjectX(mid / S)) * 1280 < 3, px !== null && { got: +(px * 1280).toFixed(1), want: +(subjectX(mid / S) * 1280).toFixed(1) });
+
+      // The export uses it: every output frame moves the ball on (no repeated frames).
+      const outPath = await ace.selftestOut('ai-smooth-export.mp4');
+      await exportTimeline(addClip(emptyTimeline(), slow), { path: outPath, resolution: 720, fps: 30, codec: 'avc', quality: 'high' }, () => {}, new AbortController().signal);
+      const outFrames = await framesOf(outPath, 320, 180);
+      const xs = outFrames.map((f) => redAt(f.pic)).filter((v): v is number => v !== null);
+      const steps = xs.slice(1).map((v, i) => (v - xs[i]!) * 1280);
+      const stuck = steps.filter((d) => d < 0.6).length;
+      out['export steps px'] = steps.slice(0, 30).map((d) => d.toFixed(1)).join(' ');
+      ok('the export shows a new picture every frame (smooth, not repeated)', xs.length >= 55 && stuck <= 2, { frames: xs.length, stuck, step: +(steps.reduce((a, b) => a + b, 0) / Math.max(1, steps.length)).toFixed(2) });
+    }
+  }
+
+  // --- Sharper pictures ---------------------------------------------------------------------------
+  {
+    const small = { ...clip0, inUs: 3 * S, outUs: 3.2 * S, enhance: { upscale: 2 as const } };
+    const t3 = performance.now();
+    let src: Awaited<ReturnType<typeof copyFor>> | null = null;
+    try { src = await copyFor(small); } catch (e) { ok('sharper pictures are made', false, String(e)); }
+    if (src) {
+      const t = src.tracks[0]!;
+      out['upscaling took (s per picture)'] = +((performance.now() - t3) / 1000 / Math.max(1, lastBuild.made)).toFixed(2);
+      ok('the copy is twice the size', t.width === 2560 && t.height === 1440, [t.width, t.height]);
+      ok('one picture for each recorded one', lastBuild.made === lastBuild.frames, [lastBuild.frames, lastBuild.made]);
+      // Sharper than simply enlarging: more fine detail (edge strength) than a plain resize of the original.
+      const [orig] = await framesOf(path, 2560, 1440, 3.1 * S, 3.2 * S);
+      const dec = new TrackDecoder(src.reader, t);
+      const at = t.samples.map((x) => x.timestamp).sort((a, b) => a - b).find((x) => x >= orig!.t - 500)!;
+      dec.seek(at);
+      let f: VideoFrame | null = null;
+      for (let i = 0; i < 3000 && !f; i++) { void dec.pump(); f = dec.frameAt(at); if (!f) await sleep(2); }
+      const cv = new OffscreenCanvas(2560, 1440), x = cv.getContext('2d', { willReadFrequently: true })!;
+      x.drawImage(f!, 0, 0);
+      const up = { w: 2560, h: 1440, d: x.getImageData(0, 0, 2560, 1440).data };
+      dec.close();
+      const edges = (p: Pic) => { let s = 0; for (let y = 400; y < 1000; y += 2) for (let xx = 400; xx < 2100; xx += 2) { const i = (y * p.w + xx) * 4; s += Math.abs(p.d[i + 1]! - p.d[i + 5]!); } return s; };
+      const e0 = edges(orig!.pic), e1 = edges(up);
+      ok('the picture is sharper than plain enlarging', e1 > e0 * 1.15, { plain: e0, sharper: e1 });
+      const same = redAt({ w: 2560, h: 1440, d: up.d }), want = redAt(orig!.pic);
+      ok('and shows the same thing in the same place', same !== null && want !== null && Math.abs(same - want) < 0.005, [same, want]);
+    }
+  }
 
   // --- Auto subtitles -----------------------------------------------------------------------------
   const speech = await speechClip();

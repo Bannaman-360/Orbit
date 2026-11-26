@@ -1,5 +1,15 @@
 # Changes
 
+## Unreleased
+
+**AI tools (the AI tools button in the toolbar)**
+- Smart reframe to 9:16: turns a wide edit into a tall one for Reels, TikTok and Shorts (or 1:1 and 4:5) and keeps the action in view. Regular clips fill the frame and pan to follow what moves, or where you're heading on a ride. 360 clips point the view the way you travel, from GPS when the clip has it, kept steady and level. The result is ordinary keyframes you can change. One clip at a time: Reframe ▸ Smart reframe.
+- Regular clips that fill the frame have Part shown across and Part shown down (Reframe ▸ Framing), to choose which part of the picture is shown, and to keyframe a pan.
+- Auto subtitles: listens to your clips' own sound (not the music) and writes what's said as captions on the timeline, in English and many other languages. Each caption is ordinary text you can change. Save them as an .srt file for YouTube and other sites.
+- Smooth slow motion (Clip ▸ Smooth & sharp): makes in-between frames where a clip plays slowly, so slow motion flows instead of stuttering.
+- Sharper picture (Clip ▸ Smooth & sharp): makes a regular clip 2× or 4× bigger and sharper, up to 4K. Good for older or phone clips. It is slow: several seconds per frame.
+- The AI models download the first time a tool needs them, once each (78 MB for speech to text, 23 MB for slow motion, 5 MB for sharper pictures). They run on this computer: nothing you film is uploaded. AI tools ▸ AI models on this computer lists them, and removes them to free space.
+
 ## 0.1.0-beta.13
 
 **Regular (not 360) videos edit like in any video editor**

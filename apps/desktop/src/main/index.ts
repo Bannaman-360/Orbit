@@ -356,6 +356,37 @@ ipcMain.handle('proxy:discard', async (_e, file: string) => {
   await unlink(`${file}.part`).catch(() => {});
 });
 
+// --- AI copies (smooth slow motion, sharper pictures; see aiCopy.ts) ---------------------------
+const aiCopyDir = () => path.join(app.getPath('userData'), 'ai-copies');
+ipcMain.handle('aicopy:path', async (_e, src: string, tag: string) => {
+  if (!canRead(src)) throw new Error('File access denied');
+  const st = await stat(src);
+  await mkdir(aiCopyDir(), { recursive: true });
+  const key = createHash('sha1').update(`${path.resolve(src)}|${st.size}|${st.mtimeMs}|${tag}`).digest('hex').slice(0, 24);
+  const file = path.join(aiCopyDir(), `${key}.mp4`);
+  const exists = await stat(file).then(() => true, () => false);
+  readable.add(file);
+  writable.add(file);
+  writable.add(`${file}.part`);
+  return { path: file, exists };
+});
+ipcMain.handle('aicopy:finish', async (_e, file: string) => {
+  if (!inside(file, aiCopyDir())) throw new Error('File access denied');
+  await rename(`${file}.part`, file);
+  readable.add(path.resolve(file));
+});
+ipcMain.handle('aicopy:discard', async (_e, file: string) => {
+  if (!inside(file, aiCopyDir())) throw new Error('File access denied');
+  await unlink(`${file}.part`).catch(() => {});
+});
+ipcMain.handle('aicopy:usage', async () => {
+  const names = await readdir(aiCopyDir()).catch(() => [] as string[]);
+  let bytes = 0;
+  for (const n of names) bytes += (await stat(path.join(aiCopyDir(), n)).catch(() => ({ size: 0 }))).size;
+  return { files: names.length, bytes };
+});
+ipcMain.handle('aicopy:clear', async () => { await rm(aiCopyDir(), { recursive: true, force: true }); });
+
 // --- Relink: find where missing files went --------------------------------------------
 ipcMain.handle('media:relink', async (_e, wanted: Wanted[], folder?: string) => {
   let dir = SELFTEST ? folder : undefined;

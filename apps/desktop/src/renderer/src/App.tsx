@@ -26,6 +26,7 @@ import { ScopesPanel } from './Scopes';
 import { forgetPictureMotion, stabiliseFromPicture } from './flowStab';
 import { reframeNote as noteOf, smartReframe } from './smartReframe';
 import { ModelsDialog, SubtitlesDialog } from './AiDialogs';
+import { ensureCopies, onCopyChange, retryCopy } from './aiCopy';
 import { adoptReframe, canReframe, lensLookOf, clipLens, clipLookAt, flatDirection, flatShot, FOLLOW_ROOM, ownLookAt, roomFov, shareOf, shownFov, withoutEffects, presentLook, pushClipFrame, reframeSignature, shownXf } from './frameRender';
 import { angleBetween, directionAt, trackSubject } from './tracker';
 import { InspectorPanel, SelectionPanel, type InspectorProps } from './Inspector';
@@ -286,6 +287,9 @@ export function App() {
   const slotClip = useRef<(string | null)[]>(Array.from({ length: MAX_LAYERS }, () => null));
   // (Playback sees compound clips as the clips they hold.)
   const player = useMemo(() => new TimelinePlayer(() => sourceRef.current?.tl ?? flattenTimeline(tlRef.current)), []);
+  // AI copies (smooth slow motion, sharper pictures): show each as soon as it's ready.
+  useEffect(() => { const off = onCopyChange(() => { proxyTick((n) => n + 1); player.invalidate(); }); return () => { off(); }; }, [player]);
+  useEffect(() => { const f = flattenTimeline(tl); ensureCopies([...f.clips, ...f.connected]); }, [tl]);
   const audio = useMemo(() => new AudioPlayer(), []);
   const lastResult = useRef<TickResult | null>(null);
   const renderWaiters = useRef<(() => void)[]>([]);
@@ -2340,6 +2344,7 @@ export function App() {
     reframeJob: reframeJob && clip && (reframeJob.clipId === clip.id || reframeJob.clipId === null) ? { progress: reframeJob.progress } : null,
     reframeNote: reframeNote && clip && reframeNote.clipId === clip.id ? reframeNote.text : null,
     onSmartReframe: () => { if (clip) void runSmartReframe([clip.id]); },
+    onRetryCopy: () => { if (clip) retryCopy(clip); },
     onCancelSmartReframe: () => reframeJob?.abort.abort(),
     onPictureMotion: () => void pictureMotion(),
     onCancelPictureMotion: () => motionJob?.abort.abort(),

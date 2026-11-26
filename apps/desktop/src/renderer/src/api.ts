@@ -68,6 +68,12 @@ export interface AceApi {
   onUpdate(f: (s: UpdateState) => void): void;
   /** AI models: which are downloaded, downloading one (progress comes through onModelProgress), removing one, reading a file of one. */
   modelsList(): Promise<ModelState[]>;
+  /** Improved copies of clips (AI): where one goes, finishing or discarding it, space used, deleting them all. */
+  aiCopyPath(src: string, tag: string): Promise<{ path: string; exists: boolean }>;
+  aiCopyFinish(file: string): Promise<void>;
+  aiCopyDiscard(file: string): Promise<void>;
+  aiCopyUsage(): Promise<{ files: number; bytes: number }>;
+  aiCopyClear(): Promise<void>;
   modelsDownload(id: string): Promise<{ ok: boolean; error?: string }>;
   modelsCancel(id: string): Promise<void>;
   modelsRemove(id: string): Promise<void>;

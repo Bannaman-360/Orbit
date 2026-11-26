@@ -11,6 +11,9 @@ what to try, then wait for the go-ahead.
 - **Loudness:** exports aim for −14 LUFS by default; export presets set their own target.
 - **Licensing:** nothing GPL (the app is sold). OK: onnxruntime-web (MIT), transformers.js
   (Apache-2.0), RIFE (MIT), Real-ESRGAN (BSD-3), Whisper (MIT).
+- **Model hosting (milestone 5):** the app downloads models from our own GitHub release `models-v1`
+  (assets named `<model>--<file>`), falling back to the same pinned files on Hugging Face. Every file has a
+  pinned size and SHA-256 (`apps/desktop/src/main/models.ts`).
 - **Branches:** each milestone is built on its own branch, then merged into `main` and released as
   the next beta (see Releasing in CLAUDE.md).
 
@@ -21,7 +24,7 @@ what to try, then wait for the go-ahead.
 | 2. Layers | 1, 2, 4, 14 | **Done** (0.1.0-beta.8 prepared): tracks, N-layer pipeline, Transform and layouts (beta 7); masks and tracked blur, compound clips, multicam |
 | 3. Motion and sound | 5, 6, 7, 9 | **Done** (0.1.0-beta.10 prepared): curves, motion titles and text paths, sound tools and ducking, true-peak loudness, export queue, presets and batch |
 | 4. Colour and finishing | 11, 12, 13, 17 | **Done** (0.1.0-beta.11 prepared): wheels, curves, qualifier, power windows, film looks, scopes, noise reduction, stabilizing from the picture, 5 effects, 17 transitions |
-| 5. AI tools | 8 | Planned |
+| 5. AI tools | 8 | **Done** (on `features/m5-ai-tools`, for 0.1.0-beta.14): smart reframe, auto subtitles, smooth slow motion, sharper pictures |
 
 The numbers are the user's original list:
 1. Multiple video tracks and layering: picture-in-picture, split screen.
@@ -169,6 +172,23 @@ picture-stabilized clips (needs a gyro); temporal noise reduction on a paused fr
   - Transitions: about 15 more, with animated previews.
 
 ## Milestone 5: AI tools (item 8)
+Done (self-test mode `ai`). Runtime: onnxruntime-web 1.31 (MIT) only, its WebGPU build (`ort-wasm-simd-threaded.asyncify.wasm`,
+also used for CPU). transformers.js was left out (it pulls in onnxruntime-node and sharp); Whisper's log-mel, timestamp rules and
+byte-level decoding are in `whisper.ts`. Models: `main/models.ts` (download, SHA-256, `userData/models`), `aiModels.ts`.
+- Smart reframe: `packages/project/src/reframe.ts` (path maths), `interest.ts` (what moves after `backgroundShift`, brightness and
+  colour; the point a forward-moving camera heads to), `smartReframe.ts`. Regular clips pan with `look.pan` (flat shader,
+  `src2.xy`); clips reframed through their lens turn instead; 360 clips: GPS course lined up with where the camera faced
+  (`courseToWorld`), stabilization set to Locked.
+- Auto subtitles: Whisper base (quantized, CPU in `whisperWorker.ts`), captions are overlays with `caption: true`
+  (`captions.ts`, .srt in and out). About 2.7× faster than real time on this Mac.
+- Smooth slow motion and sharper pictures: `clip.enhance` (`enhance.ts`); `aiCopy.ts` makes a copy of the clip's part with the
+  recording's own times (more of them where smoothed), played by the player (`aiSource`) and always used by the export.
+  RIFE 4.25 lite and Real-ESRGAN general v3 run on WebGPU in `enhanceWorker.ts`. RIFE must use the NCHW layout: with
+  ORT's default NHWC on WebGPU its warping is wrong (in-between frames at the wrong moment); checked against the CPU.
+Not done: whisper small (the code reads its size from config.json, but it isn't in the manifest or tested); upscaling 360
+clips; sharper pictures are slow (about 6 s per 720p frame; the fp16 model may halve that); multithreaded CPU (needs
+cross-origin isolation); subtitles from music or voice-over tracks.
+
 - **Smooth slow motion:** RIFE frames for slow parts of speed ramps. Cached; preview plays the
   cache, and export always uses it.
 - **Upscale:** 2× and 4× with Real-ESRGAN compact. Cached.

@@ -2,8 +2,8 @@
 // The model's files come in as bytes (downloaded and checked by the main process); the sound
 // comes in as 16 kHz mono. Out go the stretches of speech with their times.
 
-import * as ort from 'onnxruntime-web/wasm';
-import wasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
+import * as ort from 'onnxruntime-web/webgpu';
+import wasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url';
 import { CHUNK, logMel, makeVocab, melFilters, nextToken, repetitive, SAMPLE_RATE, segmentsOf, type Segment, type Vocab } from './whisper';
 
 ort.env.wasm.wasmPaths = { wasm: wasmUrl };

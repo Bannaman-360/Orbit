@@ -1,7 +1,7 @@
 // Editing panels: sections for the clip under the playhead (which the user can move between
 // panels), and the settings of the selected overlay, transition or audio.
 
-import type { ReactNode } from 'react';
+import { useSyncExternalStore, type ReactNode } from 'react';
 import { effectiveLens, lensK, MIN_FISHEYE } from '@ace/media360';
 import {
   ANIMATIONS, blurLabel, FONTS, clipStarts, framingAspect, DEFAULT_CROP, DEFAULT_TRACK_EASE_S, DEFAULT_TRACK_LENS, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, mediaToTimeline, NO_EFFECTS, trackActive, trackExtent, lookAt, trackHeld, trackRange, trackWeight, GAUGES, lookPatch, GRADE_PRESETS, TEXT_PRESETS, gradeFromPreset, keyframeNear, NEUTRAL_GRADE, timelineDuration, TRANSITION_GROUPS, transitionUs,
@@ -29,6 +29,9 @@ import { TextPathControls, TitlePicker } from './TitlePicker';
 import { fmtTime, Lock, Section, SectionList, Seg, Slider, toggleAllSections, type Units } from './ui';
 import { Icon } from './ui/Icon';
 import { fmtJumpLength } from './gaugeMath';
+import { copyState, ESRGAN, onCopyChange, RIFE } from './aiCopy';
+import { ModelNeeded } from './AiDialogs';
+import { canUpscale, enhancedSize, enhanceOn, smoothFactor, type Enhance } from '@ace/project';
 
 export interface InspectorProps {
   clip: TimelineClip | null;
@@ -125,6 +128,8 @@ export interface InspectorProps {
   reframeJob: { progress: number } | null;
   reframeNote: string | null;
   onSmartReframe: () => void;
+  /** Makes a failed AI copy (smooth slow motion, sharper picture) again. */
+  onRetryCopy: () => void;
   onCancelSmartReframe: () => void;
   onSplit: () => void;
   onDuplicate: () => void;
@@ -706,6 +711,11 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
           </div>
         </Section>
     ),
+    'Smooth & sharp': media && (
+        <Section title="Smooth & sharp" badge={enhanceOn(clip.enhance) ? 'AI' : undefined}>
+          <EnhanceControls clip={clip} media={media} onClip={p.onClip} onRetry={p.onRetryCopy} />
+        </Section>
+    ),
     'Speed': (
         <Section title="Speed" defaultOpen badge={ramp ? 'Ramp' : clip.speed !== 1 ? fmtSpeed(clip.speed) : undefined}>
         <Slider label={ramp ? 'Speed here' : 'Speed'} keyed={ramp && !!speedPoint} value={Math.log2(speedNow)} min={Math.log2(MIN_SPEED)} max={Math.log2(MAX_SPEED)} step={0.01} reset={0} format={() => fmtSpeed(speedNow)} units={{ to: (v) => 2 ** v, from: (n) => Math.log2(Math.max(MIN_SPEED, n)), digits: 2 }} hint={ramp ? 'Changes the point at the playhead, or adds one there. Double-click for normal speed.' : 'Double-click for normal speed'} onChange={(v) => setSpeed(Math.abs(v) < 0.04 ? 1 : +(2 ** v).toFixed(3), 'speed')} />
@@ -715,7 +725,7 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
         {fps >= 50 && !ramp && (
           <div className="row-buttons"><button title="Plays every recorded picture, at 30 a second" onClick={() => p.onSpeed({ speed: cleanSpeed(fps, 30), ...(clip.muteBelow === undefined ? { muteBelow: 0.5 } : {}) }, 'slowmo')}>Use as slow motion ({fmtSpeed(cleanSpeed(fps, 30))})</button></div>
         )}
-        {media && <p className="hint">Recorded at {Math.round(fps)} pictures a second: smooth down to {fmtSpeed(cleanSpeed(fps, 30))} in a 30 fps video{fps >= 50 ? `, ${fmtSpeed(cleanSpeed(fps, 60))} in a 60 fps one` : ''}. Slower than that, pictures repeat{fps * speedRange(clip).min < 23.5 ? ` (this clip goes down to ${Math.max(1, Math.round(fps * speedRange(clip).min))} different pictures a second)` : ''}.</p>}
+        {media && <p className="hint">Recorded at {Math.round(fps)} pictures a second: smooth down to {fmtSpeed(cleanSpeed(fps, 30))} in a 30 fps video{fps >= 50 ? `, ${fmtSpeed(cleanSpeed(fps, 60))} in a 60 fps one` : ''}. {clip.enhance?.smooth ? 'Slower than that, Smooth slow motion (below) makes the pictures in between.' : <>Slower than that, pictures repeat{fps * speedRange(clip).min < 23.5 ? ` (this clip goes down to ${Math.max(1, Math.round(fps * speedRange(clip).min))} different pictures a second)` : ''}. Smooth slow motion (below) can make the pictures in between.</>}</p>}
         <div className="chips">
           {RAMP_PRESETS.map(([k, name, hint]) => <button key={k} title={`${hint}. Replaces the speed of the whole clip.`} onClick={() => p.onSpeed({ speedKeys: rampPreset(k, clip, p.mediaUs, media ? Math.min(0.5, cleanSpeed(fps, 30)) : 0.5), ...(clip.muteBelow === undefined ? { muteBelow: 0.5 } : {}) }, `ramp-${k}`)}>{name}</button>)}
         </div>
@@ -1180,3 +1190,41 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
     </aside>
   );
 }
+
+/** Smooth slow motion and sharper pictures (AI), and how making the copy is going. */
+function EnhanceControls(p: { clip: TimelineClip; media: Media; onClip: InspectorProps['onClip']; onRetry: () => void }) {
+  const { clip, media } = p;
+  useSyncExternalStore(onCopyChange, copyTick);
+  const e = clip.enhance ?? {};
+  const k = smoothFactor(clip);
+  const set = (patch: Partial<Enhance>) => { const next = { ...e, ...patch }; p.onClip({ enhance: next.smooth || next.upscale ? next : undefined }, 'enhance'); };
+  const st = copyState(clip);
+  const upOk = !media.is360 && canUpscale(media.tracks[0]!.width, media.tracks[0]!.height);
+  const size = (u: 2 | 4) => { const s = enhancedSize(media.tracks[0]!.width, media.tracks[0]!.height, { upscale: u }); return `${s.w}×${s.h}`; };
+  return (
+    <>
+      <label className="check" title={k > 1 ? undefined : 'Slow this clip down first (Speed)'}>
+        <input type="checkbox" checked={!!e.smooth} disabled={k <= 1 && !e.smooth} onChange={(x) => set({ smooth: x.target.checked || undefined })} /> Smooth slow motion
+      </label>
+      <p className="hint">{k > 1 ? `Makes in-between frames where this clip plays slowly (up to ${k - 1} for each recorded one), so slow motion flows instead of stuttering.` : 'For clips slowed down under Speed: makes in-between frames so slow motion flows instead of stuttering.'}</p>
+      <label className="field">Sharper picture
+        <Seg value={String(e.upscale ?? 0)} options={[['0', 'Off'], ['2', '2×'], ['4', '4×']]} onChange={(v) => set({ upscale: v === '0' ? undefined : (Number(v) as 2 | 4) })} />
+      </label>
+      <p className="hint">{media.is360 ? '360 videos are already big: this is for regular clips.' : upOk ? `Makes the picture bigger and sharper: 2× is ${size(2)}, 4× is ${size(4)} (at most 4K). Good for older or phone clips.` : 'This clip is already 4K, the biggest this makes.'}</p>
+      {enhanceOn(clip.enhance) && <ModelNeeded id={e.smooth ? RIFE : ESRGAN} />}
+      {e.smooth && e.upscale && <ModelNeeded id={ESRGAN} />}
+      {st.state === 'making' && (
+        <>
+          <p className="hint">Making the improved copy… {Math.round(st.fraction * 100)}%. The preview shows the original until it’s ready; the export waits for it.</p>
+          <div className="flow-progress"><span style={{ width: `${Math.round(st.fraction * 100)}%` }} /></div>
+        </>
+      )}
+      {st.state === 'waiting' && <p className="hint">Waiting to be made (one clip at a time).</p>}
+      {st.state === 'ready' && <p className="hint">Ready: the preview and the export use it.</p>}
+      {st.state === 'failed' && <p className="hint">It couldn’t be made: {st.error} <button className="link" onClick={p.onRetry}>Try again</button></p>}
+    </>
+  );
+}
+let copyCount = 0;
+const copyTick = () => copyCount;
+onCopyChange(() => { copyCount++; });

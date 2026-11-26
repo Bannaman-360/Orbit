@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased
+## 0.1.0-beta.14
 
 **AI tools (the AI tools button in the toolbar)**
 - Smart reframe to 9:16: turns a wide edit into a tall one for Reels, TikTok and Shorts (or 1:1 and 4:5) and keeps the action in view. Regular clips fill the frame and pan to follow what moves, or where you're heading on a ride. 360 clips point the view the way you travel, from GPS when the clip has it, kept steady and level. The result is ordinary keyframes you can change. One clip at a time: Reframe ▸ Smart reframe.

@@ -1,5 +1,12 @@
 # Changes
 
+## 0.1.0-beta.15
+
+**Sound spectrum gauges (Gauges ▸ Sound spectrum)**
+- Shows how strong each pitch is, moment by moment, from deep bass on the left to the highest sounds on the right, in five looks: Bars (with peak caps that hold, then drop), Mirrored, Circle, Curve and LED meter. Each comes in the Classic, Minimal, Neon and Carbon designs; Text and Accent set its colours.
+- It moves to the music while music is playing, and to the clip's own sound otherwise. Listens to (in Look) can fix it to one or the other.
+- The preview and the export draw the same bars, also when scrubbing or exporting a part.
+
 ## 0.1.0-beta.14
 
 **AI tools (the AI tools button in the toolbar)**

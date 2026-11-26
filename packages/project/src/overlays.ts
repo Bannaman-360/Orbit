@@ -4,7 +4,7 @@
 
 import type { TransitionKind } from './timeline';
 
-export type GaugeKind = 'speed' | 'altitude' | 'distance' | 'gforce' | 'airtime' | 'jumpdist' | 'sound' | 'map' | 'timer' | 'clock';
+export type GaugeKind = 'speed' | 'altitude' | 'distance' | 'gforce' | 'airtime' | 'jumpdist' | 'sound' | 'spectrum' | 'map' | 'timer' | 'clock';
 export type OverlayKind = 'text' | GaugeKind;
 export type OverlayFont =
   | 'sans' | 'rounded' | 'condensed' | 'heavy' | 'impact' | 'futura' | 'avenir' | 'gill' | 'optima'
@@ -14,7 +14,7 @@ export type OverlayFont =
 export type OverlayAnimation = 'none' | 'fade' | 'pop' | 'slide-up' | 'typewriter';
 export type OverlayBackground = 'none' | 'shadow' | 'box' | 'glow';
 /** Gauge looks; which ones apply depends on the gauge (see GAUGE_STYLES). */
-export type GaugeStyle = 'digital' | 'dial' | 'needle' | 'bar' | 'graph' | 'square' | 'round';
+export type GaugeStyle = 'digital' | 'dial' | 'needle' | 'bar' | 'graph' | 'square' | 'round' | 'bars' | 'mirror' | 'radial' | 'wave' | 'leds';
 /** A gauge's design: its shapes, type and colours (see GAUGE_DESIGNS). */
 export type GaugeDesign = 'classic' | 'minimal' | 'sport' | 'neon' | 'carbon' | 'lcd' | 'cockpit' | 'arc' | 'ring' | 'tape' | 'badge' | 'moto';
 
@@ -68,6 +68,8 @@ export interface Overlay {
   subtitle?: string;
   /** Text: runs along a path instead of a straight line. */
   path?: TextPath;
+  /** Sound spectrum: what it listens to. Missing = the music while there is some, else the clip's own sound. */
+  listen?: 'clip' | 'music';
   /** Text: a caption made by auto subtitles (replaced when they are made again, saved in the .srt). */
   caption?: boolean;
 }
@@ -178,6 +180,7 @@ export const GAUGES: [GaugeKind, string][] = [
   ['airtime', 'Airtime'],
   ['jumpdist', 'Jump distance'],
   ['sound', 'Sound level'],
+  ['spectrum', 'Sound spectrum'],
   ['map', 'GPS map'],
   ['timer', 'Timer'],
   ['clock', 'Time of day'],
@@ -191,6 +194,7 @@ export const GAUGE_STYLES: Record<GaugeKind, [GaugeStyle, string][]> = {
   airtime: [['digital', 'Number'], ['bar', 'Bar']],
   jumpdist: [['digital', 'Number'], ['bar', 'Bar']],
   sound: [['digital', 'Number'], ['dial', 'Dial'], ['needle', 'Meter'], ['bar', 'Bar'], ['graph', 'Graph']],
+  spectrum: [['bars', 'Bars'], ['mirror', 'Mirrored'], ['radial', 'Circle'], ['wave', 'Curve'], ['leds', 'LED meter']],
   map: [['square', 'Square'], ['round', 'Round']],
   timer: [['digital', 'Number']],
   clock: [['digital', 'Number']],
@@ -203,11 +207,11 @@ export const GAUGE_STYLES: Record<GaugeKind, [GaugeStyle, string][]> = {
 export interface GaugeDesignInfo { id: GaugeDesign; name: string; styles: GaugeStyle[]; kinds?: GaugeKind[]; patch: Partial<Overlay> }
 const WITH_VALUE: GaugeKind[] = ['speed', 'gforce', 'altitude', 'distance', 'airtime', 'jumpdist', 'sound'];
 export const GAUGE_DESIGNS: GaugeDesignInfo[] = [
-  { id: 'classic', name: 'Classic', styles: ['digital', 'dial', 'needle', 'bar', 'graph', 'square', 'round'], kinds: [...WITH_VALUE, 'map', 'timer', 'clock'], patch: { color: '#ffffff', accent: '#ff7a1a', bgColor: '#000000', bgOpacity: 0.45, font: 'condensed', bold: true, italic: false, background: 'shadow' } },
-  { id: 'minimal', name: 'Minimal', styles: ['digital', 'dial', 'bar', 'graph', 'square', 'round'], kinds: [...WITH_VALUE, 'map', 'timer', 'clock'], patch: { color: '#ffffff', accent: '#ffffff', bgColor: '#000000', bgOpacity: 0, font: 'avenir', bold: false, italic: false, background: 'shadow' } },
+  { id: 'classic', name: 'Classic', styles: ['digital', 'dial', 'needle', 'bar', 'graph', 'square', 'round', 'bars', 'mirror', 'radial', 'wave', 'leds'], kinds: [...WITH_VALUE, 'map', 'spectrum', 'timer', 'clock'], patch: { color: '#ffffff', accent: '#ff7a1a', bgColor: '#000000', bgOpacity: 0.45, font: 'condensed', bold: true, italic: false, background: 'shadow' } },
+  { id: 'minimal', name: 'Minimal', styles: ['digital', 'dial', 'bar', 'graph', 'square', 'round', 'bars', 'mirror', 'radial', 'wave', 'leds'], kinds: [...WITH_VALUE, 'map', 'spectrum', 'timer', 'clock'], patch: { color: '#ffffff', accent: '#ffffff', bgColor: '#000000', bgOpacity: 0, font: 'avenir', bold: false, italic: false, background: 'shadow' } },
   { id: 'sport', name: 'Sport', styles: ['digital', 'bar'], patch: { color: '#ffffff', accent: '#ffd400', bgColor: '#111111', bgOpacity: 0.85, font: 'condensed', bold: true, italic: true, background: 'box' } },
-  { id: 'neon', name: 'Neon', styles: ['digital', 'dial', 'needle', 'bar', 'graph', 'square', 'round'], kinds: [...WITH_VALUE, 'map', 'timer', 'clock'], patch: { color: '#e9fdff', accent: '#ff2bd6', bgColor: '#05000f', bgOpacity: 0.35, font: 'rounded', bold: true, italic: false, background: 'glow' } },
-  { id: 'carbon', name: 'Carbon', styles: ['digital', 'dial', 'needle', 'bar', 'graph', 'square', 'round'], kinds: [...WITH_VALUE, 'map', 'timer', 'clock'], patch: { color: '#f2f2f2', accent: '#e10600', bgColor: '#16181b', bgOpacity: 0.92, font: 'futura', bold: true, italic: false, background: 'box' } },
+  { id: 'neon', name: 'Neon', styles: ['digital', 'dial', 'needle', 'bar', 'graph', 'square', 'round', 'bars', 'mirror', 'radial', 'wave', 'leds'], kinds: [...WITH_VALUE, 'map', 'spectrum', 'timer', 'clock'], patch: { color: '#e9fdff', accent: '#ff2bd6', bgColor: '#05000f', bgOpacity: 0.35, font: 'rounded', bold: true, italic: false, background: 'glow' } },
+  { id: 'carbon', name: 'Carbon', styles: ['digital', 'dial', 'needle', 'bar', 'graph', 'square', 'round', 'bars', 'mirror', 'radial', 'wave', 'leds'], kinds: [...WITH_VALUE, 'map', 'spectrum', 'timer', 'clock'], patch: { color: '#f2f2f2', accent: '#e10600', bgColor: '#16181b', bgOpacity: 0.92, font: 'futura', bold: true, italic: false, background: 'box' } },
   { id: 'lcd', name: 'Retro LCD', styles: ['digital'], patch: { color: '#1d2a12', accent: '#1d2a12', bgColor: '#a8c27a', bgOpacity: 0.95, font: 'mono', bold: true, italic: false, background: 'box' } },
   { id: 'cockpit', name: 'Cockpit', styles: ['needle'], kinds: ['speed', 'gforce', 'altitude', 'airtime', 'jumpdist', 'sound'], patch: { color: '#ffffff', accent: '#ff9f0a', bgColor: '#0a0a0a', bgOpacity: 1, font: 'sans', bold: true, italic: false, background: 'box' } },
   { id: 'arc', name: 'Arc', styles: ['dial'], kinds: WITH_VALUE, patch: { color: '#ffffff', accent: '#30d158', bgColor: '#000000', bgOpacity: 0.35, font: 'rounded', bold: true, italic: false, background: 'shadow' } },
@@ -329,6 +333,7 @@ const GAUGE_SPOT: Record<GaugeKind, Partial<Overlay>> = {
   airtime: { x: 0.5, y: 0.87, size: 0.1 },
   jumpdist: { x: 0.7, y: 0.87, size: 0.1 },
   sound: { x: 0.88, y: 0.4, size: 0.1, style: 'bar' },
+  spectrum: { x: 0.5, y: 0.84, size: 0.14, style: 'bars', accent: '#30d158' },
   map: { x: 0.87, y: 0.78, size: 0.3, style: 'square' },
   timer: { x: 0.5, y: 0.08, size: 0.08 },
   clock: { x: 0.12, y: 0.1, size: 0.08 },

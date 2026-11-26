@@ -468,6 +468,7 @@ export function pushClipFrame(r: ReframeRenderer, clip: TimelineClip, media: Med
     turns: media.turns,
     input: opts.raw ? undefined : inputFor(media, clip, frames[0]!),
     lenses: clip.lenses,
+    pan: mode === 'flat' && clip.fit === 'fill' ? look.pan : undefined,
   });
   // (Settings switched off to compare are left out of what is shown.)
   return withOff(look, clip.off);
@@ -520,5 +521,5 @@ export const withoutEffects = (look: Look): Look => { const { wheels: _w, ...res
 const mediaMotion = (clip: TimelineClip) => { const m = mediaNow(clip.mediaPath); return m ? motionId(m) : 0; };
 /** Everything that changes the reframe pass (as opposed to grading), for change detection. */
 export function reframeSignature(clip: TimelineClip, look: Look, extra: string) {
-  return `${clip.id}|${look.yaw.toFixed(3)}|${look.pitch.toFixed(3)}|${look.roll.toFixed(3)}|${look.fov.toFixed(3)}|${look.fisheye.toFixed(4)}|${clip.stabilize.smoothing}:${clip.stabilize.strength ?? ''}|${clip.stabilize.horizon}|${clip.fit}|${clip.lensMode ?? ''}|${clip.stabilize.crop ?? ''}:${clip.stabilize.cropSpeed ?? ''}:${clip.stabilize.maxCrop ?? ''}:${clip.stabilize.cropAmount ?? ''}:${clip.stabilize.rolling ?? ''}|${clip.lenses ? JSON.stringify(clip.lenses) : ''}|${clip.lensLook ? `${clip.lensLook.fov},${clip.lensLook.fisheye}` : ''}|${clip.inputColor ?? ''}:${clip.wideColor ?? ''}|${clip.lensMode ? planVersion : 0}|${clip.lensFix ? `${clip.lensFix.hfov ?? ''},${clip.lensFix.bend ?? ''}` : ''}|${mediaMotion(clip)}|${extra}`;
+  return `${clip.id}|${look.pan ? `${look.pan.x.toFixed(4)},${look.pan.y.toFixed(4)}` : ''}|${look.yaw.toFixed(3)}|${look.pitch.toFixed(3)}|${look.roll.toFixed(3)}|${look.fov.toFixed(3)}|${look.fisheye.toFixed(4)}|${clip.stabilize.smoothing}:${clip.stabilize.strength ?? ''}|${clip.stabilize.horizon}|${clip.fit}|${clip.lensMode ?? ''}|${clip.stabilize.crop ?? ''}:${clip.stabilize.cropSpeed ?? ''}:${clip.stabilize.maxCrop ?? ''}:${clip.stabilize.cropAmount ?? ''}:${clip.stabilize.rolling ?? ''}|${clip.lenses ? JSON.stringify(clip.lenses) : ''}|${clip.lensLook ? `${clip.lensLook.fov},${clip.lensLook.fisheye}` : ''}|${clip.inputColor ?? ''}:${clip.wideColor ?? ''}|${clip.lensMode ? planVersion : 0}|${clip.lensFix ? `${clip.lensFix.hfov ?? ''},${clip.lensFix.bend ?? ''}` : ''}|${mediaMotion(clip)}|${extra}`;
 }

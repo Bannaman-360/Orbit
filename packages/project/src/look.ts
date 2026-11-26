@@ -108,6 +108,12 @@ export interface Look {
   fx: Effects;
   /** Colour wheels: lift, gamma, gain, offset (missing = neutral; see grading.ts). */
   wheels?: Wheels;
+  /**
+   * Regular clips filling the frame: which part of the picture is shown, across and down.
+   * −1 = the left (top) edge of the picture, 0 = the middle (missing), 1 = the right (bottom) edge.
+   * Keyframed with the view.
+   */
+  pan?: { x: number; y: number };
 }
 
 export const NEUTRAL_GRADE: Grade = {

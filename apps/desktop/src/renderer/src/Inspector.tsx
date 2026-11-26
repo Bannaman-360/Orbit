@@ -121,6 +121,11 @@ export interface InspectorProps {
   onPictureMotion: () => void;
   onCancelPictureMotion: () => void;
   onForgetPictureMotion: () => void;
+  /** Smart reframe for the frame shape (this clip), and its progress. */
+  reframeJob: { progress: number } | null;
+  reframeNote: string | null;
+  onSmartReframe: () => void;
+  onCancelSmartReframe: () => void;
   onSplit: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
@@ -428,6 +433,36 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
         <Section title="Framing" defaultOpen>
           <Seg value={clip.fit} options={[['fit', 'Fit (whole picture)'], ['fill', 'Fill frame']]} onChange={(v) => p.onClip({ fit: v }, 'fit')} />
           <p className="hint">Fit shows the whole video, with black where it doesn’t reach the edges. Fill zooms in until there is no black. Drag the picture on the preview to move it, and scroll or pinch to make it bigger or smaller (see Transform).</p>
+          {clip.fit === 'fill' && !clip.lensMode && media && (() => {
+            const pic = media.width / media.height, out = framingAspect(p.timeline.framing);
+            const pan = look.pan ?? { x: 0, y: 0 };
+            const set = (k: 'x' | 'y') => (v: number) => p.onLook({ pan: { ...pan, [k]: v } }, `pan-${k}`);
+            return (
+              <>
+                <Slider label="Part shown across" value={pan.x} min={-1} max={1} step={0.01} reset={0} keyed={keyed} units={PCT} format={signed} locked={pic <= out * 1.01 && 'The whole width of the picture is already shown.'} hint="Which part of the picture fills the frame: −100 is its left edge, +100 its right edge. Keyframe it to pan across. Smart reframe sets it for you." onChange={set('x')} />
+                <Slider label="Part shown down" value={pan.y} min={-1} max={1} step={0.01} reset={0} keyed={keyed} units={PCT} format={signed} locked={pic >= out * 0.99 && 'The whole height of the picture is already shown.'} hint="Which part of the picture fills the frame: −100 is its top, +100 its bottom." onChange={set('y')} />
+              </>
+            );
+          })()}
+        </Section>
+    ),
+    'Smart reframe': media && (
+        <Section title="Smart reframe" badge={p.reframeJob ? `${Math.round(p.reframeJob.progress * 100)}%` : undefined}>
+          {p.reframeJob ? (
+            <>
+              <p className="hint">Finding where the action is… {Math.round(p.reframeJob.progress * 100)}%</p>
+              <div className="flow-progress"><span style={{ width: `${Math.round(p.reframeJob.progress * 100)}%` }} /></div>
+              <div className="row-buttons"><button onClick={p.onCancelSmartReframe}>Stop</button></div>
+            </>
+          ) : (
+            <>
+              <p className="hint">{p.reframeNote ?? (is360
+                ? 'Points the view where you’re riding, for a tall or square frame. It uses GPS when the clip has it, or else where the camera faces.'
+                : clip.track && clip.lensMode ? 'Fills the frame and keeps following the subject you tracked.'
+                : 'Fills the frame and pans to keep the action in view: what moves, or where you’re heading on a ride.')} The result is keyframes you can change.</p>
+              <div className="row-buttons"><button className="primary" onClick={p.onSmartReframe}>Smart reframe this clip</button></div>
+            </>
+          )}
         </Section>
     ),
     'Lens': flat ? knownLens && (

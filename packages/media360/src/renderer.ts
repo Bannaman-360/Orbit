@@ -46,6 +46,8 @@ export interface PushInput {
   input?: InputColor;
   /** Corrections for each lens of a 360 camera. */
   lenses?: LensPair;
+  /** Flat footage filling the frame: which part of the picture is shown (−1…1 across and down). */
+  pan?: { x: number; y: number };
 }
 
 /** Grade values in the order the finishing shader expects (see project/look.ts). */
@@ -340,7 +342,7 @@ export class ReframeRenderer {
       }
       data.set([l.gopro ? l.gopro.aspect : l.aspect, l.stretch, sx, sy], 28);
       data.set([input.outputLens === 'source' ? (mode === '360' ? 2 : 1) : 0, reachX(l, input.view.fov / 2), turns, pic], 32);
-    } else data.set([0, 1, turns, upright], 32);
+    } else { data.set([input.pan?.x ?? 0, input.pan?.y ?? 0, 0, 0], 28); data.set([0, 1, turns, upright], 32); }
     layout?.tiles.forEach((t, i) => {
       data.set([...t.center, t.stream, ...t.right, 0, ...t.down, 0, t.x, t.y, t.size, t.gap ?? 0], 56 + i * 16);
     });

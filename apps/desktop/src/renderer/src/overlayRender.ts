@@ -11,6 +11,8 @@ import { TelemetrySeries } from '@ace/telemetry';
 import { mediaNow } from './media';
 import { scrollingGraph, smoothAt, textTime } from './gaugeMath';
 import { soundLevelAt, SOUND_SCALE } from './soundLevels';
+import { spectrumColumns, spectrumSource } from './soundSpectrum';
+import { barsAt, BANDS, sampleBars } from './spectrum';
 import { carbonPanel, designBox, drawDesigned, setFontStack } from './gaugeDesigns';
 import { FONT_STACK, font, rgba } from './textStyle';
 import { drawTextOnPath, drawTitle, pathBox, titleBox } from './motionTitles';
@@ -284,6 +286,7 @@ export function overlayBox(o: Overlay, W: number, H: number): { x: number; y: nu
   if (o.kind === 'text' && o.title) return titleBox(o, W, H);
   if (o.kind === 'text' && o.path) return pathBox(o, W, H);
   const s = o.size * H;
+  if (o.kind === 'spectrum') return o.style === 'radial' ? { x: o.x * W - s / 2, y: o.y * H - s / 2, w: s, h: s } : { x: o.x * W - s * 1.6, y: o.y * H - s / 2, w: s * 3.2, h: s };
   const d = o.kind !== 'text' && o.kind !== 'map' ? designBox(o) : null;
   if (d) return { x: o.x * W - (d.w * s) / 2, y: o.y * H - (d.h * s) / 2, w: d.w * s, h: d.h * s };
   if (o.kind === 'map' || isRound(o)) return { x: o.x * W - s / 2, y: o.y * H - s / 2, w: s, h: s };
@@ -654,11 +657,113 @@ function drawMap(ctx: Ctx2D, o: Overlay, tl: Timeline, T: number, W: number, H: 
   ctx.restore();
 }
 
+/** A sound spectrum: band levels (0–1) and peak caps, in one of five looks. */
+function drawSpectrum(ctx: Ctx2D, o: Overlay, tl: Timeline, T: number, W: number, H: number) {
+  let levels: { bars: Float32Array; peaks: Float32Array };
+  if (forced) levels = sampleBars(forced.mediaUs);
+  else {
+    const src = spectrumSource(tl, T, o);
+    levels = barsAt(src ? spectrumColumns(src.path, src.music) : null, src?.mediaUs ?? 0);
+  }
+  const { bars, peaks } = levels;
+  const b = overlayBox(o, W, H), s = o.size * H;
+  const round = o.style === 'radial';
+  panel(ctx, o, b.x, b.y, b.w, b.h, round ? b.w / 2 : s * 0.12);
+  const pad = round ? 0 : s * 0.1;
+  const x0 = b.x + pad, y0 = b.y + pad, w = b.w - pad * 2, h = b.h - pad * 2;
+  const n = BANDS, gap = 0.28, bw = w / n;
+  /** Accent at the base, the text colour at the tips. */
+  const grad = (top: number, base: number) => { const g = ctx.createLinearGradient(0, base, 0, top); g.addColorStop(0, o.accent); g.addColorStop(0.55, o.accent); g.addColorStop(1, o.color); return g; };
+  withShadow(ctx, o, s * 0.6);
+  switch (o.style) {
+    case 'mirror': {
+      const mid = y0 + h / 2;
+      const mg = ctx.createLinearGradient(0, y0, 0, y0 + h);
+      mg.addColorStop(0, o.color); mg.addColorStop(0.5, o.accent); mg.addColorStop(1, o.color);
+      ctx.fillStyle = mg;
+      for (let i = 0; i < n; i++) {
+        const v = Math.max(0.02, bars[i]!) * (h / 2);
+        roundRect(ctx, x0 + i * bw + (bw * gap) / 2, mid - v, bw * (1 - gap), v * 2, Math.min(bw * 0.3, v));
+        ctx.fill();
+      }
+      break;
+    }
+    case 'radial': {
+      const cx = b.x + b.w / 2, cy = b.y + b.h / 2, r0 = b.w * 0.22, len = b.w * 0.26;
+      ctx.lineCap = 'round';
+      ctx.lineWidth = Math.max(1.5, ((2 * Math.PI * r0) / (n * 2)) * 0.75);
+      // Each band twice, mirrored left and right, so the ring is whole.
+      for (let k = 0; k < n * 2; k++) {
+        const i = k < n ? k : 2 * n - 1 - k;
+        const a = -Math.PI / 2 + ((k + 0.5) / (n * 2)) * Math.PI * 2;
+        const v = r0 + Math.max(0.04, bars[i]!) * len;
+        ctx.strokeStyle = i / n < 0.5 ? o.accent : o.color;
+        ctx.beginPath(); ctx.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0); ctx.lineTo(cx + Math.cos(a) * v, cy + Math.sin(a) * v); ctx.stroke();
+      }
+      ctx.fillStyle = o.accent;
+      ctx.globalAlpha *= 0.35;
+      ctx.beginPath(); ctx.arc(cx, cy, r0 * (0.7 + 0.3 * (bars[0]! + bars[1]!) / 2), 0, Math.PI * 2); ctx.fill();
+      break;
+    }
+    case 'wave': {
+      const pts = Array.from(bars, (v, i) => [x0 + (i + 0.5) * bw, y0 + h - Math.max(0.02, v) * h] as const);
+      ctx.beginPath();
+      ctx.moveTo(x0, y0 + h);
+      ctx.lineTo(x0, pts[0]![1]);
+      for (let i = 0; i < pts.length - 1; i++) { const [ax, ay] = pts[i]!, [bx, by] = pts[i + 1]!; ctx.quadraticCurveTo(ax, ay, (ax + bx) / 2, (ay + by) / 2); }
+      ctx.lineTo(x0 + w, pts[pts.length - 1]![1]);
+      ctx.lineTo(x0 + w, y0 + h);
+      ctx.closePath();
+      const g = ctx.createLinearGradient(0, y0, 0, y0 + h);
+      g.addColorStop(0, rgba(o.accent, 0.85)); g.addColorStop(1, rgba(o.accent, 0.1));
+      ctx.fillStyle = g; ctx.fill();
+      // The outline along the top only.
+      ctx.beginPath();
+      ctx.moveTo(x0, pts[0]![1]);
+      for (let i = 0; i < pts.length - 1; i++) { const [ax, ay] = pts[i]!, [bx, by] = pts[i + 1]!; ctx.quadraticCurveTo(ax, ay, (ax + bx) / 2, (ay + by) / 2); }
+      ctx.lineTo(x0 + w, pts[pts.length - 1]![1]);
+      ctx.strokeStyle = o.color; ctx.lineWidth = Math.max(1.5, s * 0.025); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      ctx.stroke();
+      break;
+    }
+    case 'leds': {
+      const rows = 12, rh = h / rows;
+      for (let i = 0; i < n; i++) {
+        const lit = Math.max(1, Math.round(bars[i]! * rows)), peak = Math.min(rows - 1, Math.round(peaks[i]! * rows) - 1);
+        for (let k = 0; k < rows; k++) {
+          const on = k < lit || k === peak;
+          ctx.fillStyle = k >= rows - 2 ? '#ff453a' : k >= rows - 5 ? '#ffd60a' : '#30d158';
+          ctx.globalAlpha = on ? 1 : 0.13;
+          ctx.fillRect(x0 + i * bw + (bw * gap) / 2, y0 + h - (k + 1) * rh + rh * 0.15, bw * (1 - gap), rh * 0.7);
+        }
+      }
+      ctx.globalAlpha = 1;
+      break;
+    }
+    default: {
+      // Bars, with peak caps.
+      ctx.fillStyle = grad(y0, y0 + h);
+      for (let i = 0; i < n; i++) {
+        const v = Math.max(0.02, bars[i]!) * h;
+        roundRect(ctx, x0 + i * bw + (bw * gap) / 2, y0 + h - v, bw * (1 - gap), v, Math.min(bw * 0.25, v / 2));
+        ctx.fill();
+      }
+      ctx.fillStyle = o.color;
+      for (let i = 0; i < n; i++) {
+        const py = y0 + h - Math.max(0.02, peaks[i]!) * h - s * 0.035;
+        ctx.fillRect(x0 + i * bw + (bw * gap) / 2, py, bw * (1 - gap), Math.max(1, s * 0.022));
+      }
+    }
+  }
+  noShadow(ctx);
+}
+
 /** One gauge, in its design. */
 function drawGauge(ctx: Ctx2D, o: Overlay, tl: Timeline, T: number, W: number, H: number) {
-  const r = o.kind === 'map' ? null : gaugeReading(o, tl, T);
+  const r = o.kind === 'map' || o.kind === 'spectrum' ? null : gaugeReading(o, tl, T);
   const plain = (oo: Overlay) => {
     if (oo.kind === 'map') drawMap(ctx, oo, tl, T, W, H);
+    else if (oo.kind === 'spectrum') drawSpectrum(ctx, oo, tl, T, W, H);
     else if (drawDesigned({ ctx, o: oo, r: r!, W, H, around: (dt) => gaugeReading(oo, tl, T + dt).num })) return;
     else if (isRound(oo) && oo.style === 'needle') drawNeedle(ctx, oo, r!, W, H);
     else if (isRound(oo)) drawDial(ctx, oo, r!, W, H);
@@ -668,7 +773,7 @@ function drawGauge(ctx: Ctx2D, o: Overlay, tl: Timeline, T: number, W: number, H
   };
   if (o.design === 'carbon') {
     // The carbon panel, then the gauge on it without its own background.
-    const b = overlayBox(o, W, H), round = (o.kind === 'map' && o.style === 'round') || isRound(o);
+    const b = overlayBox(o, W, H), round = (o.kind === 'map' && o.style === 'round') || (o.kind === 'spectrum' && o.style === 'radial') || isRound(o);
     const pad = round ? 0 : o.size * H * 0.04;
     carbonPanel(ctx, o, b.x - pad, b.y - pad, b.w + pad * 2, b.h + pad * 2, round);
     plain({ ...o, background: o.kind === 'map' ? 'none' : 'shadow', bgOpacity: 0 });

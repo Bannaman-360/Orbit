@@ -37,6 +37,7 @@ import { ensureProxies, forgetProxies, onProxyChange, PREVIEW_LEVELS, setPreview
 import { drawOverlays, hitOverlay, layerCss, overlayBox, placedCss } from './overlayRender';
 import { alignBox, type Guides } from './alignGuides';
 import { onSoundLevels } from './soundLevels';
+import { onSpectrum } from './soundSpectrum';
 import { runSelftest, type EditorApi } from './selftest';
 import { applyMasks, maskPlaces, subjectInFrame } from './masksRender';
 import { TimelinePlayer, type TickResult } from './timelinePlayer';
@@ -498,6 +499,7 @@ export function App() {
   drawOverlayRef.current = drawOverlayLayer;
   // A Sound level gauge reads the clip's sound in the background: redraw as more of it is known.
   useEffect(() => onSoundLevels(() => { if (!player.playing) drawOverlayRef.current(); }), []);
+  useEffect(() => onSpectrum(() => { if (!player.playing) drawOverlayRef.current(); }), []);
 
   // Render loop.
   useEffect(() => {

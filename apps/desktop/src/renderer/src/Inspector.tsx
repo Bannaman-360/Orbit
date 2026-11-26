@@ -1128,6 +1128,12 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
                   </select>
                 </label>
               )}
+              {o.kind === 'spectrum' && (
+                <label className="field" title="Which sound the bars move to">
+                  Listens to
+                  <Seg value={o.listen ?? 'auto'} options={[['auto', 'Music, else clip'], ['music', 'Music'], ['clip', 'Clip sound']]} onChange={(v) => p.onOverlay({ listen: v === 'auto' ? undefined : v }, 'ov-listen')} />
+                </label>
+              )}
               {(o.kind === 'airtime' || o.kind === 'jumpdist') && <Seg value={o.airShow ?? 'best'} options={[['best', o.kind === 'jumpdist' ? 'Longest' : 'Best'], ['last', 'Last'], ['total', 'Total'], ['running', 'Running total']]} onChange={(v) => p.onOverlay({ airShow: v }, 'ov-air')} />}
               {(o.kind === 'distance' || o.kind === 'airtime' || o.kind === 'jumpdist' || o.kind === 'timer') && <>
                 <label className="check" title="Off: the count starts again at every cut in the video under the gauge"><input type="checkbox" checked={!!o.keepCounting} onChange={(e) => p.onOverlay({ keepCounting: e.target.checked || undefined }, 'ov-keepcount')} /> Keep counting across cuts</label>
@@ -1142,17 +1148,18 @@ function OverlayPanel(p: InspectorProps & { overlay: Overlay }) {
               <Seg value={o.background} options={[['none', 'None'], ['shadow', 'Shadow'], ['box', 'Panel']]} onChange={(v) => p.onOverlay({ background: v }, 'ov-bg')} />
               <Slider label="Bg opacity" value={o.bgOpacity} min={0} max={1} reset={0.45} units={PCT} format={pct} onChange={(v) => p.onOverlay({ bgOpacity: v }, 'ov-bgop')} />
               <Slider label="Size" value={o.size} min={0.03} max={0.6} step={0.005} reset={0.12} units={PCT} format={pct} onChange={(v) => p.onOverlay({ size: v }, 'ov-size')} />
-              <label className="field">
+              {o.kind !== 'spectrum' && <label className="field">
                 Label
                 <input value={o.text} placeholder="(default)" onChange={(e) => p.onOverlay({ text: e.target.value }, 'ov-label')} />
-              </label>
-              <div className="font-grid compact">
+              </label>}
+              {o.kind !== 'spectrum' && <div className="font-grid compact">
                 {FONTS.map(([k, label]) => (
                   <button key={k} className={o.font === k ? 'on' : ''} style={{ fontFamily: FONT_STACK[k] }} onClick={() => p.onOverlay({ font: k }, 'ov-font')}>{label}</button>
                 ))}
-              </div>
+              </div>}
               <p className="hint">
-                {o.kind === 'timer' ? 'Counts up from when this overlay starts.'
+                {o.kind === 'spectrum' ? 'How strong each pitch is, from deep bass on the left to the highest sounds on the right. Text is the bars’ top colour, Accent their bottom. Pick the look above.'
+                  : o.kind === 'timer' ? 'Counts up from when this overlay starts.'
                   : o.kind === 'clock' ? 'Time of day from the camera’s clock.'
                   : o.kind === 'sound' ? 'How loud the clip’s own sound is, in decibels. Camera microphones aren’t calibrated, so it’s an estimate: a quiet room reads about 40 dB, loud wind or an engine about 90–100 dB.'
                   : o.kind === 'jumpdist' ? 'How far each jump went: ground speed from the GPS × time in the air. Counts up during the jump and holds it for 3 s after landing; between jumps it shows the longest (or last, or total) so far. How jumps are found is set per clip, under Airtime.'

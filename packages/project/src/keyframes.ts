@@ -75,6 +75,7 @@ export function mixLook(a: Look, b: Look, fr: number | GroupFractions): Look {
   return {
     ...(a.xf || b.xf ? { xf: mixTransform(a.xf ?? IDENTITY_XF, b.xf ?? IDENTITY_XF, f.xf) } : {}),
     ...(wheels ? { wheels } : {}),
+    ...(a.pan || b.pan ? { pan: { x: lerp(a.pan?.x ?? 0, b.pan?.x ?? 0, f.view), y: lerp(a.pan?.y ?? 0, b.pan?.y ?? 0, f.view) } } : {}),
     yaw: lerpAngle(a.yaw, b.yaw, f.view),
     pitch: lerp(a.pitch, b.pitch, f.view),
     roll: lerp(a.roll, b.roll, f.view),

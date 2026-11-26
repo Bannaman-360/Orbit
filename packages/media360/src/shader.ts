@@ -18,7 +18,7 @@ struct Uniforms {
   stream : vec4f,  // stream width, stream height, frame aspect (flat mode), show tile overlay
   src0 : vec4f,    // source lens polynomial c0..c3 (see sourceLens.ts)
   src1 : vec4f,    // c4, kind (1 = linear), 1 / radius at half the field of view, widest angle
-  src2 : vec4f,    // unstretched aspect, stretch, output scale x, y
+  src2 : vec4f,    // unstretched aspect, stretch, output scale x, y (flat mode: pan x, y)
   src3 : vec4f,    // output lens (1 = the source's own, 0 = lens family), zoom, quarter turns, picture aspect
   gp : array<vec4f, 5>,    // GoPro lens: poly1..4 | poly5, poly6, 1/zoom, widest radius | mapX 0..3 | mapX 4..7 | mapY
   tiles : array<Tile, 6>,
@@ -342,10 +342,15 @@ fn flat(ndc : vec2f) -> vec4f {
   let frameAspect = u.stream.z;
   var uv = vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
   let fill = u.stream.w > 0.5; // crop to fill instead of letterboxing
+  // (Filled: src2.xy picks which part of the picture is shown, −1…1 across and down.)
   if ((canvasAspect > frameAspect) != fill) {
-    uv.x = (uv.x - 0.5) * canvasAspect / frameAspect + 0.5;
+    let k = canvasAspect / frameAspect;
+    uv.x = (uv.x - 0.5) * k + 0.5;
+    if (fill) { uv.x += u.src2.x * (1.0 - k) * 0.5; }
   } else {
-    uv.y = (uv.y - 0.5) * frameAspect / canvasAspect + 0.5;
+    let k = frameAspect / canvasAspect;
+    uv.y = (uv.y - 0.5) * k + 0.5;
+    if (fill) { uv.y += u.src2.y * (1.0 - k) * 0.5; }
   }
   let c = textureSampleBaseClampToEdge(tex0, samp, turnUv(clamp(uv, vec2f(0.0), vec2f(1.0))));
   let outside = any(uv < vec2f(0.0)) || any(uv > vec2f(1.0));

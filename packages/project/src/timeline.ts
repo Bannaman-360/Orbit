@@ -9,6 +9,7 @@ import { DEFAULT_LOOK, IDENTITY_XF, NEUTRAL_GRADE, NO_EFFECTS, type Look } from 
 import { fixOverlay, type Overlay } from './overlays';
 import { fixSpeedKeys, localAt, mediaAt, playLength, speedAt, type SpeedKey } from './speed';
 import type { ClipTrack } from './track';
+import type { Enhance } from './enhance';
 import type { LensLook } from './lensLook';
 import { fixMasks, type Mask } from './masks';
 import type { Sequence } from './compound';
@@ -139,6 +140,8 @@ export interface TimelineClip {
   multicam?: { group: string; angle: number };
   /** Tone and colour curves (see grading.ts). */
   curves?: GradeCurves;
+  /** AI improvements: smooth slow motion and sharper pictures (see enhance.ts). */
+  enhance?: Enhance;
   /** A secondary correction of one range of colours. */
   qualifier?: Qualifier;
   /** Noise reduction. */

@@ -49,12 +49,13 @@ const P: Record<string, string> = {
   keyboard: 'M3.500 8A1.500 1.500 0 0 1 5 6.500h14A1.500 1.500 0 0 1 20.500 8v8a1.500 1.500 0 0 1-1.500 1.500H5A1.500 1.500 0 0 1 3.500 16ZM7 10h.01M10.300 10h.01M13.700 10h.01M17 10h.01M8 14h8', toolbar: 'M4 6.500A1.500 1.500 0 0 1 5.500 5h13A1.500 1.500 0 0 1 20 6.500v11a1.500 1.500 0 0 1-1.500 1.500h-13A1.500 1.500 0 0 1 4 17.500ZM4 10h16M7 7.500h.01M10 7.500h.01', themes: 'M5 5h14v9H5ZM12 14v3M9.500 20.500h5V17h-5Z',
   info: 'M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM12 11v5M12 8h.01', label: 'M4 12l7-7h8v8l-7 7ZM15.500 8.500h.01', transition: 'M4 6h9v12H4ZM11 6l9 12V6Z', loop: 'M7 7h9a4 4 0 0 1 0 8M17 17H8a4 4 0 0 1 0-8M9.500 4.500 7 7l2.500 2.500M14.500 14.500 17 17l-2.500 2.500', sections: 'M5 5h14v5H5ZM5 14h14v5H5Z', chevron: 'm7 10 5 5 5-5',
   scopes: 'M4 4v16h16M7 16l3-7 3 4 3-8 3 11',
+  sparkle: 'M10 3.5 11.6 8.4 16.5 10l-4.900 1.600L10 16.500 8.400 11.600 3.500 10l4.900-1.600ZM18 14l.9 2.100L21 17l-2.100.9L18 20l-.9-2.100L15 17l2.100-.9ZM17.500 3l.6 1.400 1.400.6-1.400.6-.6 1.400-.6-1.400L15.500 5l1.400-.6Z',
 };
 export type IconName = keyof typeof P;
 const FILLED = new Set(['play', 'prev', 'next', 'start', 'end', 'keyframe']);
 /** For colourful icons. */
 const HUE: Record<string, string> = {
-  projects: '#ff9f0a', import: '#0a84ff', card: '#0a84ff', music: '#ff375f', text: '#bf5af2', gauge: '#30b0c7', track: '#00c7be', camera: '#ff9f0a', export: '#0a84ff', split: '#ff9f0a', delLeft: '#ff9f0a', delRight: '#ff9f0a', detach: '#30d158', trash: '#ff453a', undo: '#8e8e93', redo: '#8e8e93', keyframe: '#ffcc33', play: '#30d158', pause: '#30d158', customize: '#bf5af2', workspaces: '#5e5ce6', fullscreen: '#64d2ff', duplicate: '#5e5ce6', save: '#0a84ff', open: '#0a84ff', frame: '#64d2ff', zoom: '#64d2ff', quality: '#30d158', transition: '#ff375f',
+  sparkle: '#ff9f0a', projects: '#ff9f0a', import: '#0a84ff', card: '#0a84ff', music: '#ff375f', text: '#bf5af2', gauge: '#30b0c7', track: '#00c7be', camera: '#ff9f0a', export: '#0a84ff', split: '#ff9f0a', delLeft: '#ff9f0a', delRight: '#ff9f0a', detach: '#30d158', trash: '#ff453a', undo: '#8e8e93', redo: '#8e8e93', keyframe: '#ffcc33', play: '#30d158', pause: '#30d158', customize: '#bf5af2', workspaces: '#5e5ce6', fullscreen: '#64d2ff', duplicate: '#5e5ce6', save: '#0a84ff', open: '#0a84ff', frame: '#64d2ff', zoom: '#64d2ff', quality: '#30d158', transition: '#ff375f',
 };
 
 export function Icon({ name, size, className = '' }: { name: string; size?: number; className?: string }) {

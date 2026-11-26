@@ -7,6 +7,7 @@ import { clipStarts, connectedSpan, speedAt, stackAt, timelineDuration, type Sta
 import type { EacLayout } from '@ace/media360';
 import { mediaNow, type Media } from './media';
 import { previewSource, type PreviewSource } from './proxy';
+import { aiSource } from './aiCopy';
 import { ReverseCache } from './reverseCache';
 
 interface Slot {
@@ -128,7 +129,8 @@ export class TimelinePlayer {
 
   private slotFor(clip: TimelineClip, media: Media, mediaUs: number): Slot {
     let s = this.slots.get(clip.id);
-    const source = previewSource(media);
+    // The AI copy (smooth slow motion, sharper picture) when it's ready, else the preview source.
+    const source = aiSource(clip) ?? previewSource(media);
     if (s && (s.media !== media || s.source !== source)) {
       this.drop(clip.id);
       s = undefined;

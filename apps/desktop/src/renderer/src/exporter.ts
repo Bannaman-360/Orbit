@@ -6,9 +6,10 @@ import { AudioBufferSource, canEncodeAudio, canEncodeVideo, Mp4OutputFormat, Out
 import { TrackDecoder } from '@ace/engine';
 import { parseCube, ReframeRenderer, sharedDevice } from '@ace/media360';
 import { normalizeLoudness, type LoudnessResult } from './loudness';
-import { framingAspect, overlayState, stackAt, timelineDuration, withOff, type Look, type Timeline, type TimelineClip, type TransitionLook } from '@ace/project';
+import { enhanceOn, framingAspect, overlayState, stackAt, timelineDuration, withOff, type Look, type Timeline, type TimelineClip, type TransitionLook } from '@ace/project';
 import { ace } from './api';
 import { mixTimeline } from './audioEngine';
+import { copyFor, copyState } from './aiCopy';
 import { ordinaryGamma } from './color';
 import { framesAt } from './calib';
 import { getMedia, mediaNow } from './media';
@@ -275,6 +276,13 @@ export async function exportTimeline(tlIn: Timeline, opts: ExportOptions, onProg
 
   const comp = await Compositor.create(width, height, tl.lutPath, true, layout);
 
+  // Smooth slow motion and sharper pictures: made first where they aren't yet.
+  const wanting = [...tl.clips, ...tl.connected].filter((c) => enhanceOn(c.enhance) && copyState(c).state !== 'ready');
+  for (const [i, c] of wanting.entries()) {
+    const what = c.enhance?.smooth && c.enhance.upscale ? 'smooth slow motion and sharper pictures' : c.enhance?.smooth ? 'smooth slow motion' : 'sharper pictures';
+    await copyFor(c, (f) => onProgress({ fraction: 0, stage: `Making ${what} (${wanting.length > 1 ? `clip ${i + 1} of ${wanting.length}, ` : ''}${Math.round(f * 100)}%)` }), signal);
+  }
+
   onProgress({ fraction: 0, stage: 'Analysing stabilization' });
   for (const c of [...tl.clips, ...tl.connected]) await cropReady(c, await getMedia(c.mediaPath), width / height);
 
@@ -386,8 +394,10 @@ async function renderFrames(tl: Timeline, opts: ExportOptions, comp: Compositor,
     const media = await getMedia(clip.mediaPath);
     let slot = slots.get(clip.id);
     if (!slot) {
-      const times = media.tracks[0]!.samples.map((s) => s.timestamp).filter((t) => t >= clip.inUs - 1 && t < clip.outUs).sort((a, b) => a - b);
-      const decoders = media.tracks.map((t) => new TrackDecoder(media.reader, t));
+      // AI improvements: always from the copy (made before the export starts, see exportTimeline).
+      const src = enhanceOn(clip.enhance) ? await copyFor(clip) : { reader: media.reader, tracks: media.tracks };
+      const times = src.tracks[0]!.samples.map((s) => s.timestamp).filter((t) => t >= clip.inUs - 1 && t < clip.outUs).sort((a, b) => a - b);
+      const decoders = src.tracks.map((t) => new TrackDecoder(src.reader, t));
       decoders.forEach((d) => { d.maxAhead = 6; d.seek(times[0] ?? clip.inUs); });
       slot = { clipId: clip.id, decoders, times, next: 0, pushedAny: false };
       slots.set(clip.id, slot);

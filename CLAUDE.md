@@ -17,7 +17,7 @@ An Electron editor for GoPro and action-camera footage (Mac and Windows), meant 
   - `synthetic/` has generated files; `synthetic/odd/` has broken and unusual ones.
 - `scripts/build-ffmpeg-mac.sh`: builds the bundled LGPL ffmpeg into `apps/desktop/resources/ffmpeg/`.
 - `docs/INSTALL.md` (install and build), `docs/BETA.md` (testers' guide), `CHANGELOG.md`.
-- `docs/ROADMAP.md`: the pro-features plan in five milestones (milestone 1 is released; milestone 2 is done in beta 8; milestone 3 is done in beta 10; milestone 4 is done in beta 11; milestone 5 is next), with the user's decisions. Read it before starting milestone work.
+- `docs/ROADMAP.md`: the pro-features plan in five milestones (milestone 1 is released; milestone 2 is done in beta 8; milestone 3 is done in beta 10; milestone 4 is done in beta 11; milestone 5 is done on `features/m5-ai-tools`), with the user's decisions. Read it before starting milestone work.
 
 ## Commands
 Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:$PATH"; eval "$(fnm env)"`
@@ -38,6 +38,7 @@ Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:
     - beta 8 and the rest of milestone 2: `beta8` (track header column, cuts on track clips, gauge trimming and source, solo sound, on/off switches, social export presets and loudness, compound clips, multicam)
     - milestone 3: `motion` (curves, motion titles and text paths, sound tools and ducking, true-peak loudness, export queue, presets and batch)
     - milestone 4: `finish` (colour wheels, curves, qualifier, power windows, film looks, noise reduction, new effects and transitions, scopes, stabilizing from the picture; preview vs export; 4K grading playback)
+    - milestone 5: `ai` (smart reframe, auto subtitles, smooth slow motion, sharper pictures; downloads the AI models the first time; needs `fixtures/synthetic/speech.wav` from `scripts/make-speech-fixture.sh`)
     - ride data and export: `gauges`, `airtime`, `export`, `tenbitexport`, `rider`
   - A full regression runs all of them and takes about 45 minutes. Timing checks (`gauges`, `scrubback`) can fail once when the machine is busy: rerun before treating it as a bug.
 - Installers: `pnpm --filter action-cam-editor dist:mac`. This builds Apple Silicon and Intel dmgs into `apps/desktop/release/`. Windows is built by `.github/workflows/installers.yml`.
@@ -52,4 +53,5 @@ Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:
 - **Licensing:** ffmpeg must stay LGPL; never add x264/x265 or other GPL parts. The app is unsigned for now.
 - **UI:** Apple-like and customizable through the theme tokens in `src/renderer/src/ui/theme.ts`; use the CSS variables, not fixed colours. It must not hurt playback performance (`perf` mode).
 - **Copy:** plain words a rider understands, sentence case; errors say what happened and what to do.
+- **AI models:** downloaded at first use from the `models-v1` release (see `src/main/models.ts`); new models need the user's OK, a pinned SHA-256 and an upload there.
 - **Hardware limits:** WebCodecs on this Mac can't write 10-bit, so 10-bit and ProRes go through the bundled ffmpeg. The bundled ffmpeg is minimal: no lavfi and no H.264 encoder (HEVC via VideoToolbox only).

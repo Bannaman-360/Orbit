@@ -75,6 +75,20 @@ describe('airtime', () => {
     expect(apart).toHaveLength(1);
     expect(Math.abs(apart[0]!.airMs - 300)).toBeLessThan(45);
   });
+  it('a short knock mid-air (a wheel clipping the next roller) doesn’t split a jump', () => {
+    // As at 6:49 in GS010004: 0.3 s up, a 0.1 s knock of ~3.5 G, 0.26 s falling, 0.5 s up, landing.
+    const parts = [{ at: 3, len: 0.3, g: 0.2 }, { at: 3.3, len: 0.1, g: 3.5 }, { at: 3.4, len: 0.26, g: 0.8 }, { at: 3.66, len: 0.5, g: 0.2 }, { at: 4.16, len: 0.15, g: 5 }];
+    const { t, g } = ride(10, parts);
+    const j = findJumps(t, g);
+    expect(j).toHaveLength(1);
+    expect(Math.abs(j[0]!.airMs - 1160)).toBeLessThan(60);
+    // A real touchdown in between (on the ground for 0.3 s) is two jumps.
+    const twice = ride(10, [{ at: 3, len: 0.3, g: 0.2 }, { at: 3.3, len: 0.3, g: 2.5 }, { at: 3.6, len: 0.5, g: 0.2 }, { at: 4.1, len: 0.15, g: 5 }]);
+    expect(findJumps(twice.t, twice.g)).toHaveLength(2);
+    // Two short pumping dips around a knock aren't joined into a jump.
+    const pump = ride(10, [{ at: 3, len: 0.15, g: 0.2 }, { at: 3.15, len: 0.1, g: 3 }, { at: 3.25, len: 0.1, g: 0.8 }, { at: 3.35, len: 0.15, g: 0.2 }, { at: 3.5, len: 0.1, g: 3 }]);
+    expect(findJumps(pump.t, pump.g, { shape: false })).toHaveLength(0);
+  });
   it('no landing, no jump', () => {
     const { t, g } = ride(10, [{ at: 3, len: 0.5, g: 0.1 }, { at: 3.5, len: 2, g: 1 }]);
     expect(findJumps(t, g)).toHaveLength(0);

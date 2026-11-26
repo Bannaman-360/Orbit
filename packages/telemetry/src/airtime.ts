@@ -22,6 +22,13 @@ const SHAPE_LANDING_G = 2.5;
 const LAND_WINDOW_US = 300_000;
 /** Between two parts of one jump the reading stays under this: a lift mid-air, not a landing. */
 const STILL_IN_AIR_G = 1.0;
+/** A wheel that clips something mid-air (the lip, the next roller) reads one short knock above
+ *  STILL_IN_AIR_G and goes straight back to falling: still one jump when the knock lasts no longer
+ *  than this… */
+const KNOCK_MS = 150;
+/** …and the parts are at most this many times joinMs apart (500 ms by default; measured on a jump
+ *  at 6:49 in GS010004 that split in two: a 120 ms knock of 3.9 G between parts 360 ms apart). */
+const KNOCK_JOIN = 5 / 3;
 /** Every jump ends in a landing: a reading that never comes back above this wasn't in the air. */
 const MIN_LANDING_G = 1.3;
 /** Back on the ground only once the reading is this much above the threshold (no chatter). */
@@ -92,11 +99,21 @@ export function findJumps(t: ArrayLike<number>, g: ArrayLike<number>, s: Partial
       }
     }
     // Parts of one jump: close together, and nothing in between that reads like touching down.
-    const touched = (from: number, until: number) => { for (let k = Math.max(0, from - 1); k < n && t[k]! < until; k++) if (v[k]! >= STILL_IN_AIR_G) return true; return false; };
+    // How long the reading spends at ground level between two parts (ms).
+    const onGround = (from: number, until: number) => {
+      let ms = 0;
+      for (let k = Math.max(1, from - 1); k < n && t[k - 1]! < until; k++) if (v[k]! >= STILL_IN_AIR_G) ms += (t[k]! - t[k - 1]!) / 1000;
+      return ms;
+    };
     const merged: typeof raw = [];
     for (const x of raw) {
       const last = merged[merged.length - 1];
-      if (last && (x.s - last.e) / 1000 < joinMs && !touched(last.ei, x.s)) { last.e = x.e; last.ei = x.ei; } else merged.push({ ...x });
+      const gap = last ? (x.s - last.e) / 1000 : Infinity;
+      // A knock only joins two parts that are each long enough to be a jump: short dips around
+      // a roller are pumping, not one jump.
+      const jumpLike = last && (last.e - last.s) / 1000 >= minMs && (x.e - x.s) / 1000 >= minMs;
+      const ground = gap < joinMs || (jumpLike && gap < joinMs * KNOCK_JOIN) ? onGround(last!.ei, x.s) : Infinity;
+      if ((gap < joinMs && ground === 0) || (jumpLike && gap < joinMs * KNOCK_JOIN && ground <= KNOCK_MS)) { last!.e = x.e; last!.ei = x.ei; } else merged.push({ ...x });
     }
     return merged.filter((x) => { const ms = (x.e - x.s) / 1000; return ms >= minMs && ms <= MAX_MS; });
   };

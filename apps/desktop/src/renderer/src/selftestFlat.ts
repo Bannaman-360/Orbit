@@ -186,21 +186,24 @@ export async function flatCheck(api: EditorApi) {
   const at = (fx: number, fy: number) => ({ x: Math.round(r0.left + r0.width * fx), y: Math.round(r0.top + r0.height * fy) });
   for (let k = 0; k < 6; k++) { frame.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -70 })); await sleep(30); }
   await sleep(200);
-  const z = clip().look.fov;
-  ok('scrolling zooms in', z < media.lens!.hfov * 0.7, z);
+  // A regular clip is moved and sized as a picture on the preview, as in other editors.
+  const z = clip().look.xf?.scale ?? 1;
+  ok('scrolling makes the picture bigger', z > 1.6 && clip().look.fov === media.lens!.hfov, [z, clip().look.fov]);
   const a = at(0.5, 0.5), b = at(0.4, 0.5);
   await ace.selftestInput({ type: 'mouseMove', ...a });
   await ace.selftestInput({ type: 'mouseDown', ...a, button: 'left', clickCount: 1 });
   for (let i = 1; i <= 6; i++) { await ace.selftestInput({ type: 'mouseMove', x: a.x + ((b.x - a.x) * i) / 6, y: a.y, button: 'left', modifiers: ['leftButtonDown'] }); await sleep(20); }
   await ace.selftestInput({ type: 'mouseUp', ...b, button: 'left', clickCount: 1 });
   await sleep(250);
-  ok('dragging pans', clip().look.yaw > 2, clip().look.yaw);
+  ok('dragging moves the picture', (clip().look.xf?.x ?? 0) < -0.05 && clip().look.yaw === 0, [clip().look.xf?.x, clip().look.yaw]);
   // (Whatever tab an earlier test left in front.)
   document.querySelector<HTMLElement>('.dock-tab[data-panel="reframe"]')?.click();
   await sleep(250);
-  for (const id of ['Lens', 'Lens details', 'View']) { const s = document.querySelector<HTMLElement>(`[data-section="${id}"] .section-toggle`); if (s?.getAttribute('aria-expanded') === 'false') { s.click(); await sleep(120); } }
+  for (const id of ['Lens', 'Lens details', 'Transform']) { const s = document.querySelector<HTMLElement>(`[data-section="${id}"] .section-toggle`); if (s?.getAttribute('aria-expanded') === 'false') { s.click(); await sleep(120); } }
   const has = (l: string) => !!document.querySelector(`input[aria-label="${l}"]`);
-  ok('view and lens controls are there', ['Pan', 'Tilt', 'Roll', 'Field of view', 'Fisheye', 'Recorded width', 'Bend'].every(has), ['Pan', 'Tilt', 'Roll', 'Field of view', 'Fisheye', 'Recorded width', 'Bend'].filter((l) => !has(l)));
+  const controls = ['Position across', 'Position up/down', 'Size', 'Turn', 'Field of view', 'Fisheye', 'Recorded width', 'Bend'];
+  ok('picture and lens controls are there', controls.every(has), controls.filter((l) => !has(l)));
+  ok('and no 360 view controls', !has('Pan') && !has('Tilt'));
   const fish = () => document.querySelector<HTMLInputElement>('input[aria-label="Fisheye"]')!;
   ok('fisheye is locked on the original lens', fish().disabled);
   await ace.capture('flat-ui-original');
@@ -214,7 +217,7 @@ export async function flatCheck(api: EditorApi) {
   await sleep(400);
   frame.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -60 }));
   await sleep(200);
-  ok('an old clip can be reframed too', clip().lensMode === 'source' && Math.abs(clip().look.fov / media.lens!.hfov - Math.exp(-0.09)) < 0.01, [clip().lensMode, clip().look.fov]);
+  ok('an old clip can be sized too', Math.abs((clip().look.xf?.scale ?? 1) / Math.exp(0.09) - 1) < 0.01 && Math.abs(clip().look.fov / media.lens!.hfov - 1) < 1e-6, [clip().lensMode, clip().look.xf?.scale, clip().look.fov]);
   // Colour edits on an old clip leave it untouched.
   api.setTimeline({ ...api.getTimeline(), framing: '9:16' });
   await sleep(600);

@@ -299,6 +299,9 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
   // Regular clips: the lens they were shot through.
   const flat = media ? clipLens(media, clip) : null;
   const canMove = is360 || !!flat;
+  // A regular clip whose camera is known (an action camera) can also change its lens; any other
+  // video (a phone clip, an edit from another app) is simply moved, sized and cropped.
+  const knownLens = !!flat && flat.from !== 'guess';
   const shot = flat && media && clip.lensMode ? flatShot(clip, media, look, p.mediaUs, framingAspect(p.timeline.framing)) : null;
   const shown = shot?.fov ?? look.fov;
   const customLens = clip.lensMode === 'custom';
@@ -412,7 +415,7 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
           )}
         </Section>
     ),
-    'View': canMove && (
+    'View': is360 && (
         <Section title="View" defaultOpen>
           <Slider label="Pan" locked={aimLock('pan')} value={look.yaw} min={-180} max={180} step={0.1} reset={0} format={deg} units={DEG} keyed={keyed} onChange={(v) => p.onLook({ yaw: v }, 'yaw')} />
           <Slider label="Tilt" locked={aimLock('tilt')} value={look.pitch} min={-90} max={90} step={0.1} reset={0} format={deg} units={DEG} keyed={keyed} onChange={(v) => p.onLook({ pitch: v }, 'pitch')} />
@@ -423,11 +426,11 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
     ),
     'Framing': !is360 && (
         <Section title="Framing" defaultOpen>
-          <Seg value={clip.fit} options={[['fill', 'Fill frame'], ['fit', 'Fit (bars)']]} onChange={(v) => p.onClip({ fit: v }, 'fit')} />
-          <p className="hint">Fill zooms in so there are no bars, and never shows past the edge of the picture. Fit shows all of it.</p>
+          <Seg value={clip.fit} options={[['fit', 'Fit (whole picture)'], ['fill', 'Fill frame']]} onChange={(v) => p.onClip({ fit: v }, 'fit')} />
+          <p className="hint">Fit shows the whole video, with black where it doesn’t reach the edges. Fill zooms in until there is no black. Drag the picture on the preview to move it, and scroll or pinch to make it bigger or smaller (see Transform).</p>
         </Section>
     ),
-    'Lens': flat ? (
+    'Lens': flat ? knownLens && (
         <Section title="Lens" badge={customLens ? lensName(lens.k) : 'Original'}>
           <Seg value={customLens ? 'custom' : 'source'} options={[['source', 'Original lens'], ['custom', 'Custom']]} onChange={(v) => p.onClip({ ...adoptReframe(clip), lensMode: v }, 'lensmode')} />
           <Slider label="Field of view" locked={zoomLock} value={look.fov} min={5} max={customLens ? 170 : flat.hfov} step={0.1} reset={flat.hfov} format={deg} units={DEG} keyed={keyed} onChange={(v) => p.onLook({ fov: v }, 'fov')} />
@@ -460,7 +463,7 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
           </div>
         </Section>
     ),
-    'Lens details': flat && (
+    'Lens details': knownLens && (
         <Section title="Lens details" badge={flat.name}>
           <p className="hint">{media!.camera.model ? `${media!.camera.model} · ` : ''}{flat.name}{flat.from === 'file' ? ' (read from the file)' : flat.from === 'table' ? ' (typical for this camera)' : ' (not known: adjust below if straight lines look bent)'}</p>
           <Slider label="Recorded width" value={flat.hfov} min={20} max={160} step={0.5} reset={media!.lens!.hfov} units={DEG} format={deg} hint="How wide the camera's view really was. It changes how pan, lens and stabilization behave, not the picture itself." onChange={(v) => fixLens({ hfov: v })} />
@@ -765,7 +768,7 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
           <SoundTools sound={clip.sound} onSound={(sound, key) => p.onClip({ sound }, key)} />
         </Section>
     ),
-    'Transform': <TransformSection p={p} look={look} keyed={keyed} />,
+    'Transform': <TransformSection p={p} look={look} keyed={keyed} picture={!is360 && clip.fit !== 'fill'} />,
     'Masks': <MasksSection p={p} clip={clip} />,
     'Layout': (
       <Section title="Layout" defaultOpen>
@@ -881,7 +884,7 @@ function MasksSection({ p, clip }: { p: InspectorProps; clip: TimelineClip }) {
 }
 
 /** Where the clip sits in the frame: position, size, crop, turn, opacity, corners, border, shadow. Keyframed with the look. */
-function TransformSection({ p, look, keyed }: { p: InspectorProps; look: Look; keyed: boolean }) {
+function TransformSection({ p, look, keyed, picture }: { p: InspectorProps; look: Look; keyed: boolean; picture: boolean }) {
   const xf = xfOf(look);
   const set = (patch: Partial<Transform>, k: string) => p.onLook({ xf: cleanXf({ ...xf, ...patch }) }, `xf-${k}`);
   const pct = (v: number) => `${Math.round(v * 100)}%`;
@@ -891,10 +894,11 @@ function TransformSection({ p, look, keyed }: { p: InspectorProps; look: Look; k
     <Section title="Transform" badge={moved ? 'On' : undefined} actions={moved ? <button className="link" onClick={() => p.onLook({ xf: undefined }, 'xf-reset')} title="Back to the whole frame">Reset</button> : undefined}>
       <Slider label="Position across" value={xf.x} min={-1} max={1} step={0.001} reset={0} keyed={keyed} units={PCT} format={pct} hint="Left ← → right, as a share of the frame's width. Double-click to centre." onChange={(v) => set({ x: v }, 'x')} />
       <Slider label="Position up/down" value={xf.y} min={-1} max={1} step={0.001} reset={0} keyed={keyed} units={PCT} format={pct} hint="Up ← → down, as a share of the frame's height. Double-click to centre." onChange={(v) => set({ y: v }, 'y')} />
-      <Slider label="Size" value={Math.log2(xf.scale)} min={-4} max={2} step={0.005} reset={0} keyed={keyed} format={() => pct(xf.scale)} units={{ to: (v) => 2 ** v * 100, from: (n) => Math.log2(Math.max(2, n) / 100), digits: 0 }} hint="100% fills the frame. Double-click for 100%." onChange={(v) => set({ scale: Math.abs(v) < 0.01 ? 1 : 2 ** v }, 'scale')} />
+      <Slider label="Size" value={Math.log2(xf.scale)} min={-4} max={2} step={0.005} reset={0} keyed={keyed} format={() => pct(xf.scale)} units={{ to: (v) => 2 ** v * 100, from: (n) => Math.log2(Math.max(2, n) / 100), digits: 0 }} hint={picture ? '100% is as big as fits in the frame. Double-click for 100%.' : '100% fills the frame. Double-click for 100%.'} onChange={(v) => set({ scale: Math.abs(v) < 0.01 ? 1 : 2 ** v }, 'scale')} />
       <Slider label="Turn" value={xf.rotate} min={-180} max={180} step={0.1} reset={0} keyed={keyed} units={DEG} format={(v) => `${v.toFixed(1)}°`} hint="Turns the picture (degrees). Double-click for straight." onChange={(v) => set({ rotate: v }, 'rotate')} />
       <Slider label="Opacity" value={xf.opacity} min={0} max={1} reset={1} keyed={keyed} units={PCT} format={pct} onChange={(v) => set({ opacity: v }, 'opacity')} />
       <p className="subhead">Crop</p>
+      {picture && <p className="hint">A share of the video cut from each side.</p>}
       {(['Left', 'Top', 'Right', 'Bottom'] as const).map((n, i) => (
         <Slider key={n} label={n} value={xf.crop[i]!} min={0} max={0.9} reset={0} keyed={keyed} units={PCT} format={pct} onChange={crop(i)} />
       ))}
@@ -905,7 +909,7 @@ function TransformSection({ p, look, keyed }: { p: InspectorProps; look: Look; k
         <label className="field">Border colour <input type="color" value={xf.borderColor} onChange={(e) => set({ borderColor: e.target.value }, 'bcolor')} /></label>
       )}
       <Slider label="Shadow" value={xf.shadow} min={0} max={1} reset={0} keyed={keyed} units={PCT} format={pct} onChange={(v) => set({ shadow: v }, 'shadow')} />
-      {!moved && <p className="hint">The clip fills the frame. Use Layout for picture in picture or split screen, or change these to place it yourself. Add a keyframe (K) to animate it.</p>}
+      {!moved && <p className="hint">{picture ? 'The video is as big as fits in the frame. Drag it on the preview to move it, scroll or pinch to size it, or change these. Add a keyframe (K) to animate it.' : 'The clip fills the frame. Use Layout for picture in picture or split screen, or change these to place it yourself. Add a keyframe (K) to animate it.'}</p>}
     </Section>
   );
 }

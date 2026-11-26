@@ -61,11 +61,11 @@ export const DEFAULT_BARS: Record<BarId, BarPrefs> = {
 
 /** Which sections each panel shows to begin with. */
 export const DEFAULT_SECTIONS: Record<string, string[]> = {
-  reframe: ['Keyframes', 'Curves', 'Subject tracking', 'View', 'Framing', 'Lens', 'Lens details', 'Debug'],
+  reframe: ['Keyframes', 'Curves', 'Subject tracking', 'View', 'Framing', 'Lens', 'Lens details', 'Transform', 'Debug'],
   stabilize: ['Stabilization', 'Crop', 'Horizon'],
   color: ['Input color', 'Presets', 'Light', 'Color', 'Color wheels', 'Color curves', 'Qualifier', 'Detail', 'Noise reduction', 'LUT', 'Film looks', 'Lens match', 'Match clips'],
   effects: ['Masks', 'Motion blur (ND filter)', 'Speed & lens', 'Film & light', 'Glitch & tape', 'Quick looks'],
-  clip: ['Transform', 'Layout', 'Speed', 'Airtime', 'Audio', 'Sound tools', 'Trim'],
+  clip: ['Layout', 'Speed', 'Airtime', 'Audio', 'Sound tools', 'Trim'],
   'sel:text': ['Text', 'Motion title', 'Font', 'Colour & effect', 'Text path', 'Position', 'Overlay timing'],
   'sel:gauge': ['Look', 'Position', 'Overlay timing'],
   'sel:transition': [...TRANSITION_GROUPS.map(([g]) => g), 'Transition timing'],
@@ -81,7 +81,7 @@ export type Level = 'beginner' | 'intermediate' | 'pro';
 const without = (items: string[], drop: string[]) => items.filter((x) => !drop.includes(x)).filter((x, i, a) => !(isSpacer(x) && (i === 0 || i === a.length - 1 || isSpacer(a[i - 1]!))));
 /** Sections only experienced editors reach for. */
 const PRO_SECTIONS = ['Curves', 'Lens details', 'Debug', 'Input color', 'Qualifier', 'Color curves', 'Match clips'];
-const BEGINNER_SECTIONS = [...PRO_SECTIONS, 'Color wheels', 'Detail', 'Noise reduction', 'LUT', 'Film looks', 'Lens match', 'Crop', 'Transform', 'Layout', 'Airtime', 'Text path'];
+const BEGINNER_SECTIONS = [...PRO_SECTIONS, 'Color wheels', 'Detail', 'Noise reduction', 'LUT', 'Film looks', 'Lens match', 'Crop', 'Layout', 'Airtime', 'Text path'];
 export const LEVELS: { id: Level; name: string; note: string; prefs: () => Pick<Prefs, 'layout' | 'bars' | 'hiddenSections'> }[] = [
   {
     id: 'beginner', name: 'Beginner', note: 'Just the essentials: import, cut, reframe, steady, colour and gauges.',
@@ -113,6 +113,9 @@ export const setLevel = (id: Level) => setPrefs((p) => ({ ...LEVELS.find((l) => 
 
 /** Toolbar items added later: put into saved toolbars once (next to a neighbour), then left to the user. */
 const NEW_ITEMS: { item: string; bar: BarId; before: string }[] = [{ item: 'projects', bar: 'main', before: 'import' }, { item: 'compare', bar: 'transport', before: 'quality' }, { item: 'card', bar: 'main', before: 'music' }, { item: 'speedline', bar: 'timeline', before: 'delete' }, { item: 'jumps', bar: 'timeline', before: 'delete' }, { item: 'snap', bar: 'timeline', before: 'delete' }, { item: 'tool', bar: 'timeline', before: 'speedline' }, { item: 'multicam', bar: 'timeline', before: 'delete' }, { item: 'titles', bar: 'main', before: 'gauges' }, { item: 'queue', bar: 'main', before: 'export' }];
+/** Sections every level shows since a later version: unhidden once in saved settings, then left to the user. */
+const SHOWN_SECTIONS = ['Transform'];
+const unhideNew = (hidden: string[], seen: string[]) => hidden.filter((x) => !SHOWN_SECTIONS.includes(x) || seen.includes(`section:${x}`));
 function offerNew(bars: Record<BarId, BarPrefs>, seen: string[]) {
   for (const n of NEW_ITEMS) {
     if (seen.includes(n.item) || Object.values(bars).some((b) => b.items.includes(n.item))) continue;
@@ -123,7 +126,7 @@ function offerNew(bars: Record<BarId, BarPrefs>, seen: string[]) {
 }
 
 const defaults = (): Prefs => ({
-  theme: DEFAULT_THEME, themes: {}, layout: LAYOUTS[0]![1](), workspaces: {}, bars: structuredClone(DEFAULT_BARS), customPanels: [], sections: {}, hiddenSections: [], rows: {}, hiddenRows: {}, shortcuts: {}, seen: NEW_ITEMS.map((n) => n.item), welcomed: false,
+  theme: DEFAULT_THEME, themes: {}, layout: LAYOUTS[0]![1](), workspaces: {}, bars: structuredClone(DEFAULT_BARS), customPanels: [], sections: {}, hiddenSections: [], rows: {}, hiddenRows: {}, shortcuts: {}, seen: [...NEW_ITEMS.map((n) => n.item), ...SHOWN_SECTIONS.map((x) => `section:${x}`)], welcomed: false,
 });
 export const defaultPrefs = defaults;
 
@@ -163,7 +166,7 @@ export function sanitizePrefs(raw: unknown): Prefs {
     seen: d.seen,
     welcomed: r.welcomed === true,
     ...(r.level === 'beginner' || r.level === 'intermediate' || r.level === 'pro' ? { level: r.level } : {}),
-    customPanels, sections: lists(r.sections), hiddenSections: strs(r.hiddenSections), rows: lists(r.rows), hiddenRows: lists(r.hiddenRows), shortcuts,
+    customPanels, sections: lists(r.sections), hiddenSections: unhideNew(strs(r.hiddenSections), strs(r.seen)), rows: lists(r.rows), hiddenRows: lists(r.hiddenRows), shortcuts,
   };
 }
 

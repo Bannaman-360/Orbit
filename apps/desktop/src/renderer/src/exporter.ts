@@ -11,8 +11,8 @@ import { ace } from './api';
 import { mixTimeline } from './audioEngine';
 import { ordinaryGamma } from './color';
 import { framesAt } from './calib';
-import { getMedia } from './media';
-import { clipLookAt, cropReady, presentLook, pushClipFrame } from './frameRender';
+import { getMedia, mediaNow } from './media';
+import { clipLookAt, cropReady, presentLook, pushClipFrame, shownXf } from './frameRender';
 import { compositeLayers, drawOverlays, transitionLook, type CompLayer } from './overlayRender';
 import { prepareSoundLevels } from './soundLevels';
 import type { LayerFrame } from './timelinePlayer';
@@ -141,7 +141,7 @@ class Compositor {
   get renderers() { return this.pool.length; }
   async compose(tl: Timeline, T: number, layers: ComposeLayer[], look: TransitionLook | null) {
     const comp: CompLayer[] = [];
-    for (const l of layers) comp.push({ src: (await this.rendererFor(l.clip.id)).canvas as OffscreenCanvas, xf: l.look.xf, role: l.role, track: l.track });
+    for (const l of layers) comp.push({ src: (await this.rendererFor(l.clip.id)).canvas as OffscreenCanvas, xf: shownXf(l.clip, mediaNow(l.clip.mediaPath), l.look, this.width / this.height), role: l.role, track: l.track });
     compositeLayers(this.ctx, this.width, this.height, comp, look);
     if (!this.toFile) { drawOverlays(this.ctx, this.width, this.height, tl, T); return; }
     // Text and gauges are drawn as they should look on screen, then turned into file values too.

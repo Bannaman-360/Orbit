@@ -1,5 +1,13 @@
 # Changes
 
+## Unreleased
+
+**Regular (not 360) videos edit like in any video editor**
+- A regular video, such as a phone clip or an edit from another app, is now moved, sized and cropped as a picture. Drag it on the preview to move it, and scroll or pinch to make it bigger or smaller. Transform (now in the Reframe panel, at every level) sets position, size, turn and crop, and the crop is a share of the video itself.
+- Regular videos start whole (Fit), with black where they don't reach the frame's edges. Fill is one click away under Framing.
+- A new project takes the shape of its first regular video: a portrait phone clip makes a 9:16 project. A note says so, and Frame shape in the toolbar changes it back.
+- The 360 view controls (Pan, Tilt, Roll) are only shown for 360 videos. Lens tools are only shown for regular clips from a known camera, such as a GoPro.
+
 ## 0.1.0-beta.12
 
 Fixes and additions from testing.

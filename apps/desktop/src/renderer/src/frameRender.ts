@@ -1,6 +1,6 @@
 // One rendering step shared by preview, export and frame grabs, so they always match.
 
-import { bakeCurves, curvesUsed, denoiseFrames, denoiseOn, filmLut, qualifierUniforms, wheelsNeutral, wheelUniforms, DEFAULT_CROP, NO_EFFECTS, NEUTRAL_GRADE, withOff, applyTrack, fisheyeForLook, type OwnLens, blurFrames, lookAt, curveOf, trackWeight, type Look, type ShareOf, type TimelineClip } from '@ace/project';
+import { bakeCurves, curvesUsed, denoiseFrames, denoiseOn, filmLut, qualifierUniforms, wheelsNeutral, wheelUniforms, DEFAULT_CROP, NO_EFFECTS, NEUTRAL_GRADE, withOff, applyTrack, fisheyeForLook, type OwnLens, blurFrames, lookAt, curveOf, trackWeight, xfOf, type Look, type ShareOf, type TimelineClip, type Transform } from '@ace/project';
 import { cropAt, DEFAULT_AXIS_MAP, planCrop, smoothUnder, type CropPlan, type CropRequest } from '@ace/telemetry';
 import type { Lut3D, PresentInput, ReframeRenderer, RenderMode } from '@ace/media360';
 import { inputFor } from './color';
@@ -104,6 +104,23 @@ export function flatView(clip: TimelineClip, look: Look): FlatView {
   return { fov: look.fov, fisheye: look.fisheye, lens: clip.lensMode === 'custom' ? 'custom' : 'source' };
 }
 const pictureAspect = (media: Media) => media.width / media.height;
+/**
+ * Where a clip's picture is placed, as drawn. A regular clip shown whole (Fit) is placed as its
+ * picture alone, as in any video editor: the bars beside it aren't part of it, so moving, sizing
+ * and cropping act on the video itself, and what is behind shows through where it isn't.
+ * (Its crop is a share of the picture, not of the frame.)
+ */
+export function shownXf(clip: TimelineClip, media: Media | null | undefined, look: Look, outAspect: number): Transform | undefined {
+  if (!media || media.is360 || clip.fit === 'fill') return look.xf;
+  const pic = pictureAspect(media);
+  if (!(pic > 0) || Math.abs(Math.log(pic / outAspect)) < 0.004) return look.xf;
+  // The share of the frame the picture takes across and down.
+  const across = Math.min(1, pic / outAspect), down = Math.min(1, outAspect / pic);
+  const bx = (1 - across) / 2, by = (1 - down) / 2;
+  const xf = xfOf(look);
+  const [l, t, r, b] = xf.crop;
+  return { ...xf, crop: [bx + l * across, by + t * down, bx + r * across, by + b * down] };
+}
 /** How output points map onto the picture when checking for exposed edges. */
 const edgeScale = (clip: TimelineClip, media: Media, outAspect: number): [number, number] =>
   clip.fit === 'fill' ? planeScale(outAspect, pictureAspect(media), 'fill') : [1, 1];

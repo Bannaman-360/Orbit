@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased
+## 0.1.0-beta.13
 
 **Regular (not 360) videos edit like in any video editor**
 - A regular video, such as a phone clip or an edit from another app, is now moved, sized and cropped as a picture. Drag it on the preview to move it, and scroll or pinch to make it bigger or smaller. Transform (now in the Reframe panel, at every level) sets position, size, turn and crop, and the crop is a share of the video itself.

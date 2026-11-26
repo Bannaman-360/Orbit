@@ -20,7 +20,7 @@ import {
   type VideoTrackInfo,
 } from '@ace/engine';
 import { equirectLayout, goproMaxLayout, lensFor, type EacLayout, type SourceLens } from '@ace/media360';
-import { alignToFrames, cameraInfo, parseKlv, joinOrientation, smoothGravity, type CameraInfo, Stabilizer, TelemetrySeries, type OrientationData } from '@ace/telemetry';
+import { alignToFrames, cameraInfo, hilightTags, parseKlv, joinOrientation, smoothGravity, type CameraInfo, Stabilizer, TelemetrySeries, type OrientationData } from '@ace/telemetry';
 import { ace, baseName, ipcReader } from './api';
 import { measureBrowser, mediaColor, type MediaColor } from './color';
 import { loadPictureMotion } from './flowStab';
@@ -39,6 +39,8 @@ export interface Media {
   lens: SourceLens | null;
   /** What the camera recorded about itself and the shot. */
   camera: CameraInfo;
+  /** HiLight tags: where the rider pressed the camera's button while recording (media µs). */
+  hilights: number[];
   /** Quarter turns clockwise to show the stored picture upright. */
   turns: number;
   /** What its recorded values mean (known once a frame has been decoded). */
@@ -198,6 +200,16 @@ async function loadMedia(path: string): Promise<Media> {
   } catch {
     /* no settings block: nothing is known about the camera */
   }
+  // HiLight tags, from each file a long recording is made of.
+  const hilights: number[] = [];
+  for (const [i, f] of files.entries()) {
+    try {
+      const tags = hilightTags(await readUserData(f.reader), await readUserData(f.reader, 'HMMT'));
+      for (const t of tags) hilights.push(starts[i]! + t);
+    } catch {
+      /* no tags */
+    }
+  }
   const turns = pair || stitched ? 0 : t0.turns;
   const [width, height] = turns % 2 ? [t0.height, t0.width] : [t0.width, t0.height];
   const durationUs = Math.min(...tracks.map((t) => t.samples.reduce((m, s) => Math.max(m, s.timestamp + s.duration), 0)));
@@ -212,6 +224,7 @@ async function loadMedia(path: string): Promise<Media> {
     layout: pair ? goproMaxLayout(pair[0].width, pair[0].height) : stitched ? equirectLayout(t0.width, t0.height) : null,
     lens: pair || stitched ? null : lensFor(camera, width, height),
     camera,
+    hilights,
     turns,
     stabilizer: new Stabilizer(orientation),
     telemetry: new TelemetrySeries(orientation?.gps, orientation?.accl),

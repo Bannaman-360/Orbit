@@ -4,3 +4,4 @@ export * from './gpmf-klv';
 export * from './gyro';
 export * from './crop';
 export * from './airtime';
+export * from './highlights';

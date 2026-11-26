@@ -1,5 +1,13 @@
 # Changes
 
+## Next
+
+**Highlights (Clip ▸ Highlights)**
+- Finds the moments worth showing in GoPro footage, without watching it all: HiLight tags (where you pressed the button or said "GoPro, HiLight" while riding), jumps (longer and farther ones rank higher), top speed from GPS, and hard hits that aren't a jump's landing.
+- Click one to go there. Stars on the timeline show the tags, top speed and hard hits; jumps keep their arcs.
+- Mark them: a marker at each highlight, with a note saying what it is.
+- Make a highlight reel: a few seconds around each highlight (all of them, or the best 10, 5 or 3) added at the end of the timeline. Reel from every clip does the same for every clip on the timeline. Undo takes them away again.
+
 ## 0.1.0-beta.15
 
 **Sound spectrum gauges (Gauges ▸ Sound spectrum)**

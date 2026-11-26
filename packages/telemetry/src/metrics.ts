@@ -17,6 +17,7 @@ export interface GpsSample {
 interface TimedV { t: number; v: [number, number, number] }
 
 import { findJumps, jumpDistance, type AirtimeSettings, type Jump } from './airtime';
+import { findHighlights, type Highlight } from './highlights';
 
 const G = 9.80665;
 const EARTH_R = 6_371_000;
@@ -76,6 +77,7 @@ export class TelemetrySeries {
   /** G without the readout smoothing (for airtime). */
   private rawG: Float64Array<ArrayBuffer> = new Float64Array(0);
   private jumpCache = new Map<string, Jump[]>();
+  private highlightCache = new Map<string, Highlight[]>();
 
   constructor(gps: GpsSample[] = [], accl: TimedV[] = []) {
     // Only real fixes; GoPro writes 0,0 while searching for satellites.
@@ -155,6 +157,23 @@ export class TelemetrySeries {
       this.jumpCache.set(key, j);
     }
     return j;
+  }
+  /**
+   * Highlights in this file (worked out once per setting): HiLight `tags` (media µs), jumps,
+   * top speed and hard hits.
+   */
+  highlights(durationUs: number, tags: number[] = [], s: Partial<AirtimeSettings> = {}): Highlight[] {
+    const key = `${durationUs}|${tags.join(',')}|${s.below ?? ''}|${s.minMs ?? ''}|${s.shape ?? ''}|${s.joinMs ?? ''}`;
+    let h = this.highlightCache.get(key);
+    if (!h) {
+      h = findHighlights({
+        durationUs, tags, jumps: this.jumps(s),
+        ...(this.hasGps ? { speedT: this.gT, speed: this.speedV } : {}),
+        ...(this.hasAccel ? { gT: this.aT, g: this.rawG } : {}),
+      });
+      this.highlightCache.set(key, h);
+    }
+    return h;
   }
   /** Where the camera was (degrees), or null without GPS. */
   latLonAt(t: number): { lat: number; lon: number } | null {

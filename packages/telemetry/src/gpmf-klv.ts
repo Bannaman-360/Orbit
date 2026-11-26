@@ -105,3 +105,44 @@ export function cameraInfo(nodes: KlvNode[]): CameraInfo {
   walk(nodes, '');
   return out;
 }
+
+/**
+ * HiLight tags: the moments the rider pressed the camera's button (or said "GoPro, HiLight")
+ * while recording, as media times in µs, in order. Two places hold them:
+ * - HERO6 and later, Max: a "HLMT" device in the settings block (moov/udta/GPMF), whose HLMT
+ *   values are 36-byte structs that start with the time in ms (type "LLLllfFff").
+ * - Older cameras: the HMMT box (moov/udta/HMMT): a count, then that many times in ms.
+ */
+export function hilightTags(gpmf?: Uint8Array | null, hmmt?: Uint8Array | null): number[] {
+  const ms: number[] = [];
+  const walk = (bytes: Uint8Array, depth: number) => {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let i = 0;
+    while (i + 8 <= bytes.length) {
+      const key = String.fromCharCode(...bytes.subarray(i, i + 4));
+      if (!/^[A-Za-z0-9_ ]{4}$/.test(key)) break;
+      const type = bytes[i + 4]!, size = bytes[i + 5]!, repeat = dv.getUint16(i + 6);
+      const len = size * repeat, start = i + 8;
+      if (start + len > bytes.length) break;
+      if (type === 0 && depth < 8) walk(bytes.subarray(start, start + len), depth + 1);
+      else if (key === 'HLMT' && size >= 4) {
+        // A struct per tag (type '?'), or plain times (type 'L').
+        const step = type === 0x3f ? size : 4;
+        for (let o = 0; o + 4 <= len; o += step) ms.push(dv.getUint32(start + o));
+      } else if (key === 'MANL' && type === 0x4c) {
+        for (let o = 0; o + 4 <= len; o += 4) ms.push(dv.getUint32(start + o));
+      }
+      i = start + ((len + 3) & ~3);
+    }
+  };
+  if (gpmf) walk(gpmf, 0);
+  if (hmmt && hmmt.length >= 4) {
+    const dv = new DataView(hmmt.buffer, hmmt.byteOffset, hmmt.byteLength);
+    const n = Math.min(dv.getUint32(0), (hmmt.length - 4) >> 2);
+    for (let k = 0; k < n; k++) ms.push(dv.getUint32(4 + k * 4));
+  }
+  // (0 is an empty slot; both places can hold the same tag.)
+  const out: number[] = [];
+  for (const m of ms.filter((x) => x > 0 && x < 48 * 3600_000).sort((a, b) => a - b)) if (!out.length || m * 1000 - out[out.length - 1]! > 500_000) out.push(m * 1000);
+  return out;
+}

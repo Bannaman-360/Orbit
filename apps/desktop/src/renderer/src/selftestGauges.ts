@@ -5,6 +5,7 @@ import { ace } from './api';
 import { getMedia } from './media';
 import { TelemetrySeries } from '@ace/telemetry';
 import { drawOverlays, gaugeReading } from './overlayRender';
+import { prepareSoundLevels, soundLevelsInfo } from './soundLevels';
 import type { EditorApi } from './selftest';
 
 const S = 1e6;
@@ -261,14 +262,31 @@ export async function airtimeCheck(api: EditorApi) {
   ok('and holds the jump after landing', Math.abs(r(mid.endUs + 0.5e6).num - mid.airMs / 1000) < 0.006, r(mid.endUs + 0.5e6).value);
   const later = j[j.length - 1]!.endUs + 3.5e6;
   if (later < m.durationUs) ok('then shows the best so far', Math.abs(r(later).num - Math.max(...j.map((x) => x.airMs)) / 1000) < 0.006 && /BEST/.test(r(later).label), [r(later).value, r(later).label]);
-  // A trimmed clip still counts the jumps before its in point (the whole recording counts).
+  // A gauge counts only what is shown under it: a trimmed clip starts from zero at its in point,
+  // and a gauge that starts later counts from there.
   {
-    // (Just after a landing, so no jump is under way; the running total doesn't hold the last jump.)
     const cut = { ...tl, clips: tl.clips.map((c) => ({ ...c, inUs: mid.endUs + 20_000 })) };
     const tot = { ...gauge, airShow: 'running' as const };
-    const before = j.filter((x) => x.endUs <= mid.endUs + 120_000).reduce((a, x) => a + x.airMs / 1000, 0);
     const v = gaugeReading(tot, cut, 100_000).num;
-    ok('a trimmed clip counts jumps from the whole recording', Math.abs(v - before) < 0.006 && before > 0, [v, before]);
+    ok('a trimmed clip counts only the jumps it shows', v === 0, v);
+    const late = { ...tot, startUs: mid.endUs + 20_000 };
+    const fromLate = gaugeReading(late, tl, j[j.length - 1]!.endUs + 3.5e6).num;
+    const want = j.filter((x) => x.startUs >= late.startUs).reduce((a, x) => a + x.airMs / 1000, 0);
+    ok('a gauge that starts later counts from its start', Math.abs(fromLate - want) < 0.006, [fromLate, want]);
+    // Cutting a piece out of the middle starts the count again after the cut (unless told to keep counting).
+    const c0 = tl.clips[0]!;
+    const twoPieces = { ...tl, clips: [{ ...c0, outUs: mid.startUs - 1e6 }, { ...c0, id: 'piece2', inUs: mid.startUs - 0.5e6 }] };
+    const afterCut = mid.startUs - 1e6 + 0.5e6 + (mid.endUs - mid.startUs) + 0.5e6;
+    const restarted = gaugeReading(tot, twoPieces, afterCut).num, kept = gaugeReading({ ...tot, keepCounting: true }, twoPieces, afterCut).num;
+    const shownBefore = j.filter((x) => x.endUs <= mid.startUs - 1e6).reduce((a, x) => a + x.airMs / 1000, 0);
+    ok('the count starts again at a cut', Math.abs(restarted - mid.airMs / 1000) < 0.006 && Math.abs(kept - (shownBefore + mid.airMs / 1000)) < 0.006, [restarted, kept, mid.airMs / 1000, shownBefore]);
+  }
+  // The sound level gauge reads the clip's own sound.
+  {
+    const sg = newGaugeOverlay('sound', 0, m.durationUs), stl = { ...tl, overlays: [sg] };
+    await prepareSoundLevels(stl);
+    const vals = [1, 3, 5, 7].map((s) => gaugeReading(sg, stl, s * 1e6));
+    ok('the sound gauge reads the clip’s sound', vals.every((v) => v.available && v.num > 20 && v.num < 110) && new Set(vals.map((v) => v.value)).size > 1, { shown: vals.map((v) => v.value), levels: soundLevelsInfo(m.path), audio: m.info.audioTracks.map((a) => ({ codec: a.codec, channels: a.channels, rate: a.sampleRate, n: a.samples.length })) });
   }
   // The jump distance gauge (on GS010004, which has GPS): grows through a jump, then holds it.
   const f4 = (await ace.listFixtures()).find((x) => /GS010004/.test(x));

@@ -35,7 +35,7 @@ export const compSettings = (p: CompPreset) => COMP_PRESETS.find(([id]) => id ==
 
 /** One-click sound settings for typical footage. */
 export const SOUND_PRESETS: [string, Partial<SoundFx>][] = [
-  ['Windy ride', { wind: 0.8, lowCut: 120, low: -3, mid: 0, high: 1, comp: 'gentle' }],
+  ['Windy ride', { wind: 0.8, lowCut: 200, low: -3, mid: 1, high: 3, comp: 'gentle' }],
   ['Talking', { wind: 0.4, lowCut: 90, low: -2, mid: 2, high: 2, comp: 'voice', voice: true }],
   ['Engine', { wind: 0.3, lowCut: 40, low: 2, mid: 0, high: -2, comp: 'punchy' }],
   ['Clean up', { wind: 0, lowCut: 70, low: 0, mid: 0, high: 0, comp: 'gentle' }],

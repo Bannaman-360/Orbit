@@ -4,7 +4,7 @@ import {
   addClip, designFor, GAUGE_DESIGNS, gaugeSet, clipDuration, clipStarts, localAt, deleteSideAt, detachAudio, duplicateClip, emptyTimeline, FRAMINGS, framingAspect, GAUGES, keyframeNear, loadTimeline, locate,
   mediaToTimeline, moveClip, newAudioClip, newClip, newGaugeOverlay, newTextOverlay, nextKeyTime, prevKeyTime, reattachAudio, removeAudio,
   removeClip, removeClipRipple, withOff, removeKeyframe, removeOverlay, setEasing, CURVES, TITLE_CATEGORIES, TITLE_TEMPLATES, newTitleOverlay, setKeyframe, splitAt, timelineDuration, transitionLook, trimClip, updateAudio, type Transform,
-  updateClip, updateOverlay, addMarker, updateMarker, removeMarker, rollCut, slipClip, slideClip, insertClipAt, overwriteClipAt,
+  updateClip, updateOverlay, addMarker, updateMarker, removeMarker, markerNear, splitOverlay, trimOverlayAt, overlayState, rollCut, slipClip, slideClip, insertClipAt, overwriteClipAt,
   hasRamp, mediaAt, moveSpeedKey, rippleItems, DEFAULT_LENS_LOOK, fisheyeForLook, lookAt, removeSpeedKey, setClipSpeed, setSpeedEase, setSpeedKey, speedAt, speedKeyNear,
   COMFORT_FOV, fitSubjectFrac, fracForFov, moveKeyframe, trackWeight, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, setTrackRange, trackActive, trackExtent, trackHeld, trackRange,
   type ClipTrack, type Easing, type GaugeDesign, type GaugeKind, type Grade, type Look, type Overlay, type Timeline, type TimelineClip, type Transition,
@@ -31,7 +31,9 @@ import { MediaBin, type BinItem } from './MediaBin';
 import { AppMenu, ShortcutsDialog } from './Menu';
 import { forgetMedia, getMedia, loadMusic, mediaNow, MISSING, whyCannotOpen, wholeRecordings } from './media';
 import { ensureProxies, forgetProxies, onProxyChange, PREVIEW_LEVELS, setPreviewLevel, type PreviewLevel } from './proxy';
-import { drawOverlays, hitOverlay, layerCss, placedCss } from './overlayRender';
+import { drawOverlays, hitOverlay, layerCss, overlayBox, placedCss } from './overlayRender';
+import { alignBox, type Guides } from './alignGuides';
+import { onSoundLevels } from './soundLevels';
 import { runSelftest, type EditorApi } from './selftest';
 import { applyMasks, maskPlaces, subjectInFrame } from './masksRender';
 import { TimelinePlayer, type TickResult } from './timelinePlayer';
@@ -57,7 +59,7 @@ const TOOLS: [EditTool, string, string][] = [
 import { Dock, type PanelDef } from './ui/Dock';
 import { closePanel, openPanels } from './ui/dockModel';
 import { Icon } from './ui/Icon';
-import { getPrefs, isArranging, LAYOUTS, onNativeTheme, PANELS, platformMac, setArranging, setPrefs, undoPrefs, useArranging, usePrefs } from './ui/prefs';
+import { getPrefs, isArranging, LAYOUTS, LEVELS, onNativeTheme, PANELS, platformMac, setArranging, setLevel as setExpLevel, setPrefs, undoPrefs, useArranging, usePrefs } from './ui/prefs';
 
 /** A media item as saved in the project, with what the user said about it. */
 export interface LibraryEntry { path: string; rating?: number; flag?: 'fav' | 'reject'; bin?: string; /** Bytes: finds the file again if it's renamed. */ size?: number }
@@ -472,6 +474,8 @@ export function App() {
   const setClipMasks = (clipId: string, masks: Mask[], key: string) => commit(updateClip(tlRef.current, clipId, { masks: masks.length ? masks : undefined }), `${key}:${clipId}`);
   const drawOverlayRef = useRef(drawOverlayLayer);
   drawOverlayRef.current = drawOverlayLayer;
+  // A Sound level gauge reads the clip's sound in the background: redraw as more of it is known.
+  useEffect(() => onSoundLevels(() => { if (!player.playing) drawOverlayRef.current(); }), []);
 
   // Render loop.
   useEffect(() => {
@@ -992,7 +996,22 @@ export function App() {
     if (t.tracks.find((x) => x.id === c.trackId)?.locked) setNotice(`${trackName(t, c.trackId)} is locked. Unlock it to change its clips.`);
     else if (T <= c.startUs || T >= c.startUs + playLength(c)) setNotice(`The playhead isn’t over the selected clip on ${trackName(t, c.trackId)}. Move it onto the clip first.`);
   };
+  /** A selected text or gauge, cut at T instead of the video ('split', or trimmed to one side). */
+  const cutOverlay = (T: number, how: 'split' | 'left' | 'right'): boolean => {
+    const s = selRef.current;
+    if (s?.kind !== 'overlay') return false;
+    const t = tlRef.current;
+    const o = t.overlays.find((x) => x.id === s.id);
+    if (!o) return false;
+    const next = how === 'split' ? splitOverlay(t, o.id, T) : trimOverlayAt(t, o.id, T, how);
+    if (next === t) { setNotice(`Move the playhead inside the ${o.kind === 'text' ? 'text' : 'gauge'} to cut it there.`); return true; }
+    commit(next);
+    // After a split the right-hand piece stays selected, ready for the next cut.
+    if (how === 'split') { const right = next.overlays.find((x) => x.startUs === T && !t.overlays.some((y) => y.id === x.id)); if (right) setSel({ kind: 'overlay', id: right.id }); }
+    return true;
+  };
   const split = (T = player.time) => {
+    if (cutOverlay(T, 'split')) return;
     // A selected clip on a track above splits there; otherwise the main row does.
     const c = selectedLayer();
     if (c) {
@@ -1148,6 +1167,7 @@ export function App() {
   // --- Cutting at a point (toolbar, keyboard, right-click menu) ------------------------------------
   const splitHere = (T = player.time) => commit(splitAt(tlRef.current, T));
   const deleteSide = (side: 'left' | 'right', T = player.time) => {
+    if (cutOverlay(T, side)) return;
     const t = tlRef.current;
     const c = selectedLayer();
     if (c) {
@@ -1753,6 +1773,7 @@ export function App() {
     customize: () => setCustomize((v) => (v ? null : 'themes')), arrange: () => { setArranging(!isArranging()); setCustomize(null); }, undoUi: undoPrefs, toggleMedia: () => togglePanel(['media']),
     toggleInspector: () => togglePanel(['reframe', 'stabilize', 'color', 'effects', 'clip', 'selection']), toggleTimeline: () => togglePanel(['timeline']), compare: () => setCompare(true), sections: toggleAllSections, speedline: toggleSpeedLines, jumps: toggleJumpMarks, snap: toggleSnapping, source: () => { const p = binRef.current.find((b) => b.media)?.path; if (sourceRef.current) closeSource(); else if (p) openSource(p); }, markIn: () => markSource('inUs'), markOut: () => markSource('outUs'), insertEdit: () => placeSource('insert'), overwriteEdit: () => placeSource('overwrite'), toolSelect: () => setTool('select'), toolRoll: () => setTool('roll'), toolSlip: () => setTool('slip'), toolSlide: () => setTool('slide'), shortcuts: () => setShortcutsOpen(true), report: () => setReportOpen(true), tour: () => { setWelcome(false); setTourOpen(true); }, welcome: () => { setProjectsOpen(false); setWelcome(true); }, checkUpdates: () => void checkUpdates(),
     marker: () => { const r = addMarker(tlRef.current, player.time); commit(r.tl); },
+    delMarker: () => { const m = markerNear(tlRef.current, player.time, 500_000); if (m) commit(removeMarker(tlRef.current, m.id)); },
     multicam: () => setMulticamOpen(true),
     angle1: () => void cutToAngle(0), angle2: () => void cutToAngle(1), angle3: () => void cutToAngle(2), angle4: () => void cutToAngle(3),
     prevMarker: () => { const m = [...tlRef.current.markers].reverse().find((x) => x.t < player.time - 1000); if (m) seek(m.t); },
@@ -1839,6 +1860,8 @@ export function App() {
     return null;
   };
   const boxStart = useRef<{ x: number; y: number } | null>(null);
+  /** Alignment lines shown while dragging text or a gauge on the picture. */
+  const [guides, setGuides] = useState<Guides | null>(null);
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     // Masks: drawing a freehand one, or dragging the selected one.
@@ -1918,8 +1941,18 @@ export function App() {
       return;
     }
     if (d.kind === 'overlay') {
-      const x = Math.max(0, Math.min(1, d.o.x + (e.clientX - d.x) / r.width));
-      const y = Math.max(0, Math.min(1, d.o.y + (e.clientY - d.y) / r.height));
+      let x = Math.max(0, Math.min(1, d.o.x + (e.clientX - d.x) / r.width));
+      let y = Math.max(0, Math.min(1, d.o.y + (e.clientY - d.y) / r.height));
+      // Smart guides: lines up with the middle, the safe margins and the other items on screen
+      // (hold ⌘ to place freely, as on the timeline).
+      if (!e.metaKey && !e.ctrlKey) {
+        const W = r.width, H = r.height;
+        const frac = (b: { x: number; y: number; w: number; h: number }) => ({ x: b.x / W, y: b.y / H, w: b.w / W, h: b.h / H });
+        const others = tlRef.current.overlays.filter((o) => o.id !== d.o.id && overlayState(o, player.time)).map((o) => frac(overlayBox(o, W, H)));
+        const a = alignBox(frac(overlayBox({ ...d.o, x, y }, W, H)), others, 6 / W, 6 / H);
+        x += a.dx; y += a.dy;
+        setGuides(a.guides.v.length || a.guides.h.length ? a.guides : null);
+      } else setGuides(null);
       commit(updateOverlay(tlRef.current, d.o.id, { x, y }), `ov-move:${d.o.id}`);
       return;
     }
@@ -1967,6 +2000,7 @@ export function App() {
   const bars = usePrefs((p) => p.bars);
   const customPanels = usePrefs((p) => p.customPanels);
   const workspaces = usePrefs((p) => p.workspaces);
+  const expLevel = usePrefs((p) => p.level);
   const cmdItem = (id: string, label: string, icon: string, extra: Partial<ToolItem> = {}): ToolItem => ({ label, icon, title: `${COMMANDS.find((c) => c.id === id)?.label ?? label}${key(id)}`, run: run[id], ...extra });
   const status = (
     <span className="status" aria-live="polite">
@@ -2077,6 +2111,9 @@ export function App() {
     workspaces: {
       label: 'Layouts', icon: 'workspaces', title: 'Switch layout',
       menu: [
+        { label: 'Set up for your experience:', disabled: true, onClick: () => {} },
+        ...LEVELS.map((l) => ({ label: l.name, checked: expLevel === l.id, onClick: () => setExpLevel(l.id) })),
+        'sep' as const,
         ...LAYOUTS.map(([n, f]) => ({ label: n, onClick: () => setPrefs({ layout: f() }) })),
         ...(Object.keys(workspaces).length ? (['sep', ...Object.entries(workspaces).map(([n, w]) => ({ label: n, onClick: () => setPrefs({ layout: w.layout, bars: w.bars }) }))] as const) : []),
         'sep',
@@ -2281,6 +2318,7 @@ export function App() {
             onPointerUp={() => {
               if (drag.current?.kind === 'drawmask') finishDrawnMask();
               drag.current = null;
+              setGuides(null);
               endGesture();
               if (trackPick && boxStart.current && trackBox) {
                 boxStart.current = null;
@@ -2306,6 +2344,10 @@ export function App() {
             ))}
             <div ref={dipRef} className="dip" />
             <canvas ref={overlayRef} className="overlay-layer" />
+            {guides && <div className="align-guides" aria-hidden>
+              {guides.v.map((v) => <i key={`v${v}`} className={`v${v === 0.5 ? ' mid' : ''}`} style={{ left: `${v * 100}%` }} />)}
+              {guides.h.map((h) => <i key={`h${h}`} className={`h${h === 0.5 ? ' mid' : ''}`} style={{ top: `${h * 100}%` }} />)}
+            </div>}
             {compare && has && <span className="compare-tag">Before</span>}
             {trackBox && <div className="track-box" style={{ left: trackBox.x0, top: trackBox.y0, width: trackBox.x1 - trackBox.x0, height: trackBox.y1 - trackBox.y0 }} />}
           </div>

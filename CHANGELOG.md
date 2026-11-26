@@ -1,5 +1,24 @@
 # Changes
 
+## 0.1.0-beta.12
+
+Fixes and additions from testing.
+
+**Getting started**
+- Choose how much editing you have done: Beginner, Intermediate or Pro, on the welcome screen, in the Layouts menu, or Customize ▸ Layout. Beginner shows just the essentials (fewer panels, toolbar buttons and settings); Pro opens Markers and Scopes too. Anything hidden can be shown again.
+
+**Text and gauges**
+- Cut a selected text or gauge at the playhead: S splits it, Q and W cut off the part before or after. They also snap to clip ends, markers and music beats while dragged.
+- Alignment guides: while dragging text or a gauge on the picture it snaps to the middle, the safe margins and the edges and middles of the other items, with a line showing what it lined up with. Hold ⌘ to place it freely.
+- Gauges count only the footage under them: distance, airtime, jump totals and the timer start at zero where the gauge starts, skip anything cut out, and start again at each cut in the video (turn on “Keep counting across cuts” to carry on through cuts). A gauge you cut in two starts again from the cut.
+- New Sound level gauge: how loud the clip's own sound is, as a number, dial, meter, bar or scrolling graph.
+
+**Fixes and settings**
+- A regular video is no longer treated as 360 because of its name and shape (for example one exported from a 360 video): only files tagged as 360, or GoPro's own 360 files, are.
+- Markers: right-click a marker on the ruler to delete it, or press Shift+M at the playhead.
+- Stabilization presets are now Low 50 ms, Medium 100 ms and High 300 ms.
+- Windy ride sound preset: wind reduction 80%, low cut 200 Hz, mids +1 dB, treble +3 dB.
+
 ## 0.1.0-beta.11
 
 Milestone 4: colour and finishing.

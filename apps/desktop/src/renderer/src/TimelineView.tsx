@@ -700,10 +700,11 @@ function MarkerFlag(p: Props & { m: Marker; x: number; usPerPx: number; duration
       <button
         className="marker-flag"
         style={{ left: p.x, '--mk': MARKER_HEX[m.color] } as CSSProperties}
-        title={`${m.note || 'Marker'} · ${fmtTime(m.t)} (double-click to edit)`}
+        title={`${m.note || 'Marker'} · ${fmtTime(m.t)} (double-click to edit, right-click or Shift+M to delete)`}
         aria-label={`Marker at ${fmtTime(m.t)}${m.note ? `: ${m.note}` : ''}`}
         onPointerDown={(e) => { orig.current = m.t; moved.current = false; drag(e); }}
         onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); }}
+        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setEditing(false); p.onRemoveMarker(m.id); }}
       />
       {editing && (
         <div className="marker-pop" style={{ left: p.x }} onPointerDown={(e) => e.stopPropagation()}>

@@ -11,6 +11,7 @@ import { log, setupDiagnostics } from './diagnostics';
 import { AUDIO_EXT, findImportable, hasExt, matchMissing, VIDEO_EXT, type Wanted } from './importPaths';
 import { setupProjects } from './projects';
 import { setupUpdater } from './updater';
+import { cancelModel, downloadModel, modelStates, readModelFile, removeModel } from './models';
 
 const SELFTEST = process.argv.includes('--selftest');
 /** The app's name, in one place (window title, About box, installer). */
@@ -195,7 +196,7 @@ ipcMain.handle('dialog:open-theme', async () => {
   return r.canceled || !r.filePaths[0] ? null : readFile(r.filePaths[0], 'utf8');
 });
 
-ipcMain.handle('dialog:save', async (_e, kind: 'project' | 'video' | 'mov' | 'image' | 'theme' | 'lut', defaultName: string) => {
+ipcMain.handle('dialog:save', async (_e, kind: 'project' | 'video' | 'mov' | 'image' | 'theme' | 'lut' | 'srt', defaultName: string) => {
   const filters = {
     project: [{ name: 'Project', extensions: ['acproj'] }],
     video: [{ name: 'MP4 video', extensions: ['mp4'] }],
@@ -203,6 +204,7 @@ ipcMain.handle('dialog:save', async (_e, kind: 'project' | 'video' | 'mov' | 'im
     image: [{ name: 'Image', extensions: ['jpg', 'png'] }],
     theme: [{ name: 'Theme or interface settings', extensions: ['acetheme'] }],
     lut: [{ name: 'Cube LUT', extensions: ['cube'] }],
+    srt: [{ name: 'Subtitles', extensions: ['srt'] }],
   }[kind];
   const r = await dialog.showSaveDialog(win!, { defaultPath: defaultName, filters });
   if (r.canceled || !r.filePath) return null;
@@ -482,6 +484,21 @@ ipcMain.handle('update:state', () => updater.state());
 ipcMain.handle('update:check', () => updater.check());
 ipcMain.handle('update:install', () => updater.install());
 ipcMain.handle('update:releases', (_e, url?: string) => updater.openReleases(url));
+
+// --- AI models (see models.ts) ----------------------------------------------------------
+ipcMain.handle('models:list', () => modelStates());
+ipcMain.handle('models:download', async (e, id: string) => {
+  let shown = 0;
+  try {
+    await downloadModel(id, (f) => { if (f - shown > 0.005 || f >= 1) { shown = f; if (!e.sender.isDestroyed()) e.sender.send('models:progress', id, f); } });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+});
+ipcMain.handle('models:cancel', (_e, id: string) => cancelModel(id));
+ipcMain.handle('models:remove', (_e, id: string) => removeModel(id));
+ipcMain.handle('models:read', async (_e, id: string, name: string) => asBytes(await readModelFile(id, name)));
 
 const send = (cmd: string) => () => win?.webContents.send('menu:command', cmd);
 /** The menu bar. Shortcuts are handled in the window (they can be changed), so none are set here. */

@@ -15,3 +15,4 @@ export * from './sound';
 export * from './grading';
 export * from './gaugeSpan';
 export * from './reframe';
+export * from './captions';

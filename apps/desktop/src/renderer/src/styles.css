@@ -898,3 +898,10 @@ button.project-thumb:hover:not(:disabled) { background-color: var(--group); filt
 
 .flow-progress { height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--muted) 20%, transparent); overflow: hidden; margin: 6px 0; }
 .flow-progress > span { display: block; height: 100%; background: var(--accent); }
+.subtitles-dialog .heard { font-style: italic; color: var(--muted); margin: 4px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notice-text { margin: 0; }
+.error-text { margin: 0; color: var(--error); }
+.models-dialog { width: 560px; }
+.models-list { display: flex; flex-direction: column; gap: 8px; }
+.model-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius); background: color-mix(in srgb, var(--muted) 10%, transparent); }
+.model-row .grow { flex: 1; }

@@ -2,6 +2,8 @@ import type { ByteReader } from '@ace/engine';
 import type { OrientationData } from '@ace/telemetry';
 import type { CardRecording, ImportEvent } from '../../main/card';
 import type { UpdateState } from '../../main/updater';
+import type { ModelState } from '../../main/models';
+export type { ModelState };
 export type { UpdateState };
 
 export interface Card { root: string; name: string }
@@ -64,11 +66,18 @@ export interface AceApi {
   updateInstall(): Promise<string | null>;
   openReleases(url?: string): Promise<void>;
   onUpdate(f: (s: UpdateState) => void): void;
+  /** AI models: which are downloaded, downloading one (progress comes through onModelProgress), removing one, reading a file of one. */
+  modelsList(): Promise<ModelState[]>;
+  modelsDownload(id: string): Promise<{ ok: boolean; error?: string }>;
+  modelsCancel(id: string): Promise<void>;
+  modelsRemove(id: string): Promise<void>;
+  modelsRead(id: string, name: string): Promise<Uint8Array>;
+  onModelProgress(f: (id: string, fraction: number) => void): () => void;
   setWindow(o: { mode: 'auto' | 'light' | 'dark'; translucent: boolean }): Promise<void>;
   /** Menu bar choices. */
   onCommand(f: (cmd: string) => void): void;
   onWindowFullscreen(f: (on: boolean) => void): void;
-  saveDialog(kind: 'project' | 'video' | 'mov' | 'image' | 'theme' | 'lut', defaultName: string): Promise<string | null>;
+  saveDialog(kind: 'project' | 'video' | 'mov' | 'image' | 'theme' | 'lut' | 'srt', defaultName: string): Promise<string | null>;
   /** Choose a folder for batch exports (files may then be made in it). */
   exportFolderDialog(): Promise<string | null>;
   /** A free file name in that folder, which may then be written. */

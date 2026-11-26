@@ -68,6 +68,8 @@ export interface Overlay {
   subtitle?: string;
   /** Text: runs along a path instead of a straight line. */
   path?: TextPath;
+  /** Text: a caption made by auto subtitles (replaced when they are made again, saved in the .srt). */
+  caption?: boolean;
 }
 
 /** A path for text: an arc, a wave, a full circle, or a line drawn by hand. */

@@ -1,8 +1,10 @@
 // Milestone 5, AI tools: smart reframe (and, as they land, auto subtitles, smooth slow motion and
 // sharper pictures). Runs hidden; generates its own footage where the right answer is known.
 
-import { BufferTarget, CanvasSource, canEncodeVideo, Mp4OutputFormat, Output, QUALITY_HIGH } from 'mediabunny';
-import { addClip, emptyTimeline, lookAt, newClip, type Timeline } from '@ace/project';
+import { AudioBufferSource, BufferTarget, CanvasSource, canEncodeAudio, canEncodeVideo, Mp4OutputFormat, Output, QUALITY_HIGH } from 'mediabunny';
+import { addClip, emptyTimeline, fromSrt, lookAt, newClip, toSrt, withCaptions, type Timeline } from '@ace/project';
+import { ace as aceApi } from './api';
+import { makeSubtitles } from './subtitles';
 import { ace } from './api';
 import { framesAt } from './calib';
 import { grabFrame } from './exporter';
@@ -80,6 +82,42 @@ async function subjectClip(): Promise<string> {
   return ace.writeFile(path, new Uint8Array((output.target as BufferTarget).buffer!));
 }
 
+
+/** A 16 s clip whose sound is speech/known sentences (fixtures/synthetic/speech.wav, made by scripts/make-speech-fixture.sh). */
+async function speechClip(): Promise<string | null> {
+  const all = await ace.listFixtures();
+  const { fixtures } = await ace.info();
+  const path = `${fixtures}/synthetic/ai-speech.mp4`;
+  if (all.some((f) => f.endsWith('synthetic/ai-speech.mp4'))) return path;
+  const wav = `${fixtures}/synthetic/speech.wav`;
+  if (!(await ace.stat(wav).then(() => true, () => false))) return null;
+  const ctx = new OfflineAudioContext(2, 48000, 48000);
+  const sound = await ctx.decodeAudioData(((await ace.readAll(wav)) as Uint8Array).slice().buffer);
+  // Up to 48 kHz stereo, as a camera would record.
+  const up = new OfflineAudioContext(2, Math.ceil(sound.duration * 48000), 48000);
+  const src = up.createBufferSource();
+  src.buffer = sound;
+  src.connect(up.destination);
+  src.start();
+  const buf = await up.startRendering();
+  const W = 640, H = 360, fps = 30;
+  const cv = new OffscreenCanvas(W, H), c = cv.getContext('2d')!;
+  const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
+  const video = new CanvasSource(cv, { codec: (await canEncodeVideo('avc', { width: W, height: H })) ? 'avc' : 'vp9', bitrate: QUALITY_HIGH, keyFrameInterval: 1 });
+  const audio = new AudioBufferSource({ codec: (await canEncodeAudio('aac', { numberOfChannels: 2, sampleRate: 48000 })) ? 'aac' : 'opus', bitrate: QUALITY_HIGH });
+  output.addVideoTrack(video, { frameRate: fps });
+  output.addAudioTrack(audio);
+  await output.start();
+  await audio.add(buf);
+  for (let f = 0; f < Math.ceil(buf.duration * fps); f++) {
+    c.fillStyle = '#20303a'; c.fillRect(0, 0, W, H);
+    c.fillStyle = '#fff'; c.font = '40px sans-serif'; c.fillText(`${(f / fps).toFixed(1)} s`, 40, 80);
+    await video.add(f / fps, 1 / fps);
+  }
+  await output.finalize();
+  return ace.writeFile(path, new Uint8Array((output.target as BufferTarget).buffer!));
+}
+
 export async function aiCheck(api: EditorApi) {
   const out: Record<string, unknown> = {};
   const fails: string[] = [];
@@ -147,6 +185,63 @@ export async function aiCheck(api: EditorApi) {
   // A clip that already has the frame's shape has nothing to pan across.
   const same = await smartReframe(clip0, m, 16 / 9, () => {}, new AbortController().signal);
   ok('a clip already the frame’s shape is left whole', same.how === 'whole' && !same.patch.keyframes, same.how);
+
+
+  // --- Auto subtitles -----------------------------------------------------------------------------
+  const speech = await speechClip();
+  if (!speech) ok('the speech test file is there (run scripts/make-speech-fixture.sh)', false);
+  else {
+    const sm = await getMedia(speech);
+    const stl: Timeline = addClip(emptyTimeline(), newClip(speech, sm.durationUs, false));
+    const stages: string[] = [];
+    const t1 = performance.now();
+    let sub: Awaited<ReturnType<typeof makeSubtitles>> | null = null;
+    try {
+      sub = await makeSubtitles(stl, 'auto', (p) => { if (stages[stages.length - 1] !== p.stage) stages.push(p.stage); }, new AbortController().signal);
+    } catch (e) { ok('auto subtitles run', false, String(e)); }
+    const secs = (performance.now() - t1) / 1000;
+    if (sub) {
+      const words = sub.captions.map((c) => c.text.replace(/\n/g, ' ')).join(' ').toLowerCase().replace(/[^a-z ]/g, '');
+      out['heard'] = words;
+      out['subtitles took (s, incl. any download)'] = +secs.toFixed(1);
+      out['listening took (s)'] = +(sub.ms / 1000).toFixed(1);
+      ok('it finds the language (English)', sub.language === 'en', sub.language);
+      const want = ['pump track', 'big jump', 'speed', 'berm', 'best lap'];
+      ok('it writes down what was said', want.every((w) => words.includes(w)), want.filter((w) => !words.includes(w)));
+      const caps = sub.captions;
+      const keep = caps.find((c) => /keep your speed/i.test(c.text.replace(/\n/g, ' ')));
+      const first = caps[0];
+      ok('captions start when the talking starts', !!first && first.startUs < 1.2 * S, first && first.startUs / S);
+      ok('and later sentences come later, after the pause', !!keep && keep.startUs > 4 * S && keep.startUs > first!.endUs, keep && [keep.startUs / S, first!.endUs / S]);
+      ok('captions are short and in order', caps.every((c, i) => c.text.split('\n').length <= 2 && c.endUs > c.startUs && (!i || c.startUs >= caps[i - 1]!.endUs)), caps.length);
+      ok('listening is quicker than the sound lasts', sub.ms / 1000 < sm.durationUs / S, +(sub.ms / 1000).toFixed(1));
+      // On the timeline, and as an .srt file.
+      const withCaps = withCaptions(stl, sub.captions);
+      const srt = toSrt(withCaps);
+      ok('the .srt file has every caption', fromSrt(srt).length === caps.length && srt.startsWith('1\n00:00:0'), srt.slice(0, 80));
+      void aceApi;
+      // Through the app: AI tools → Auto subtitles.
+      api.setTimeline(stl);
+      api.player.seek(2 * S);
+      await settle(api, 2);
+      api.run?.('subtitles');
+      await sleep(300);
+      const make = [...document.querySelectorAll<HTMLButtonElement>('.subtitles-dialog button')].find((b) => b.textContent === 'Make subtitles');
+      ok('the Auto subtitles window opens', !!make);
+      make?.click();
+      for (let i = 0; i < 600 && !document.querySelector('.subtitles-dialog .notice-text'); i++) await sleep(100);
+      const said = document.querySelector('.subtitles-dialog .notice-text')?.textContent ?? '';
+      ok('it says how many captions were added', /Added \d+ captions? \(English\)/.test(said), said);
+      await ace.capture('ai-subtitles-dialog');
+      const caps2 = api.getTimeline().overlays.filter((o) => o.caption);
+      ok('the captions are on the timeline', caps2.length === sub.captions.length, caps2.length);
+      [...document.querySelectorAll<HTMLButtonElement>('.subtitles-dialog button')].find((b) => b.textContent === 'Done')?.click();
+      api.player.seek(2 * S);
+      await settle(api);
+      await ace.capture('ai-subtitles-preview');
+      ok('undo takes them away in one step', (() => { api.run?.('undo'); return !api.getTimeline().overlays.some((o) => o.caption); })());
+    }
+  }
 
   // --- Smart reframe: a 360 clip follows the way it travels -------------------------------------
   const all = await ace.listFixtures();

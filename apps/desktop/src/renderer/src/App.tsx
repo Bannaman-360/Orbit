@@ -8,7 +8,7 @@ import {
   hasRamp, mediaAt, moveSpeedKey, rippleItems, DEFAULT_LENS_LOOK, fisheyeForLook, lookAt, removeSpeedKey, setClipSpeed, setSpeedEase, setSpeedKey, speedAt, speedKeyNear,
   COMFORT_FOV, fitSubjectFrac, fracForFov, moveKeyframe, trackWeight, DEFAULT_TRACK_MAX_FOV, MAX_ZOOM_FOV, setTrackRange, trackActive, trackExtent, trackHeld, trackRange,
   type ClipTrack, type Easing, type GaugeDesign, type GaugeKind, type Grade, type Look, type Overlay, type Timeline, type TimelineClip, type Transition,
-  TIMELINE_VERSION, findClip, MAX_MASKS, frameToLayer, insidePolygon, layerToFrame, maskOutline, maskPoseAt, newMask, setMaskPose, type Mask, addTrack, applyLayout, cellTransform, LAYOUT_TEMPLATES, cleanXf, hitsLayer, stackAt, xfOf, layerLocated, moveConnected, newId, placeConnected, playLength, removeConnected, splitConnected, deleteSideConnected, trackFree, trackName, trimEmptyTracks, updateTrack, type Located, type ConnectedClip, type AudioClip, addMulticam, groupOf, switchAngle, flattenTimeline, storeSequence, sequenceTimeline, findSequence, sequenceIdOf, isCompound, makeCompound, breakApart, sourceDuration,
+  TIMELINE_VERSION, toSrt, withCaptions, findClip, MAX_MASKS, frameToLayer, insidePolygon, layerToFrame, maskOutline, maskPoseAt, newMask, setMaskPose, type Mask, addTrack, applyLayout, cellTransform, LAYOUT_TEMPLATES, cleanXf, hitsLayer, stackAt, xfOf, layerLocated, moveConnected, newId, placeConnected, playLength, removeConnected, splitConnected, deleteSideConnected, trackFree, trackName, trimEmptyTracks, updateTrack, type Located, type ConnectedClip, type AudioClip, addMulticam, groupOf, switchAngle, flattenTimeline, storeSequence, sequenceTimeline, findSequence, sequenceIdOf, isCompound, makeCompound, breakApart, sourceDuration,
 } from '@ace/project';
 import { ace, baseName, type FoundMedia, type ProjectMeta, type UpdateState } from './api';
 import { NameSheet, ProjectsPage } from './Projects';
@@ -25,6 +25,7 @@ import { gradeView, SCOPE_EVERY_MS } from './gradeView';
 import { ScopesPanel } from './Scopes';
 import { forgetPictureMotion, stabiliseFromPicture } from './flowStab';
 import { reframeNote as noteOf, smartReframe } from './smartReframe';
+import { ModelsDialog, SubtitlesDialog } from './AiDialogs';
 import { adoptReframe, canReframe, lensLookOf, clipLens, clipLookAt, flatDirection, flatShot, FOLLOW_ROOM, ownLookAt, roomFov, shareOf, shownFov, withoutEffects, presentLook, pushClipFrame, reframeSignature, shownXf } from './frameRender';
 import { angleBetween, directionAt, trackSubject } from './tracker';
 import { InspectorPanel, SelectionPanel, type InspectorProps } from './Inspector';
@@ -742,6 +743,15 @@ export function App() {
     commit(t, 'smart-reframe');
     if (!single) setNotice(`Reframed ${patches.size} clip${patches.size === 1 ? '' : 's'} for ${framing}. Each one’s keyframes can be changed in Reframe.`);
   };
+  /** Saves the captions as an .srt file. */
+  const saveSrt = async () => {
+    const t = tlRef.current;
+    if (!t.overlays.some((o) => o.caption)) { setNotice('There are no captions yet. Make them with AI tools → Auto subtitles.'); return; }
+    const path = await ace.saveDialog('srt', `${projectName ?? 'Subtitles'}.srt`);
+    if (!path) return;
+    await ace.writeFile(path, toSrt(t));
+    setNotice(`Saved the subtitles to ${baseName(path)}.`);
+  };
   /** Every clip of the edit (main row and tracks), for reframing the whole project. */
   const allClipIds = () => [...tlRef.current.clips, ...tlRef.current.connected].filter((c) => !c.mediaPath.startsWith('seq:')).map((c) => c.id);
 
@@ -1008,6 +1018,8 @@ export function App() {
 
   // --- Multicam ----------------------------------------------------------------------------------
   const [multicamOpen, setMulticamOpen] = useState(false);
+  const [subtitlesOpen, setSubtitlesOpen] = useState(false);
+  const [modelsOpen, setModelsOpen] = useState(false);
   const [multicamBusy, setMulticamBusy] = useState<string | null>(null);
   const makeMulticam = async (paths: string[], method: 'sound' | 'clock') => {
     try {
@@ -1832,6 +1844,9 @@ export function App() {
     marker: () => { const r = addMarker(tlRef.current, player.time); commit(r.tl); },
     delMarker: () => { const m = markerNear(tlRef.current, player.time, 500_000); if (m) commit(removeMarker(tlRef.current, m.id)); },
     multicam: () => setMulticamOpen(true),
+    subtitles: () => setSubtitlesOpen(true),
+    saveSrt: () => void saveSrt(),
+    aiModels: () => setModelsOpen(true),
     angle1: () => void cutToAngle(0), angle2: () => void cutToAngle(1), angle3: () => void cutToAngle(2), angle4: () => void cutToAngle(3),
     prevMarker: () => { const m = [...tlRef.current.markers].reverse().find((x) => x.t < player.time - 1000); if (m) seek(m.t); },
     nextMarker: () => { const m = tlRef.current.markers.find((x) => x.t > player.time + 1000); if (m) seek(m.t); },
@@ -2209,6 +2224,11 @@ export function App() {
         { label: 'Smart reframe the whole edit:', disabled: true, onClick: () => {} },
         ...FRAMINGS.filter((f) => f.aspect < 1.5).map((f) => ({ label: `For ${f.label}${f.label === '9:16' ? ' (Reels, TikTok, Shorts)' : f.label === '4:5' ? ' (feed posts)' : ''}`, onClick: () => void runSmartReframe(allClipIds(), f.label) })),
         { label: `Again for ${tl.framing} (keeps the frame shape)`, onClick: () => void runSmartReframe(allClipIds()) },
+        'sep' as const,
+        { label: 'Auto subtitles…', onClick: () => setSubtitlesOpen(true) },
+        { label: 'Save subtitles as .srt…', disabled: !tl.overlays.some((o) => o.caption), onClick: () => void saveSrt() },
+        'sep' as const,
+        { label: 'AI models on this computer…', onClick: () => setModelsOpen(true) },
       ],
     },
     queue: { label: queuePending ? `Queue (${queuePending})` : 'Queue', icon: 'export', title: 'Export queue: exports running in the background', on: queueOpen, run: () => setQueueOpen((o) => !o) },
@@ -2709,6 +2729,8 @@ export function App() {
       )}
       {arranging && <ArrangeBar items={items} drag={(e, id, label) => dragItem(e, id, label, null)} onCustomize={() => setCustomize('layout')} onDone={() => setArranging(false)} />}
       {customize && <Customize page={customize} onPage={setCustomize} onClose={() => setCustomize(null)} items={items} />}
+      {subtitlesOpen && <SubtitlesDialog timeline={tl} onCaptions={(caps) => commit(withCaptions(tlRef.current, caps), 'captions')} onSaveSrt={() => void saveSrt()} onClose={() => setSubtitlesOpen(false)} />}
+      {modelsOpen && <ModelsDialog onClose={() => setModelsOpen(false)} />}
       {multicamOpen && <MulticamDialog files={bin.filter((b) => b.media).map((b) => b.path)} busy={multicamBusy} onMake={(ps, m) => void makeMulticam(ps, m)} onClose={() => setMulticamOpen(false)} />}
       {exportOpen && <ExportDialog timeline={flattenTimeline(rootTimeline())} onClose={() => setExportOpen(false)} onShowQueue={() => setQueueOpen(true)} />}
       {queueOpen && <QueuePanel onClose={() => setQueueOpen(false)} />}

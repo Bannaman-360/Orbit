@@ -1,8 +1,8 @@
 # Changes
 
-## Unreleased
+## 0.1.0-beta.12
 
-From the testing notes.
+Fixes and additions from testing.
 
 **Getting started**
 - Choose how much editing you have done: Beginner, Intermediate or Pro, on the welcome screen, in the Layouts menu, or Customize ▸ Layout. Beginner shows just the essentials (fewer panels, toolbar buttons and settings); Pro opens Markers and Scopes too. Anything hidden can be shown again.

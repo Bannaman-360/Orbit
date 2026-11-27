@@ -121,6 +121,7 @@ export async function keysCheck(api: EditorApi) {
   }
   await variants(api, ok, out);
   await typedThenDiamond(api, ok, out);
+  await afterTracking(api, ok, out);
   return { fails, ...out };
 }
 
@@ -238,4 +239,49 @@ async function typedThenDiamond(api: EditorApi, ok: (n: string, pass: boolean, i
   await sleep(300);
   out['opened, unchanged, then ◆'] = keys();
   ok('a value box opened and left as it was changes nothing', JSON.stringify(keys()) === JSON.stringify(['kA@1.00 yaw 0', 'kB@3.00 yaw 0']), keys());
+}
+
+/**
+ * Keyframes after subject tracking has stopped (and holds its last view): each keeps its own
+ * view, and the preview shows it. (Before, every change there went into the one held view.)
+ */
+async function afterTracking(api: EditorApi, ok: (n: string, pass: boolean, info?: unknown) => void, out: Record<string, unknown>) {
+  const all = await ace.listFixtures();
+  const m = await getMedia(all.find((f) => f.endsWith('max2/GS010113.360'))!);
+  const plain = newClip(m.path, m.durationUs, true);
+  const k = (id: string, t: number): Keyframe => ({ id, t, look: { ...plain.look }, easing: 'smooth' });
+  // Tracked 0–2 s, used to 1.5 s, held after, on a view chosen there; keyframes at 2.5, 3 and 3.5 s.
+  const track = {
+    space: 'world' as const, smoothing: 0.25, offsetYaw: 0, offsetPitch: 0, to: 1.5 * S, end: { yaw: 0, pitch: -20, fov: 120 },
+    points: Array.from({ length: 61 }, (_, i) => ({ t: (i / 30) * S, yaw: 30 + i, pitch: 5 })),
+  };
+  api.setTimeline(addClip(emptyTimeline(), { ...plain, id: 'cK', track, keyframes: [k('k1', 2.5 * S), k('k2', 3 * S), k('k3', 3.5 * S)] }));
+  await sleep(400);
+  document.querySelector<HTMLElement>('.dock-tab[data-panel="reframe"]')?.click();
+  await sleep(200);
+  openSection('View');
+  await sleep(200);
+  const pan = () => $$<HTMLInputElement>('[data-panel-body="reframe"] input[type="range"][aria-label="Pan"]')[0];
+  const want = [-40, 25, 90];
+  for (const [i, v] of want.entries()) {
+    const d = $$<HTMLButtonElement>('.clip-kf')[i]!;
+    d.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: d.getBoundingClientRect().left + 4, clientY: d.getBoundingClientRect().top + 4 }));
+    d.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0 }));
+    await sleep(250);
+    const el = pan();
+    if (el) setRange(el, v);
+    await sleep(250);
+  }
+  const c = api.getTimeline().clips[0]!;
+  const yaws = c.keyframes.map((x) => +x.look.yaw.toFixed(1));
+  out['after tracking: keyframe pans'] = yaws;
+  ok('after tracking stops, each keyframe keeps its own view', JSON.stringify(yaws) === JSON.stringify(want) && c.keyframes.length === 3, { yaws, held: c.track?.end });
+  ok('the held view isn’t changed by them', JSON.stringify(c.track?.end) === JSON.stringify(track.end), c.track?.end);
+  const shown: number[] = [];
+  for (const i of [0, 1, 2]) {
+    $$<HTMLButtonElement>('.clip-kf')[i]!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+    await sleep(250);
+    shown.push(+(+(pan()?.value ?? NaN)).toFixed(1));
+  }
+  ok('and the view shows each keyframe’s pan', JSON.stringify(shown) === JSON.stringify(want), shown);
 }

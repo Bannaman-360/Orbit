@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_LOOK } from './look';
-import { applyTrack, COMFORT_FOV, fitSubjectFrac, fracForFov, setTrackRange, smoothTrack, trackActive, trackAt, trackHeld, trackRange, type ClipTrack } from './track';
+import { applyTrack, clipTrack, trackWeight, COMFORT_FOV, fitSubjectFrac, fracForFov, setTrackRange, smoothTrack, trackActive, trackAt, trackHeld, trackRange, type ClipTrack } from './track';
 
 const S = 1_000_000;
 const path = (f: (s: number) => [number, number], from = 0, to = 4): ClipTrack => ({
@@ -172,5 +172,33 @@ describe('lens while tracking', () => {
     expect(applyTrack(own, { ...grow, maxFov: 90 }, 2 * S, undefined, share).fov).toBeLessThanOrEqual(90);
     const frac = fracForFov(grow, 1 * S, 70, 0, share)!;
     expect(applyTrack(own, { ...grow, subjectFrac: frac }, 1 * S, undefined, share).fov).toBeCloseTo(70, 1);
+  });
+
+  it('keyframes after the end of a held track take over from the held view', () => {
+    // Tracked 0–4 s, held after; keyframes at 1 s (inside) and at 6 s and 8 s (after the end).
+    const tr = { ...path((s) => [s * 10, 0]), end: { yaw: 50, pitch: 0, fov: 90 } };
+    const keys = [{ t: 1 * S }, { t: 8 * S }, { t: 6 * S }];
+    const live = clipTrack({ track: tr, keyframes: keys })!;
+    expect(live.handover).toBe(6 * S);
+    expect(trackHeld(live, 5 * S)).toBe(true);
+    expect(trackHeld(live, 6 * S)).toBe(false);
+    expect(trackWeight(live, 6 * S)).toBe(0);
+    expect(trackWeight(live, 7 * S)).toBe(0);
+    expect(trackWeight(live, 5 * S)).toBeGreaterThan(0);
+    expect(trackWeight(live, 5 * S)).toBeLessThan(1);
+    // From the first keyframe on, the view is the clip's own (its keyframes).
+    const own = { ...DEFAULT_LOOK, yaw: -120, pitch: 10 };
+    expect(applyTrack(own, live, 6 * S)).toMatchObject({ yaw: -120, pitch: 10 });
+    expect(applyTrack(own, live, 7.5 * S)).toMatchObject({ yaw: -120, pitch: 10 });
+    // On the way there, between the held view and the keyframe.
+    const mid = applyTrack(own, live, 5 * S).yaw;
+    expect(mid).toBeLessThan(50);
+    expect(mid).toBeGreaterThan(-120);
+    // Without keyframes after the end (or going back to the own view), nothing changes.
+    expect(clipTrack({ track: tr, keyframes: [{ t: 1 * S }] })!.handover).toBeUndefined();
+    expect(clipTrack({ track: { ...tr, after: 'return' }, keyframes: keys })!.handover).toBeUndefined();
+    expect(applyTrack(own, clipTrack({ track: tr, keyframes: [] }), 7 * S).yaw).toBeCloseTo(50);
+    // (Never saved: a stale handover on the stored track is worked out again.)
+    expect(clipTrack({ track: { ...tr, handover: 2 * S }, keyframes: [] })!.handover).toBeUndefined();
   });
 });

@@ -45,6 +45,27 @@ export interface ClipTrack {
   maxFov?: number;
   /** false: the path only moves masks that follow it; the view stays where it is. */
   steer?: boolean;
+  /**
+   * Worked out, never saved (see `clipTrack`): the first keyframe after the end of a track that
+   * holds its last view. From there the keyframes set the view again; before it the held view
+   * eases over to them.
+   */
+  handover?: number;
+}
+
+/**
+ * A clip's track as playback and editing use it: with `handover` set from its keyframes, so
+ * keyframes placed after the end of a held track take over from the held view.
+ */
+export function clipTrack(clip: { track?: ClipTrack; keyframes: { t: number }[] }): ClipTrack | undefined {
+  const tr = clip.track;
+  if (!tr) return undefined;
+  const { handover: _old, ...plain } = tr;
+  const r = trackRange(plain);
+  if (!r || (plain.after ?? 'hold') !== 'hold') return plain;
+  let first: number | undefined;
+  for (const k of clip.keyframes) if (k.t > r[1] && (first === undefined || k.t < first)) first = k.t;
+  return first === undefined ? plain : { ...plain, handover: first };
 }
 
 export const DEFAULT_TRACK_LENS = 0.6;
@@ -129,10 +150,11 @@ export function trackActive(tr: ClipTrack, t: number): boolean {
   return !!r && t >= r[0] && t <= r[1];
 }
 
-/** Whether media time t is after the end of a track that holds its last view. */
+/** Whether media time t is after the end of a track that holds its last view (and before any
+ *  keyframe that takes over from it). */
 export function trackHeld(tr: ClipTrack, t: number): boolean {
   const r = trackRange(tr);
-  return !!r && t > r[1] && (tr.after ?? 'hold') === 'hold';
+  return !!r && t > r[1] && (tr.after ?? 'hold') === 'hold' && (tr.handover === undefined || t < tr.handover);
 }
 
 /**
@@ -188,6 +210,8 @@ export function trackWeight(tr: ClipTrack, t: number): number {
   if (!r || t < r[0] || tr.steer === false) return 0;
   const easeUs = Math.max(1, (tr.ease ?? DEFAULT_TRACK_EASE_S) * 1e6);
   if (t <= r[1]) return smoothstep((t - r[0]) / Math.min(easeUs, Math.max(1, (r[1] - r[0]) / 2)));
+  // A keyframe after the end takes over: the held view eases over to it.
+  if ((tr.after ?? 'hold') === 'hold' && tr.handover !== undefined) return t >= tr.handover ? 0 : 1 - smoothstep((t - r[1]) / Math.max(1, tr.handover - r[1]));
   return trackHeld(tr, t) ? 1 : smoothstep(1 - (t - r[1]) / easeUs);
 }
 
@@ -251,6 +275,8 @@ export function applyTrack(look: Look, tr: ClipTrack | undefined, t: number, toV
     };
     const easeUs = Math.max(1, (tr.ease ?? DEFAULT_TRACK_EASE_S) * 1e6);
     aim = tr.end ? lerpAim(coast, { ...tr.end, fisheye: lensAt(tr.end.fov) }, smoothstep((t - r[1]) / easeUs)) : coast;
+    // Easing over to a keyframe that takes over from the held view.
+    if (weight < 1) aim = lerpAim(own, aim, weight);
   } else {
     const v = viewAt(t);
     aim = v && (weight >= 1 ? v : lerpAim(own, v, weight));

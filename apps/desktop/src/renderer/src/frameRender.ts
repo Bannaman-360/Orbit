@@ -1,6 +1,6 @@
 // One rendering step shared by preview, export and frame grabs, so they always match.
 
-import { bakeCurves, curvesUsed, denoiseFrames, denoiseOn, filmLut, qualifierUniforms, wheelsNeutral, wheelUniforms, DEFAULT_CROP, NO_EFFECTS, NEUTRAL_GRADE, withOff, applyTrack, fisheyeForLook, type OwnLens, blurFrames, lookAt, curveOf, trackWeight, xfOf, type Look, type ShareOf, type TimelineClip, type Transform } from '@ace/project';
+import { clipTrack, bakeCurves, curvesUsed, denoiseFrames, denoiseOn, filmLut, qualifierUniforms, wheelsNeutral, wheelUniforms, DEFAULT_CROP, NO_EFFECTS, NEUTRAL_GRADE, withOff, applyTrack, fisheyeForLook, type OwnLens, blurFrames, lookAt, curveOf, trackWeight, xfOf, type Look, type ShareOf, type TimelineClip, type Transform } from '@ace/project';
 import { cropAt, DEFAULT_AXIS_MAP, planCrop, smoothUnder, type CropPlan, type CropRequest } from '@ace/telemetry';
 import type { Lut3D, PresentInput, ReframeRenderer, RenderMode } from '@ace/media360';
 import { inputFor } from './color';
@@ -96,7 +96,7 @@ export function clipLookAt(clip: TimelineClip, mediaUs: number): Look {
   const look = ownLookAt(clip, mediaUs);
   if (!clip.track) return look;
   const media = mediaNow(clip.mediaPath);
-  return applyTrack(look, clip.track, mediaUs, media ? (y, p, t) => worldToClipView(media, clip, t, y, p) : undefined, shareOf(media, clip), ownLens(clip, look));
+  return applyTrack(look, clipTrack(clip), mediaUs, media ? (y, p, t) => worldToClipView(media, clip, t, y, p) : undefined, shareOf(media, clip), ownLens(clip, look));
 }
 
 /** The view of a regular clip as the lens code wants it, and how the output maps onto the picture. */
@@ -271,7 +271,8 @@ function startPlan(clip: TimelineClip, media: Media, outAspect: number, key: str
   const pic = pictureAspect(media);
   const moments: Moment[] = [], wants: number[] = [];
   const moment = (i: number) => (moments[i] ??= momentAt(media, clip, at(i)));
-  const weight = (i: number) => (clip.track ? trackWeight(clip.track, at(i)) : 0);
+  const ctr = clipTrack(clip);
+  const weight = (i: number) => (ctr ? trackWeight(ctr, at(i)) : 0);
   const offYaw = new Float64Array(n), offPitch = new Float64Array(n);
   const looks: Look[] = [];
   const lookOf = (i: number) => (looks[i] ??= clipLookAt(clip, at(i)));
@@ -383,7 +384,8 @@ export function flatShot(clip: TimelineClip, media: Media, look: Look, t: number
   const still = { yaw: look.yaw, pitch: look.pitch, correction: IDENTITY, rows: null, crop: 0, level: 1 };
   if (clip.fit !== 'fill' && !plan) return { ...still, fov: look.fov };
   const scale = edgeScale(clip, media, outAspect);
-  const w = clip.track ? trackWeight(clip.track, t) : 0;
+  const ctr = clipTrack(clip);
+  const w = ctr ? trackWeight(ctr, t) : 0;
   const base = wantFov(lens, view, pic, scale, look, w);
   if (!plan) return { ...still, fov: base };
   const p = planFor(clip, media, outAspect);

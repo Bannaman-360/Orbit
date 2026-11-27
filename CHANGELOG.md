@@ -1,5 +1,10 @@
 # Changes
 
+## 0.1.0-beta.17
+
+**Fixes**
+- Keyframes after subject tracking: once tracking stops and holds its last view, keyframes placed after that point now set the view again. Before, every change on them went into the one held view, so they all ended up the same. The view eases from the held view over to the first of those keyframes.
+
 ## 0.1.0-beta.16
 
 **HiLight tags**

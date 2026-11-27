@@ -170,7 +170,8 @@ export async function followCheck(api: EditorApi) {
   const panned = await compare(ride, filming, base(ride.media, { look: look({ fov: 45, yaw: 16, pitch: 8 }), stabilize: st({ horizon: true }) }));
   const both = await compare(ride, filming, base(ride.media, { look: look({ fov: 70 }), stabilize: st({ horizon: true, smoothing: 'high', maxCrop: 0.7 }) }));
   const rolled = await compare(ride, filming, base(ride.media, { look: look({ fov: 45, roll: 10 }), stabilize: st({ horizon: true, smoothing: 'medium' }) }));
-  const tight = await compare(ride, filming, base(ride.media, { look: look({ fov: 95 }), stabilize: st({ horizon: true, smoothing: 'medium', maxCrop: 0.12 }) }));
+  // (High: Medium became a 100 ms window in beta 11, which corrects so little that 12% is enough for all of it.)
+  const tight = await compare(ride, filming, base(ride.media, { look: look({ fov: 95 }), stabilize: st({ horizon: true, smoothing: 'high', maxCrop: 0.12 }) }));
   const tall = await compare(ride, filming, base(ride.media, { look: look({ fov: 70 }), stabilize: st({ horizon: true, smoothing: 'medium' }) }), 270, 480);
   const whole = await compare(ride, filming, base(ride.media, { lensMode: 'source', look: look({ fov: lens.hfov }), stabilize: st({ horizon: true, maxCrop: 0.6 }) }));
   Object.assign(out, { plain, level, panned, both, rolled, tight, tall, whole });

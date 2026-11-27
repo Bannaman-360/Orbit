@@ -11,3 +11,6 @@ selftest-out/
 # Downloaded and built tools (ffmpeg), not committed
 build-deps/
 apps/desktop/resources/ffmpeg/
+
+# Promo material (ad, tutorials): kept local, never committed
+marketing/

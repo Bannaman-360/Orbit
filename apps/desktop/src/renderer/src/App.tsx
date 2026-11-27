@@ -2368,6 +2368,12 @@ export function App() {
     onSpeedLines: toggleSpeedLines,
     jumpMarks,
     onJumpMarks: toggleJumpMarks,
+    onAddMarkers: (list) => {
+      let t = tlRef.current, n = 0;
+      for (const x of list) { if (markerNear(t, x.t, 500_000)) continue; t = addMarker(t, x.t, x.note, 'yellow').tl; n++; }
+      if (n) commit(t);
+      setNotice(n ? `Added ${n} marker${n === 1 ? '' : 's'} for the HiLight tags. They’re listed in the Markers panel.` : 'Every HiLight tag already has a marker.');
+    },
     onPreviewAt: (T) => { seek(T); if (!player.playing) player.play(); },
     onSeekMedia: (m) => { if (!clip) return; const spot = clipSpot(tlRef.current, clip.id); if (spot) seek(spot.startUs + localAt(clip, m)); },
     onGradeToAll: () => {

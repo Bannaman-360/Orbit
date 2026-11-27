@@ -121,19 +121,38 @@ export function Slider({ label, value, min, max, step = 0.01, reset, format, onC
 export function NumberField({ value, min, max, format, units, disabled, onChange }: {
   value: number; min: number; max: number; format?: (v: number) => string; units?: Units; disabled?: boolean; onChange: (v: number) => void;
 }) {
-  const [text, setText] = useState<string | null>(null);
+  const [text, setTextState] = useState<string | null>(null);
+  // (Kept in refs too: a commit can come from a pointer press before React draws again.)
+  const live = useRef<{ text: string | null; opened: string; onChange: (v: number) => void }>({ text: null, opened: '', onChange });
+  live.current.onChange = onChange;
+  const setText = (t: string | null) => { live.current.text = t; setTextState(t); };
   const to = units?.to ?? ((v: number) => v);
   const from = units?.from ?? ((n: number) => n);
   const digits = units?.digits ?? 2;
   const commit = () => {
-    if (text === null) return;
-    const n = parseFloat(text.replace(',', '.').replace(/[^0-9.+-eE]/g, ''));
+    const t = live.current.text;
+    if (t === null) return;
+    setText(null);
+    // Left as it was: nothing to change (it would set a keyframe wherever the playhead is now).
+    if (t.trim() === live.current.opened) return;
+    const n = parseFloat(t.replace(',', '.').replace(/[^0-9.+-eE]/g, ''));
     if (Number.isFinite(n)) {
       const v = from(n);
-      if (Number.isFinite(v)) onChange(Math.min(max, Math.max(min, v)));
+      if (Number.isFinite(v)) live.current.onChange(Math.min(max, Math.max(min, v)));
     }
-    setText(null);
   };
+  const commitRef = useRef(commit);
+  commitRef.current = commit;
+  // Pressing anywhere else saves the value first, before that press acts: clicking another
+  // keyframe's ◆ moves the playhead, and the value belongs to the moment it was typed at.
+  const editing = text !== null;
+  useEffect(() => {
+    if (!editing) return;
+    const press = (e: PointerEvent) => { if (!(e.target instanceof Element) || !e.target.closest('input.num-edit')) commitRef.current(); };
+    window.addEventListener('pointerdown', press, true);
+    return () => window.removeEventListener('pointerdown', press, true);
+  }, [editing]);
+  const open = () => { const t = String(+to(value).toFixed(digits)); live.current.opened = t; setText(t); };
   if (text !== null)
     return (
       <input
@@ -155,7 +174,7 @@ export function NumberField({ value, min, max, format, units, disabled, onChange
       className="num"
       disabled={disabled}
       title="Click to type a value"
-      onClick={() => setText(String(+to(value).toFixed(digits)))}
+      onClick={open}
     >
       {format ? format(value) : value.toFixed(2)}
       {units?.suffix && !format ? units.suffix : ''}

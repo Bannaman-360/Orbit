@@ -89,7 +89,7 @@ export function MediaBin({ items, folders = [], onAdd, onConnect, onImport, onRe
       <div className="bin-meta">
         <span className="name">{it.flag === 'fav' && <span className="bin-fav-mark" aria-label="Favourite">♥ </span>}{baseName(it.path)}</span>
         <span className="muted small">
-          {it.error ? <span className="bin-why">{it.error}</span> : it.media ? `${it.media.width}×${it.media.height}${it.media.tracks.length > 1 ? '×2' : ''} · ${Math.round(it.media.fps)} fps${it.media.parts.length > 1 ? ` · ${it.media.parts.length} parts` : ''}` : 'Opening…'}
+          {it.error ? <span className="bin-why">{it.error}</span> : it.media ? `${it.media.width}×${it.media.height}${it.media.tracks.length > 1 ? '×2' : ''} · ${Math.round(it.media.fps)} fps${it.media.parts.length > 1 ? ` · ${it.media.parts.length} parts` : ''}${it.media.hilights.length ? ` · ${it.media.hilights.length} HiLight${it.media.hilights.length === 1 ? '' : 's'}` : ''}` : 'Opening…'}
         </span>
         {it.media?.partsNote && <span className="proxy-state error" title={it.media.partsNote}>Not all parts joined</span>}
         {it.media && level > 1 && (() => {

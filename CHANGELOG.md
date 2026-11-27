@@ -1,6 +1,6 @@
 # Changes
 
-## Next
+## 0.1.0-beta.16
 
 **HiLight tags**
 - The moments you tagged on the camera while recording (the HiLight button, or "GoPro, HiLight") now show up in the app: a yellow star at each on the timeline, and the number of tags next to the file in Media.

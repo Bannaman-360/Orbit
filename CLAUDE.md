@@ -40,6 +40,7 @@ Node comes from fnm. In a fresh shell run: `export PATH="$HOME/.local/share/fnm:
     - milestone 4: `finish` (colour wheels, curves, qualifier, power windows, film looks, noise reduction, new effects and transitions, scopes, stabilizing from the picture; preview vs export; 4K grading playback)
     - milestone 5: `ai` (smart reframe, auto subtitles, smooth slow motion, sharper pictures; downloads the AI models the first time; needs `fixtures/synthetic/speech.wav` from `scripts/make-speech-fixture.sh`)
     - `highlights` (HiLight tags: read from the file, listed, stars on the timeline, markers; makes a tagged copy of `GS010114.360`)
+    - `keys` (keyframes: every control on the second keyframe leaves the first alone; speed, trims, ◆ clicks with a value box open)
     - `spectrum` (sound spectrum gauges: bands for known tones, clip sound vs music, five looks, preview vs export)
     - ride data and export: `gauges`, `airtime`, `export`, `tenbitexport`, `rider`
   - A full regression runs all of them and takes about 45 minutes. Timing checks (`gauges`, `scrubback`) can fail once when the machine is busy: rerun before treating it as a bug.

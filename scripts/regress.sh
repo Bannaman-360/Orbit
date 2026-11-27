@@ -5,7 +5,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 QUICK="ui export airtime odd gauges"
-ALL="ui perf full color lens lenslook flat regular stab chapters card equirect follow zoom seamcheck scrubback speed strip protrim snap markers pool gauges airtime drop tour report odd long export tenbitexport rider layers masks beta8 motion finish ai spectrum highlights"
+ALL="ui perf full color lens lenslook flat regular stab chapters card equirect follow zoom seamcheck scrubback speed strip protrim snap markers pool gauges airtime drop tour report odd long export tenbitexport rider layers masks beta8 motion finish ai spectrum highlights keys"
 modes="$ALL"; [ "${1:-}" = "--quick" ] && modes="$QUICK"
 
 "$HERE/selftest.sh" --build ui >/dev/null 2>&1 || true   # build once up front

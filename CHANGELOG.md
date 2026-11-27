@@ -7,6 +7,10 @@
 - Clip ▸ HiLight tags lists them; click one to go there. Add as markers puts a marker at each, so they're in the Markers panel and in YouTube chapters.
 - Works with HERO cameras and the Max (old and new ways the cameras store tags), and with long recordings the camera split into several files.
 
+**Fixes**
+- Keyframes: a value typed into a slider's box no longer ends up on another keyframe when you click that keyframe's ◆ next. It stays on the keyframe you typed it on. Opening a box and clicking away without changing it no longer adds a keyframe.
+- Airtime: a wheel that clips the lip or the next roller mid-air no longer splits one jump in two.
+
 ## 0.1.0-beta.15
 
 **Sound spectrum gauges (Gauges ▸ Sound spectrum)**

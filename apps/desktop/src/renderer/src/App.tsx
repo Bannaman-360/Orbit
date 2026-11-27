@@ -10,6 +10,7 @@ import {
   type ClipTrack, type Easing, type GaugeDesign, type GaugeKind, type Grade, type Look, type Overlay, type Timeline, type TimelineClip, type Transition,
   TIMELINE_VERSION, toSrt, withCaptions, findClip, MAX_MASKS, frameToLayer, insidePolygon, layerToFrame, maskOutline, maskPoseAt, newMask, setMaskPose, type Mask, addTrack, applyLayout, cellTransform, LAYOUT_TEMPLATES, cleanXf, hitsLayer, stackAt, xfOf, layerLocated, moveConnected, newId, placeConnected, playLength, removeConnected, splitConnected, deleteSideConnected, trackFree, trackName, trimEmptyTracks, updateTrack, type Located, type ConnectedClip, type AudioClip, addMulticam, groupOf, switchAngle, flattenTimeline, storeSequence, sequenceTimeline, findSequence, sequenceIdOf, isCompound, makeCompound, breakApart, sourceDuration,
 } from '@ace/project';
+import { clipTrack } from '@ace/project';
 import { ace, baseName, type FoundMedia, type ProjectMeta, type UpdateState } from './api';
 import { NameSheet, ProjectsPage } from './Projects';
 import { AudioPlayer } from './audioEngine';
@@ -793,7 +794,9 @@ export function App() {
     const put = (p: Partial<TimelineClip>) => commit(updateClip(tlRef.current, c.id, { ...adopted, ...p }), `${key}:${c.id}`);
     const { yaw, pitch, fov, ...rest } = patch;
     const aimed = yaw !== undefined || pitch !== undefined || fov !== undefined;
-    const w = c.track ? trackWeight(c.track, cur.mediaUs) : 0;
+    // (Tracking as it plays: keyframes after a held track's end take over from it.)
+    const ctr = clipTrack(c);
+    const w = ctr ? trackWeight(ctr, cur.mediaUs) : 0;
     // The lens may be bent by tracking: change our own by as much as was asked.
     if (rest.fisheye !== undefined && w > 0) rest.fisheye = Math.max(MIN_FISHEYE, Math.min(1, own.fisheye + (rest.fisheye - now.fisheye)));
     if (!c.track || w <= 0) { put(store(patch)); return; }
@@ -803,7 +806,7 @@ export function App() {
     const dp = pitch !== undefined ? pitch - now.pitch : 0;
     const dz = fov !== undefined ? Math.log(fov / now.fov) : 0;
     // After a track that holds its last view, pan / tilt / zoom set the view it settles on.
-    if (trackHeld(c.track, cur.mediaUs)) {
+    if (trackHeld(ctr!, cur.mediaUs)) {
       const { end: _e, ...noEnd } = c.track;
       const base = c.track.end ?? clipLookAt({ ...c, track: noEnd }, cur.mediaUs + 60e6);
       const end = { yaw: ((base.yaw + dy + 540) % 360) - 180, pitch: Math.max(-90, Math.min(90, base.pitch + dp)), fov: Math.max(1, Math.min(360, base.fov * Math.exp(dz))) };
@@ -1941,7 +1944,7 @@ export function App() {
   /** A regular video at the playhead moves and sizes as a picture when dragged or scrolled on the preview (its transform), as in other editors. */
   const pictureAt = () => {
     const cur = editingAt(), m = cur && mediaNow(cur.clip.mediaPath);
-    if (!cur || !m || m.is360 || (cur.clip.track && trackWeight(cur.clip.track, cur.mediaUs) > 0)) return null;
+    if (!cur || !m || m.is360 || (cur.clip.track && trackWeight(clipTrack(cur.clip)!, cur.mediaUs) > 0)) return null;
     return xfOf(clipLookAt(cur.clip, cur.mediaUs));
   };
   const boxStart = useRef<{ x: number; y: number } | null>(null);
@@ -2052,7 +2055,7 @@ export function App() {
     yaw = ((yaw + 540) % 360) - 180;
     const pitch = Math.max(-90, Math.min(90, d.look.pitch + (e.clientY - d.y) * degPerPx));
     // Past the edge of a regular clip's picture the view zooms in; stop before that gets silly.
-    if (flat && clip && media && clip.fit === 'fill' && !(clip.track && at && trackWeight(clip.track, at.mediaUs) > 0) && shownFov(adoptReframe(clip), media, { ...d.look, yaw, pitch }, aspect) < d.look.fov * 0.4) return;
+    if (flat && clip && media && clip.fit === 'fill' && !(clip.track && at && trackWeight(clipTrack(clip)!, at.mediaUs) > 0) && shownFov(adoptReframe(clip), media, { ...d.look, yaw, pitch }, aspect) < d.look.fov * 0.4) return;
     editLook({ yaw, pitch }, 'drag');
   };
   const onWheel = (e: React.WheelEvent) => {

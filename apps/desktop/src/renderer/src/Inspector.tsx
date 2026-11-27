@@ -11,6 +11,7 @@ import {
   type OffKey, isCompound, CURVES, setEasing, titleTemplate, applyTitleTemplate, TEXT_PATHS, isNeutralSound,
   NEUTRAL_WINDOW, type WindowGrade,
 } from '@ace/project';
+import { clipTrack } from '@ace/project';
 import { airtimeStats, CUSTOM_SIGMA_RANGE, DEFAULT_AIRTIME, SMOOTHING_SIGMA_S } from '@ace/telemetry';
 import { baseName } from './api';
 import { autoInput, INPUT_NAMES, inputName, resolvedInput, wideColor } from './color';
@@ -194,9 +195,10 @@ function TrackRangeControls(p: InspectorProps & { clip: TimelineClip; track: Cli
   const from = (t: number) => p.onTrackRange(t <= lo + 1000 ? e[0] : Math.min(t, b - 100_000), r[1], 'from');
   const to = (t: number) => p.onTrackRange(r[0], t >= hi - 1000 ? e[1] : Math.max(t, a + 100_000), 'to');
   const hold = (track.after ?? 'hold') === 'hold';
+  const live = clipTrack({ track, keyframes: clip.keyframes }) ?? track;
   const state = trackActive(track, p.mediaUs)
     ? `Following the subject. Drag the preview to shift the framing around it${track.autoZoom ? '; scroll to change how big it is kept' : ''}.`
-    : trackHeld(track, p.mediaUs)
+    : trackHeld(live, p.mediaUs)
       ? 'Following has stopped here. Drag or scroll the preview to choose the view it settles on.'
       : 'Not following the subject here.';
   const time = (v: number) => fmtTime(v * 1e6);
@@ -291,7 +293,7 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
   );
 
   // What subject tracking controls at the playhead, and why it can't be changed there.
-  const tr = clip.track;
+  const tr = clipTrack(clip);
   const range = tr && trackRange(tr);
   const clipStart = p.clipStartUs;
   const when = range ? `${fmtTime(mediaToTimeline(clipStart, clip, range[0]))}–${fmtTime(mediaToTimeline(clipStart, clip, range[1]))}` : '';

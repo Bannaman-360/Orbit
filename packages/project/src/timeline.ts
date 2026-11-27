@@ -49,6 +49,12 @@ export interface StabilizeSettings {
   /** Smoothing window (σ, seconds) used when smoothing is 'custom'. */
   strength?: number;
   horizon: boolean;
+  /**
+   * 360 clips: direction lock. The view always points this way in the world (degrees; yaw 0 is
+   * where the camera faced at the start, pitch 0 is level), whatever the camera does. The picture
+   * is then fully locked and level, and this replaces the view's pan and tilt. Missing = off.
+   */
+  lock?: { yaw: number; pitch: number };
   /** Regular clips: how the picture is cropped to hide the moving edges. Missing = automatic. */
   crop?: 'auto' | 'manual';
   /** Automatic: seconds the zoom takes to change (0 = one zoom for the whole clip). */

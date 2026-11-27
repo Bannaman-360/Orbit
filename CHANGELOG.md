@@ -1,5 +1,10 @@
 # Changes
 
+## Unreleased
+
+**Direction lock (360)**
+- Stabilize ▸ Direction lock keeps the view pointing one way for the whole clip, level, however you turn or lean: the trail ahead, or a friend behind you. Aim the view, then turn it on; the picture doesn't jump. Drag the preview, or use Direction and Up / down, to aim it again. Face forward and Turn around set it in one click.
+
 ## 0.1.0-beta.17
 
 **Fixes**

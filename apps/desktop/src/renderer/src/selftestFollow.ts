@@ -9,7 +9,7 @@ import { DEFAULT_AXIS_MAP, qnorm, Stabilizer, type OrientationData } from '@ace/
 import { ace } from './api';
 import { framesAt } from './calib';
 import { exportTimeline } from './exporter';
-import { clipLookAt, cropReady, flatShot, flatWorld, presentLook, pushClipFrame, shareOf, worldInPicture, WORLD_STABILIZE } from './frameRender';
+import { clipLookAt, clipViewToWorld, cropReady, flatShot, flatWorld, presentLook, pushClipFrame, shareOf, worldInPicture, WORLD_STABILIZE } from './frameRender';
 import { getMedia, type Media } from './media';
 import { RIDER_TRUTH, riderTruthAt, type EditorApi } from './selftest';
 import { trackSubject } from './tracker';
@@ -108,6 +108,27 @@ export async function followCheck(api: EditorApi) {
   const base = (m: Media, o: Partial<TimelineClip> = {}): TimelineClip => ({ ...newClip(m.path, m.durationUs, false), id: `f${Math.random()}`, lensMode: 'custom', look: look({ fov: 95 }), ...o });
   const st = (o: Partial<TimelineClip['stabilize']>) => ({ smoothing: 'off' as const, horizon: false, ...o });
   const W = 480, H = 270;
+
+  // Direction lock (360): the view holds one world direction, locked and level, and turning it on
+  // keeps the picture where it was at the playhead.
+  {
+    const C = (clip: TimelineClip, t: number) => src.stabilizer.correctionAt(t, { ...clip.stabilize, axisMap: DEFAULT_AXIS_MAP });
+    const camDir = (clip: TimelineClip, t: number) => { const l = clipLookAt(clip, t); return mulVec(transpose(C(clip, t)), dirOf(l.yaw, l.pitch)); };
+    const free: TimelineClip = { ...newClip(src.path, src.durationUs, true), id: 'dirlock', look: look({ yaw: 35, pitch: -8, fov: 90 }) };
+    const t0 = src.durationUs * 0.4;
+    const w = clipViewToWorld(src, free, t0, 35, -8);
+    const locked: TimelineClip = { ...free, stabilize: { ...free.stabilize, lock: { yaw: w.yaw, pitch: w.pitch } } };
+    const a = camDir(free, t0), b = camDir(locked, t0);
+    ok('dirlock-no-jump', Math.acos(Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2])) / RAD < 0.05, { yaw: +w.yaw.toFixed(2), pitch: +w.pitch.toFixed(2) });
+    let worst = 0, roll = 0;
+    for (let i = 1; i < 10; i++) {
+      const t = (src.durationUs * i) / 10;
+      const l = clipLookAt(locked, t), Cw = src.stabilizer.correctionAt(t, { ...WORLD_STABILIZE, axisMap: DEFAULT_AXIS_MAP }), Cl = C(locked, t);
+      worst = Math.max(worst, Math.abs(l.yaw - w.yaw), Math.abs(l.pitch - w.pitch), ...Cl.map((v, k) => Math.abs(v - Cw[k]!)));
+      roll = Math.max(roll, Math.abs(l.roll - free.look.roll));
+    }
+    ok('dirlock-holds', worst < 1e-6 && roll < 1e-9, { worst });
+  }
 
   /** Draws a clip at many moments and compares each with the same view straight from the 360 file. */
   const compare = async (v: Clip, path: Path, clip: TimelineClip, w = W, h = H, label?: string) => {

@@ -73,6 +73,20 @@ export function frameShare(size: number, fov: number, fisheye: number): number {
   return lensForward(lens.k, (Math.min(size, lens.fov) * RAD) / 2) / lensForward(lens.k, (lens.fov * RAD) / 2);
 }
 
+/**
+ * The horizontal field of view that shows the same scene at the same zoom in a frame of another
+ * shape: the corner-to-corner angle stays, so 100° across a 16:9 frame becomes about 68° across a
+ * 9:16 one (the old width now runs down it) instead of squeezing 100° into the narrow frame.
+ */
+export function fovForAspect(view: Pick<ViewParams, 'fov' | 'fisheye'>, fromAspect: number, toAspect: number): number {
+  if (!(fromAspect > 0) || !(toAspect > 0) || Math.abs(fromAspect - toAspect) < 1e-6) return view.fov;
+  const lens = effectiveLens({ ...view, autoLens: true });
+  const R = lensForward(lens.k, (lens.fov * RAD) / 2);
+  const corner = Math.min(Math.PI * 0.985, lensInverse(lens.k, R * Math.hypot(1, 1 / fromAspect)) || Math.PI * 0.985);
+  const fov = (2 * lensInverse(lens.k, lensForward(lens.k, corner) / Math.hypot(1, 1 / toAspect))) / RAD;
+  return Number.isFinite(fov) ? Math.max(MIN_FOV, Math.min(ABS_MAX_FOV, fov)) : view.fov;
+}
+
 /** Angle θ for image radius r, or NaN if r is outside the lens's image circle. */
 export function lensInverse(k: number, r: number): number {
   if (Math.abs(k) < 1e-4) return r;

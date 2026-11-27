@@ -20,6 +20,7 @@ import { prepareSpectrum } from './soundSpectrum';
 import type { LayerFrame } from './timelinePlayer';
 import { YuvReader, type YuvLayout } from './deepExport';
 import { applyMasks } from './masksRender';
+import { reframeForExport } from './exportReframe';
 
 /** Mask coverage pixels across in exports (the preview uses fewer). */
 const MASK_WIDTH = 1024;
@@ -40,6 +41,8 @@ export interface ExportOptions {
   loudness?: number | null;
   /** Export presets: the output shape for this export only (the edit keeps its own). */
   framing?: string;
+  /** With another shape: reframe each clip for it (keep the zoom, follow the action); default on. False only swaps the shape. */
+  autoReframe?: boolean;
   /** Awaited after each frame: the queue holds a paused export here. */
   gate?: () => Promise<void>;
 }
@@ -258,8 +261,11 @@ class FileValues {
 }
 
 export async function exportTimeline(tlIn: Timeline, opts: ExportOptions, onProgress: (p: ExportProgress) => void, signal: AbortSignal): Promise<ExportResult> {
-  // A preset's shape: the clips are reframed to fill it, titles and gauges keep their places.
-  const tl = opts.framing && opts.framing !== tlIn.framing ? { ...tlIn, framing: opts.framing } : tlIn;
+  // A preset's shape: the clips are reframed for it, titles and gauges keep their places.
+  const reshaped = !!opts.framing && opts.framing !== tlIn.framing;
+  const tl = !reshaped ? tlIn
+    : opts.autoReframe === false ? { ...tlIn, framing: opts.framing! }
+    : await reframeForExport(tlIn, opts.framing!, (stage) => onProgress({ fraction: 0, stage }), signal);
   const { width, height } = outputSize(tl.framing, opts.resolution);
   const total = timelineDuration(tl);
   if (!tl.clips.length || total <= 0) throw new Error('The timeline is empty');

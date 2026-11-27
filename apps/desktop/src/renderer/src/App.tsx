@@ -28,7 +28,7 @@ import { forgetPictureMotion, stabiliseFromPicture } from './flowStab';
 import { reframeNote as noteOf, smartReframe } from './smartReframe';
 import { ModelsDialog, SubtitlesDialog } from './AiDialogs';
 import { ensureCopies, onCopyChange, retryCopy } from './aiCopy';
-import { adoptReframe, canReframe, lensLookOf, clipLens, clipLookAt, flatDirection, flatShot, FOLLOW_ROOM, ownLookAt, roomFov, shareOf, shownFov, withoutEffects, presentLook, pushClipFrame, reframeSignature, shownXf } from './frameRender';
+import { adoptReframe, canReframe, lensLookOf, clipLens, clipLookAt, directionLock, flatDirection, flatShot, FOLLOW_ROOM, ownLookAt, roomFov, shareOf, shownFov, withoutEffects, presentLook, pushClipFrame, reframeSignature, shownXf } from './frameRender';
 import { angleBetween, directionAt, trackSubject } from './tracker';
 import { InspectorPanel, SelectionPanel, type InspectorProps } from './Inspector';
 import { MediaBin, type BinItem } from './MediaBin';
@@ -792,6 +792,14 @@ export function App() {
       return c.keyframes.length ? { keyframes: setKeyframe(c.keyframes, cur.mediaUs, next, snapUs) } : { look: next };
     };
     const put = (p: Partial<TimelineClip>) => commit(updateClip(tlRef.current, c.id, { ...adopted, ...p }), `${key}:${c.id}`);
+    // Direction lock: pan and tilt aim the locked direction, for the whole clip.
+    const locked = directionLock(c);
+    if (locked && (patch.yaw !== undefined || patch.pitch !== undefined)) {
+      const { yaw: ly, pitch: lp, ...other } = patch;
+      const lock = { yaw: ly ?? locked.yaw, pitch: Math.max(-90, Math.min(90, lp ?? locked.pitch)) };
+      put({ ...(Object.keys(other).length ? store(other) : {}), stabilize: { ...c.stabilize, lock } });
+      return;
+    }
     const { yaw, pitch, fov, ...rest } = patch;
     const aimed = yaw !== undefined || pitch !== undefined || fov !== undefined;
     // (Tracking as it plays: keyframes after a held track's end take over from it.)

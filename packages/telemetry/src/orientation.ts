@@ -136,7 +136,16 @@ export interface StabilizeOptions {
   axisMap: AxisMap;
   /** Treat CORI as world→camera instead of camera→world. */
   invertCori?: boolean;
+  /**
+   * Direction lock: the view holds one direction in the world. Overrides smoothing and
+   * horizon: the picture is fully locked and level (the direction itself is the view's job).
+   */
+  lock?: { yaw: number; pitch: number };
 }
+
+/** Direction lock's frame: every turn of the camera cancelled, and the horizon level. */
+export const lockedFrame = <T extends Pick<StabilizeOptions, 'smoothing' | 'horizon' | 'lock'>>(o: T): T =>
+  o.lock ? { ...o, smoothing: 'locked', horizon: true } : o;
 
 export const DEFAULT_STABILIZE: StabilizeOptions = { smoothing: 'off', horizon: false, axisMap: DEFAULT_AXIS_MAP };
 
@@ -337,8 +346,9 @@ export class Stabilizer {
   }
 
   /** Camera body orientation relative to the stabilised path; pass to the renderer. */
-  correctionAt(t: number, opts: StabilizeOptions): Mat3 {
+  correctionAt(t: number, optsIn: StabilizeOptions): Mat3 {
     if (!this.data) return IDENTITY;
+    const opts = lockedFrame(optsIn);
     const toOurs = this.toOursFn(opts);
 
     // C maps camera coordinates into the stabilised (smoothed-path) frame: C = Sᵀ·R.

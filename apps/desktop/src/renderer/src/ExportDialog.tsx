@@ -32,6 +32,8 @@ export function ExportDialog({ timeline, onClose, onShowQueue }: { timeline: Tim
   useEffect(() => { void ace.encoderAvailable().then(setDeep, () => {}); }, []);
   const [quality, setQuality] = useState<Quality>('high');
   const [loudness, setLoudness] = useState<number | null>(-14);
+  /** In another shape: reframe each clip for it (on), or only change the frame's shape. */
+  const [autoReframe, setAutoReframe] = useState(true);
   const [jobId, setJobId] = useState<string | null>(null);
   const jobs = useSyncExternalStore(onQueue, queueJobs);
   const job = jobs.find((j) => j.id === jobId) ?? null;
@@ -70,7 +72,7 @@ export function ExportDialog({ timeline, onClose, onShowQueue }: { timeline: Tim
   const seconds = timelineDuration(timeline) / 1e6;
   const busy = !!job && (job.status === 'running' || job.status === 'waiting' || job.status === 'paused');
 
-  const options = (path: string): Omit<ExportOptions, 'gate'> => ({ path, resolution: res, fps, codec, quality, loudness, ...(framing !== timeline.framing ? { framing } : {}), ...(preset?.bitrate ? { bitrate: preset.bitrate } : {}) });
+  const options = (path: string): Omit<ExportOptions, 'gate'> => ({ path, resolution: res, fps, codec, quality, loudness, ...(framing !== timeline.framing ? { framing, autoReframe } : {}), ...(preset?.bitrate ? { bitrate: preset.bitrate } : {}) });
   const ask = async () => {
     const mov = codec === 'prores';
     return ace.saveDialog(mov ? 'mov' : 'video', `Edit ${new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-')}.${mov ? 'mov' : 'mp4'}`);
@@ -106,7 +108,7 @@ export function ExportDialog({ timeline, onClose, onShowQueue }: { timeline: Tim
         {preset?.note && (
           <p className="hint">
             {preset.name}: {preset.note} {preset.bitrate ? `${(preset.bitrate / 1e6).toFixed(0)} Mbit/s, ` : ''}sound brought to {loudness ?? 'its own'} LUFS.
-            {preset.framing !== timeline.framing ? ` Your edit is ${timeline.framing}: this export is reframed to ${preset.framing} to fill the screen (check titles and gauges sit well).` : ''}
+            {preset.framing !== timeline.framing ? ` Your edit is ${timeline.framing}: this export is ${preset.framing}.` : ''}
           </p>
         )}
         {preset?.maxSeconds && seconds > preset.maxSeconds && <p className="error">{preset.name} takes videos up to {fmtTime(preset.maxSeconds * 1e6)}; this edit is {fmtTime(seconds * 1e6)}. Shorten it, or the upload will be refused or cut.</p>}
@@ -141,6 +143,12 @@ export function ExportDialog({ timeline, onClose, onShowQueue }: { timeline: Tim
         </div>
         {codec === 'hevc10' && <p className="hint">Keeps 10 bits per colour, so skies and graded or log footage show no banding. Plays on recent phones, Macs, PCs and YouTube; older devices may not play it.</p>}
         {codec === 'prores' && <p className="hint">Very large files (about {((size.width * size.height * fps * 3.5 * 60) / 8 / 1e9).toFixed(1)} GB a minute) of the highest quality, for finishing in another editor such as Final Cut Pro or DaVinci Resolve.</p>}
+        {framing !== timeline.framing && (
+          <label className="check" title="Off: the clips keep their views as they are, only the frame changes shape.">
+            <input type="checkbox" checked={autoReframe} disabled={busy} onChange={(e) => setAutoReframe(e.target.checked)} />
+            Reframe each clip for {framing}: 360 views keep your direction and zoom, and regular clips follow the action. Check titles and gauges still sit well.
+          </label>
+        )}
         <p className="muted">{size.width}×{size.height} ({framing}) · {fmtTime(timelineDuration(timeline))} · {timeline.clips.length} clips{timeline.audio.length ? ' + music' : ''}</p>
         {naming !== null ? (
           <div className="field-row">

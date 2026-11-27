@@ -83,6 +83,14 @@ describe('stabilisation levels', () => {
     expect(angle(stab.correctionAt(5e6, opts('locked')))).toBeGreaterThan(20);
   });
 
+  it('direction lock locks and levels the picture, whatever smoothing says', () => {
+    const want = stab.correctionAt(5e6, { ...opts('locked'), horizon: true });
+    for (const level of ['off', 'medium'] as const) {
+      const got = stab.correctionAt(5e6, { ...opts(level), lock: { yaw: 40, pitch: -10 } });
+      got.forEach((v, i) => expect(v).toBeCloseTo(want[i]!, 9));
+    }
+  });
+
   it('smoothed paths stay unit quaternions', () => {
     for (const s of smoothQuats(cori, 300_000)) expect(Math.hypot(...s.q)).toBeCloseTo(1, 9);
   });

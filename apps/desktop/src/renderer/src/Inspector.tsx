@@ -15,7 +15,7 @@ import { clipTrack } from '@ace/project';
 import { airtimeStats, CUSTOM_SIGMA_RANGE, DEFAULT_AIRTIME, SMOOTHING_SIGMA_S } from '@ace/telemetry';
 import { baseName } from './api';
 import { autoInput, INPUT_NAMES, inputName, resolvedInput, wideColor } from './color';
-import { adoptReframe, clipLens, flatShot, lensLookOf, roomFov, shutterDoneInCamera } from './frameRender';
+import { adoptReframe, clipLens, clipViewToWorld, directionLock, flatShot, lensLookOf, roomFov, shutterDoneInCamera } from './frameRender';
 import type { Media } from './media';
 import { FONT_STACK } from './overlayRender';
 import { GaugeLookPicker } from './GaugeLooks';
@@ -300,8 +300,10 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
   const steered = !!tr && trackWeight(tr, p.mediaUs) > 0;
   const heldNow = !!tr && trackHeld(tr, p.mediaUs);
   const settling = heldNow && (p.mediaUs - range![1]) / 1e6 < (tr.ease ?? DEFAULT_TRACK_EASE_S) * 0.35;
+  const dirLock = is360 ? directionLock(clip) : null;
   const aimLock = (what: string): string | false =>
-    settling ? `Following has only just stopped, and the view is still settling. Move the playhead a little later to set the ${what}.`
+    dirLock ? false
+    : settling ? `Following has only just stopped, and the view is still settling. Move the playhead a little later to set the ${what}.`
     : steered && !heldNow ? `Subject tracking sets the ${what} here (${when}). Use “Shift across” and “Shift up” in Subject tracking, or drag the preview, to move the framing. Outside ${when} you can set it freely.`
     : false;
   const zoomLock: string | false =
@@ -341,6 +343,14 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
     p.onClip({ ...(c === clip ? {} : { lensMode: c.lensMode, look: c.look, keyframes: c.keyframes }), stabilize: { ...clip.stabilize, ...patch } }, k);
   };
   const noGravity = !media?.stabilizer.hasGravity ? 'This clip has no gravity data from the camera, so the horizon can’t be found.' : false;
+  const lockedByDir: string | false = !!dirLock && 'Direction lock is on, so the view is fully locked and level. Turn Direction lock off to choose another setting.';
+  /** Direction lock on: holds the direction shown at the playhead, so the picture doesn't jump. */
+  const setDirLock = (on: boolean) => {
+    if (!on) return setStab({ lock: undefined }, 'dir-lock');
+    const w = media ? clipViewToWorld(media, clip, p.mediaUs, look.yaw, look.pitch) : { yaw: look.yaw, pitch: look.pitch };
+    setStab({ lock: { yaw: +w.yaw.toFixed(2), pitch: +w.pitch.toFixed(2) } }, 'dir-lock');
+  };
+  const setDir = (patch: Partial<{ yaw: number; pitch: number }>, k: string) => dirLock && setStab({ lock: { ...dirLock, ...patch } }, k);
 
   const keyBar = (
     <div className="keybar">
@@ -432,10 +442,11 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
     ),
     'View': is360 && (
         <Section title="View" defaultOpen>
-          <Slider label="Pan" locked={aimLock('pan')} value={look.yaw} min={-180} max={180} step={0.1} reset={0} format={deg} units={DEG} keyed={keyed} onChange={(v) => p.onLook({ yaw: v }, 'yaw')} />
-          <Slider label="Tilt" locked={aimLock('tilt')} value={look.pitch} min={-90} max={90} step={0.1} reset={0} format={deg} units={DEG} keyed={keyed} onChange={(v) => p.onLook({ pitch: v }, 'pitch')} />
+          <Slider label="Pan" locked={aimLock('pan')} value={look.yaw} min={-180} max={180} step={0.1} reset={0} format={deg} units={DEG} keyed={keyed && !dirLock} onChange={(v) => p.onLook({ yaw: v }, 'yaw')} />
+          <Slider label="Tilt" locked={aimLock('tilt')} value={look.pitch} min={-90} max={90} step={0.1} reset={0} format={deg} units={DEG} keyed={keyed && !dirLock} onChange={(v) => p.onLook({ pitch: v }, 'pitch')} />
           <Slider label="Roll" value={look.roll} min={-180} max={180} step={0.1} reset={0} format={deg} units={DEG} keyed={keyed} onChange={(v) => p.onLook({ roll: v }, 'roll')} />
           <p className="hint">{flat ? 'Scroll on the preview to zoom in, then drag to move around the picture.' : 'Drag on the preview to look around; scroll to zoom.'}</p>
+          {dirLock && <p className="hint">Direction lock is on: pan and tilt aim the locked direction for the whole clip (see Direction lock).</p>}
           {flat && <div className="row-buttons"><button onClick={() => p.onLook({ yaw: 0, pitch: 0, roll: 0, fov: flat.hfov, fisheye: 0 }, 'view-reset')}>Show the whole picture</button></div>}
         </Section>
     ),
@@ -545,8 +556,8 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
             </div>
           )}
           <Seg<Smoothing>
-            value={st.smoothing}
-            locked={noMotion}
+            value={dirLock ? 'locked' : st.smoothing}
+            locked={noMotion || lockedByDir}
             options={[['off', 'Off'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['custom', 'Custom'], ...(flat ? [] : [['locked', 'Locked'] as [Smoothing, string]])]}
             onChange={(v) => setStab({ smoothing: v }, 'stab')}
           />
@@ -556,7 +567,7 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
             min={0}
             max={1}
             step={0.001}
-            locked={noMotion}
+            locked={noMotion || lockedByDir}
             format={() => fmtSigma(sigma)}
             units={{ to: (u) => posToSigma(u), from: (n) => sigmaToPos(n), digits: 2 }}
             hint="Smoothing window in seconds: how much of the camera's motion is averaged away. Moving this switches to Custom."
@@ -590,14 +601,32 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
     'Horizon': (
         <Section title="Horizon" badge={st.horizon && !off ? 'Level' : undefined}>
           <label className="check">
-            <input type="checkbox" disabled={!!noGravity} checked={st.horizon} onChange={(e) => setStab({ horizon: e.target.checked }, 'horizon')} />
+            <input type="checkbox" disabled={!!noGravity || !!lockedByDir} checked={st.horizon || !!dirLock} onChange={(e) => setStab({ horizon: e.target.checked }, 'horizon')} />
             {flat ? 'Level horizon (removes roll)' : 'Level horizon (removes roll and tilt)'}
-            {noGravity && <Lock reason={noGravity} />}
+            {(noGravity || lockedByDir) && <Lock reason={(noGravity || lockedByDir) as string} />}
           </label>
           {flat && st.horizon && !noGravity && (shot && shot.level < 0.97
             ? <><p className="hint">Not fully level here: that would need more zoom than Maximum crop allows ({Math.round((st.maxCrop ?? DEFAULT_CROP.maxCrop) * 100)}%).</p>
               {(st.crop ?? 'auto') === 'auto' && <div className="row-buttons"><button onClick={() => setStab({ maxCrop: 0.7 }, 'crop-max')}>Allow more crop</button></div>}</>
             : <p className="hint">Leaning the camera needs room at the corners, so the picture zooms in (see Crop). Looking up and down is left as filmed.</p>)}
+        </Section>
+    ),
+    'Direction lock': is360 && (
+        <Section title="Direction lock" badge={dirLock ? 'On' : undefined}>
+          <label className="check">
+            <input type="checkbox" disabled={!!noMotion} checked={!!dirLock} onChange={(e) => setDirLock(e.target.checked)} />
+            Keep the view pointing one way
+            {noMotion && <Lock reason={noMotion} />}
+          </label>
+          {dirLock ? <>
+            <Slider label="Direction" value={dirLock.yaw} min={-180} max={180} step={0.1} reset={0} format={deg} units={DEG} hint="Which way the view faces: 0° is where the camera pointed at the start of the file." onChange={(v) => setDir({ yaw: v }, 'dir-yaw')} />
+            <Slider label="Up / down" value={dirLock.pitch} min={-90} max={90} step={0.1} reset={0} format={deg} units={DEG} hint="0° looks at the horizon." onChange={(v) => setDir({ pitch: v }, 'dir-pitch')} />
+            <div className="row-buttons">
+              <button title="Face where the camera pointed at the start, level" onClick={() => setDir({ yaw: 0, pitch: 0 }, 'dir-reset')}>Face forward</button>
+              <button title="Look back over your shoulder" onClick={() => setDir({ yaw: ((dirLock.yaw + 360) % 360) - 180 }, 'dir-back')}>Turn around</button>
+            </div>
+            <p className="hint">The view stays on this direction for the whole clip, level, whatever the camera does. Drag the preview to aim it. Zoom, roll and keyframed looks still work; pan, tilt and subject tracking are paused while it’s on.</p>
+          </> : <p className="hint">Aim the view where you want it, then turn this on: it stays pointing that way, level, however you turn or lean. Good for keeping a friend behind you or the trail ahead in shot.</p>}
         </Section>
     ),
     'Presets': (

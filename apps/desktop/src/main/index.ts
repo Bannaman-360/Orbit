@@ -447,8 +447,13 @@ ipcMain.handle('selftest:capture', async (_e, name: string) => {
   if (!SELFTEST) throw new Error('Only in self-tests');
   await mkdir(SELFTEST_OUT, { recursive: true });
   const img = await win!.webContents.capturePage();
-  const p = path.join(SELFTEST_OUT, `${path.basename(name)}.png`);
-  await writeFile(p, img.toPNG());
+  // A name may keep one folder ("adshots/edit-0001.jpg"); a .jpg name is saved as JPEG.
+  const parts = name.split('/').map((x) => path.basename(x)).filter((x) => x && x !== '..').slice(-2);
+  const jpg = /\.jpe?g$/i.test(parts[parts.length - 1] ?? '');
+  const p = path.join(SELFTEST_OUT, ...parts) + (jpg ? '' : '.png');
+  if (!inside(p, SELFTEST_OUT)) throw new Error('Outside selftest-out');
+  await mkdir(path.dirname(p), { recursive: true });
+  await writeFile(p, jpg ? img.toJPEG(94) : img.toPNG());
   return p;
 });
 // Self-test only: run code as if the user had clicked (full screen needs a user gesture).

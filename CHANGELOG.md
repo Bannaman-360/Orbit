@@ -1,5 +1,13 @@
 # Changes
 
+## 0.1.0-beta.18
+
+**Direction lock (360)**
+- Stabilize ▸ Direction lock keeps the view pointing one way for the whole clip, level, however you turn or lean: the trail ahead, or a friend behind you. Aim the view, then turn it on; the picture doesn't jump. Drag the preview, or use Direction and Up / down, to aim it again. Face forward and Turn around set it in one click.
+
+**Export**
+- Exporting in another shape (a 9:16 preset for a 16:9 edit, for example) reframes each clip for it instead of squeezing the picture. 360 clips keep their direction and zoom; regular clips fill the frame and pan with the action. Your edit is untouched, and a checkbox in the export dialog turns this off.
+
 ## 0.1.0-beta.17
 
 **Fixes**

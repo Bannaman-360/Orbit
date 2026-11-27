@@ -16,6 +16,14 @@ const anglesOf = (d: Vec3) => ({ yaw: Math.atan2(d[0], d[2]) / RAD, pitch: Math.
  */
 export const WORLD_STABILIZE = { smoothing: 'locked' as const, horizon: true };
 
+/** A 360 clip's direction lock, when it is on and the clip has the motion data to hold it. */
+export function directionLock(clip: TimelineClip): { yaw: number; pitch: number } | null {
+  const lock = clip.stabilize.lock;
+  if (!lock) return null;
+  const media = mediaNow(clip.mediaPath);
+  return media && !media.is360 ? null : lock;
+}
+
 /**
  * Converts a view direction between a clip's own view frame (its stabilisation settings) and
  * the world-steady frame. The renderer samples camera direction d = Cᵀ·v for view direction v,
@@ -91,9 +99,12 @@ export function shareOf(media: Media | null | undefined, clip: TimelineClip): Sh
   return f;
 }
 
-/** The clip's look at a media time: keyframes, then subject tracking (pan/tilt). */
+/** The clip's look at a media time: keyframes, then subject tracking (pan/tilt), then direction lock. */
 export function clipLookAt(clip: TimelineClip, mediaUs: number): Look {
   const look = ownLookAt(clip, mediaUs);
+  // Direction lock aims the view for the whole clip (the picture is locked and level, see lockedFrame).
+  const lock = directionLock(clip);
+  if (lock) return { ...look, yaw: lock.yaw, pitch: lock.pitch };
   if (!clip.track) return look;
   const media = mediaNow(clip.mediaPath);
   return applyTrack(look, clipTrack(clip), mediaUs, media ? (y, p, t) => worldToClipView(media, clip, t, y, p) : undefined, shareOf(media, clip), ownLens(clip, look));
@@ -523,5 +534,5 @@ export const withoutEffects = (look: Look): Look => { const { wheels: _w, ...res
 const mediaMotion = (clip: TimelineClip) => { const m = mediaNow(clip.mediaPath); return m ? motionId(m) : 0; };
 /** Everything that changes the reframe pass (as opposed to grading), for change detection. */
 export function reframeSignature(clip: TimelineClip, look: Look, extra: string) {
-  return `${clip.id}|${look.pan ? `${look.pan.x.toFixed(4)},${look.pan.y.toFixed(4)}` : ''}|${look.yaw.toFixed(3)}|${look.pitch.toFixed(3)}|${look.roll.toFixed(3)}|${look.fov.toFixed(3)}|${look.fisheye.toFixed(4)}|${clip.stabilize.smoothing}:${clip.stabilize.strength ?? ''}|${clip.stabilize.horizon}|${clip.fit}|${clip.lensMode ?? ''}|${clip.stabilize.crop ?? ''}:${clip.stabilize.cropSpeed ?? ''}:${clip.stabilize.maxCrop ?? ''}:${clip.stabilize.cropAmount ?? ''}:${clip.stabilize.rolling ?? ''}|${clip.lenses ? JSON.stringify(clip.lenses) : ''}|${clip.lensLook ? `${clip.lensLook.fov},${clip.lensLook.fisheye}` : ''}|${clip.inputColor ?? ''}:${clip.wideColor ?? ''}|${clip.lensMode ? planVersion : 0}|${clip.lensFix ? `${clip.lensFix.hfov ?? ''},${clip.lensFix.bend ?? ''}` : ''}|${mediaMotion(clip)}|${extra}`;
+  return `${clip.id}|${look.pan ? `${look.pan.x.toFixed(4)},${look.pan.y.toFixed(4)}` : ''}|${look.yaw.toFixed(3)}|${look.pitch.toFixed(3)}|${look.roll.toFixed(3)}|${look.fov.toFixed(3)}|${look.fisheye.toFixed(4)}|${clip.stabilize.smoothing}:${clip.stabilize.strength ?? ''}|${clip.stabilize.horizon}:${clip.stabilize.lock ? `${clip.stabilize.lock.yaw.toFixed(3)},${clip.stabilize.lock.pitch.toFixed(3)}` : ''}|${clip.fit}|${clip.lensMode ?? ''}|${clip.stabilize.crop ?? ''}:${clip.stabilize.cropSpeed ?? ''}:${clip.stabilize.maxCrop ?? ''}:${clip.stabilize.cropAmount ?? ''}:${clip.stabilize.rolling ?? ''}|${clip.lenses ? JSON.stringify(clip.lenses) : ''}|${clip.lensLook ? `${clip.lensLook.fov},${clip.lensLook.fisheye}` : ''}|${clip.inputColor ?? ''}:${clip.wideColor ?? ''}|${clip.lensMode ? planVersion : 0}|${clip.lensFix ? `${clip.lensFix.hfov ?? ''},${clip.lensFix.bend ?? ''}` : ''}|${mediaMotion(clip)}|${extra}`;
 }

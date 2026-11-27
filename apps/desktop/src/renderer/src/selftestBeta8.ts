@@ -11,6 +11,8 @@ import { ace } from './api';
 import { mixTimeline } from './audioEngine';
 import { framesAt } from './calib';
 import { exportTimeline, grabFrame } from './exporter';
+import { reframeForExport } from './exportReframe';
+import { fovForAspect } from '@ace/media360';
 import { measureLufs } from './loudness';
 import { clipSound, getMedia, type Media } from './media';
 import { soundEnvelope } from './multicamSync';
@@ -272,5 +274,28 @@ async function beta8Steps(api: EditorApi, out: Record<string, unknown>, fails: s
     }
     ok('a 9:16 preset exports vertical video', e.width === 720 && e.height === 1280, [e.width, e.height]);
     ok('and brings the sound to −14 LUFS (or as close as it may)', Math.abs(lufs - want) < 1.5, { got: +lufs.toFixed(2), want: +want.toFixed(2) });
+  }
+
+  // --- Exporting in another shape: each clip reframed for it
+
+  out.step = 'Exporting in another shape: each clip reframed for it';
+  {
+    const panoPath = fix('GS010115.360') ?? fix('GS010004.360');
+    const pano = panoPath ? await getMedia(panoPath) : null;
+    let t = addClip(emptyTimeline(), { ...clipOf(ride, 4 * S, 1 * S), fit: 'fit' as const });
+    if (pano) {
+      const c = clipOf(pano, 4 * S, 2 * S);
+      t = addClip(t, { ...c, look: { ...c.look, yaw: 30, fov: 110 }, keyframes: [{ id: 'kp', t: c.inUs + S, easing: 'smooth' as const, look: { ...c.look, yaw: 40, fov: 90 } }] });
+    }
+    const r = await reframeForExport(t, '9:16', () => {}, new AbortController().signal);
+    const flat = r.clips[0]!;
+    ok('the edit is exported in the new shape, the edit itself is untouched', r.framing === '9:16' && t.framing === '16:9' && t.clips[0]!.fit === 'fit');
+    ok('a regular clip fills the tall frame and pans with the action', flat.fit === 'fill' && (flat.keyframes.length > 0 || !!flat.look.pan), { fit: flat.fit, keys: flat.keyframes.length, pan: flat.look.pan });
+    if (pano) {
+      const p = r.clips[1]!, want = fovForAspect({ fov: 110, fisheye: t.clips[1]!.look.fisheye }, 16 / 9, 9 / 16);
+      ok('a 360 view keeps its direction and zoom instead of squeezing the wide view in', Math.abs(p.look.fov - want) < 0.01 && p.look.fov < 85 && p.look.yaw === 30 && p.keyframes[0]!.look.fov < 75 && p.keyframes[0]!.look.yaw === 40, { fov: +p.look.fov.toFixed(1), key: +p.keyframes[0]!.look.fov.toFixed(1) });
+      const back = await reframeForExport({ ...r, framing: '9:16' }, '16:9', () => {}, new AbortController().signal);
+      ok('and turns back into the same view the other way round', Math.abs(back.clips[1]!.look.fov - 110) < 0.01, +back.clips[1]!.look.fov.toFixed(2));
+    } else out['360 reframe'] = 'skipped (no 360 clip)';
   }
 }

@@ -98,3 +98,17 @@ describe('frameShare', () => {
     }
   });
 });
+
+describe('fovForAspect', () => {
+  it('keeps the zoom when the frame turns from wide to tall', async () => {
+    const { fovForAspect } = await import('./projection');
+    // Straight lens: 100° across 16:9 is the same picture as about 67.7° across 9:16.
+    expect(fovForAspect({ fov: 100, fisheye: 0 }, 16 / 9, 9 / 16)).toBeCloseTo(67.7, 0);
+    expect(fovForAspect({ fov: 100, fisheye: 0 }, 16 / 9, 1)).toBeCloseTo(88, 0);
+    // And back again.
+    const tall = fovForAspect({ fov: 120, fisheye: 0.3 }, 16 / 9, 9 / 16);
+    expect(tall).toBeLessThan(120);
+    expect(fovForAspect({ fov: tall, fisheye: 0.3 }, 9 / 16, 16 / 9)).toBeCloseTo(120, 3);
+    expect(fovForAspect({ fov: 90, fisheye: 0 }, 16 / 9, 16 / 9)).toBe(90);
+  });
+});

@@ -110,7 +110,7 @@ function measureTravel(m: Media, c: TimelineClip): { path: PathPoint[]; how: Ref
   const step = 1e6 / RATE, times: number[] = [];
   for (let t = c.inUs; t < c.outUs; t += step) times.push(t);
   // Where the camera's front faced (its own view, not stabilised).
-  const raw = { ...c, stabilize: { ...c.stabilize, smoothing: 'off' as const, horizon: false } };
+  const raw = { ...c, stabilize: { ...c.stabilize, smoothing: 'off' as const, horizon: false, lock: undefined } };
   const cam = unwrapDegrees(times.map((t) => clipViewToWorld(m, raw, t, 0, 0).yaw));
   const tel = m.telemetry;
   if (tel.hasGps) {
@@ -151,7 +151,7 @@ export async function smartReframe(c: TimelineClip, m: Media, outAspect: number,
     const median = [...travel.path.map((p) => p.v)].sort((a, b) => a - b)[travel.path.length >> 1] ?? 0;
     const planned = planPath(travel.path, { sigmaUs: 1_200_000, dead: 12, tol: 3, minGapUs: 500_000, lo: -1e9, hi: 1e9, rest: median });
     // Locked and level: the view's turn is then the same as the world's, so the keyframes are the path.
-    const steady: TimelineClip = { ...c, stabilize: { ...c.stabilize, smoothing: 'locked', horizon: true } };
+    const steady: TimelineClip = { ...c, stabilize: { ...c.stabilize, smoothing: 'locked', horizon: true, lock: undefined } };
     const keyframes = pathKeyframes(steady, planned, (l, v) => ({ ...l, yaw: wrap(v) }));
     return { patch: { stabilize: steady.stabilize, keyframes }, how: travel.how, keys: planned.length, raw: travel.path, planned };
   }

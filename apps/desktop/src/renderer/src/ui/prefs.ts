@@ -62,7 +62,7 @@ export const DEFAULT_BARS: Record<BarId, BarPrefs> = {
 /** Which sections each panel shows to begin with. */
 export const DEFAULT_SECTIONS: Record<string, string[]> = {
   reframe: ['Keyframes', 'Curves', 'Subject tracking', 'View', 'Framing', 'Lens', 'Lens details', 'Transform', 'Smart reframe', 'Debug'],
-  stabilize: ['Stabilization', 'Crop', 'Horizon'],
+  stabilize: ['Stabilization', 'Crop', 'Horizon', 'Direction lock'],
   color: ['Input color', 'Presets', 'Light', 'Color', 'Color wheels', 'Color curves', 'Qualifier', 'Detail', 'Noise reduction', 'LUT', 'Film looks', 'Lens match', 'Match clips'],
   effects: ['Masks', 'Motion blur (ND filter)', 'Speed & lens', 'Film & light', 'Glitch & tape', 'Quick looks'],
   clip: ['Layout', 'Speed', 'Smooth & sharp', 'HiLight tags', 'Airtime', 'Audio', 'Sound tools', 'Trim'],

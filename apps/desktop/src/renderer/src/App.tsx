@@ -51,7 +51,6 @@ import { ArrangeBar, Customize, reopenPanel, type CustomizePage } from './ui/Cus
 import { Tour, Welcome } from './Tour';
 import { ReportProblem } from './ReportProblem';
 import { MarkersPanel } from './Markers';
-import { clipHighlights, pickHighlights, reelPieces } from './Highlights';
 import type { EditTool } from './TimelineView';
 
 /** Edit tools: what dragging a clip on the main row does. */
@@ -257,17 +256,6 @@ export function App() {
     setNotice(`${how === 'insert' ? 'Inserted' : 'Placed'} ${baseName(source.path)} (${fmtTime(outUs - inUs)}) at the timeline playhead.`);
   };
   const markSource = (which: 'inUs' | 'outUs') => { if (sourceRef.current) setSource((sv) => sv && { ...sv, [which]: Math.round(player.time) }); };
-
-  /** Adds clips at the end of the main row (a highlight reel) and goes to the first. */
-  function appendReel(clips: TimelineClip[], what: string) {
-    if (!clips.length) { setNotice('There are no highlights to add.'); return; }
-    const before = tlRef.current;
-    const next = clips.reduce((t, c) => addClip(t, c), before);
-    commit(next);
-    const total = clips.reduce((a, c) => a + clipDuration(c), 0);
-    setNotice(`Added ${clips.length} ${what} (${fmtTime(total)}) at the end of the timeline. Undo takes them away again.`);
-    seek((clipStarts(next)[before.clips.length] ?? 0) + 1);
-  }
 
   /** A clip for a Media item, set up as it should start (lens, stabilization). */
   function clipFor(path: string) {
@@ -2384,12 +2372,7 @@ export function App() {
       let t = tlRef.current, n = 0;
       for (const x of list) { if (markerNear(t, x.t, 500_000)) continue; t = addMarker(t, x.t, x.note, 'yellow').tl; n++; }
       if (n) commit(t);
-      setNotice(n ? `Added ${n} marker${n === 1 ? '' : 's'} for the highlights. They’re listed in the Markers panel.` : 'Every highlight already has a marker.');
-    },
-    onAppendClips: (clips, what) => appendReel(clips, what),
-    onReelAll: (pick) => {
-      const pieces = tlRef.current.clips.flatMap((c) => { const m = mediaNow(c.mediaPath); return m ? reelPieces(c, pickHighlights(clipHighlights(c, m), pick)) : []; });
-      appendReel(pieces, `highlight${pieces.length === 1 ? '' : 's'} from every clip`);
+      setNotice(n ? `Added ${n} marker${n === 1 ? '' : 's'} for the HiLight tags. They’re listed in the Markers panel.` : 'Every HiLight tag already has a marker.');
     },
     onPreviewAt: (T) => { seek(T); if (!player.playing) player.play(); },
     onSeekMedia: (m) => { if (!clip) return; const spot = clipSpot(tlRef.current, clip.id); if (spot) seek(spot.startUs + localAt(clip, m)); },

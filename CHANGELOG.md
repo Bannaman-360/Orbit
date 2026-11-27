@@ -2,11 +2,10 @@
 
 ## Next
 
-**Highlights (Clip ▸ Highlights)**
-- Finds the moments worth showing in GoPro footage, without watching it all: HiLight tags (where you pressed the button or said "GoPro, HiLight" while riding), jumps (longer and farther ones rank higher), top speed from GPS, and hard hits that aren't a jump's landing.
-- Click one to go there. Stars on the timeline show the tags, top speed and hard hits; jumps keep their arcs.
-- Mark them: a marker at each highlight, with a note saying what it is.
-- Make a highlight reel: a few seconds around each highlight (all of them, or the best 10, 5 or 3) added at the end of the timeline. Reel from every clip does the same for every clip on the timeline. Undo takes them away again.
+**HiLight tags**
+- The moments you tagged on the camera while recording (the HiLight button, or "GoPro, HiLight") now show up in the app: a yellow star at each on the timeline, and the number of tags next to the file in Media.
+- Clip ▸ HiLight tags lists them; click one to go there. Add as markers puts a marker at each, so they're in the Markers panel and in YouTube chapters.
+- Works with HERO cameras and the Max (old and new ways the cameras store tags), and with long recordings the camera split into several files.
 
 ## 0.1.0-beta.15
 

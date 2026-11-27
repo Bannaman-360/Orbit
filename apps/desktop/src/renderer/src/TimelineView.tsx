@@ -21,7 +21,7 @@ import { fmtSpeed, SpeedLine } from './SpeedLine';
 import { STRIP_H, STRIP_W, stripPicture, useFilmstrip } from './filmstrip';
 import { fmtTime, useDrag } from './ui';
 import { fmtJumpLength } from './gaugeMath';
-import { clipHighlights, highlightDetail, KIND_NAME } from './Highlights';
+import { clipTags } from './Hilights';
 
 /** Lines a dragged time up with what's nearby (hold ⌘ / Ctrl to drag freely). */
 interface Snapper {
@@ -514,7 +514,7 @@ function ClipMarks(p: Props & { clip: TimelineClip; startUs: number; widthPx: nu
     <>
       <TrackBand {...p} />
       {p.jumpMarks && media?.telemetry.hasAccel && <JumpMarks clip={c} media={media} pps={p.pps} startUs={p.startUs} onSeek={p.onSeek} />}
-      {p.jumpMarks && media && <HighlightMarks clip={c} media={media} pps={p.pps} startUs={p.startUs} onSeek={p.onSeek} />}
+      {p.jumpMarks && media && media.hilights.length > 0 && <HilightMarks clip={c} media={media} pps={p.pps} startUs={p.startUs} onSeek={p.onSeek} />}
       {(p.speedLines || hasRamp(c)) && (
         <SpeedLine
           snapLocal={(l, e) => p.snap!.time(p.startUs + l, e, c.id, true) - p.startUs}
@@ -570,23 +570,21 @@ function JumpMarks({ clip: c, media, pps, startUs, onSeek }: { clip: TimelineCli
   );
 }
 
-/** Highlights other than jumps (those have their arcs): a star at each; click to go there. */
-function HighlightMarks({ clip: c, media, pps, startUs, onSeek }: { clip: TimelineClip; media: Media; pps: number; startUs: number; onSeek: (T: number) => void }) {
-  const list = clipHighlights(c, media).filter((h) => h.kind !== 'jump');
+/** HiLight tags in a clip: a star at each; click to go there. */
+function HilightMarks({ clip: c, media, pps, startUs, onSeek }: { clip: TimelineClip; media: Media; pps: number; startUs: number; onSeek: (T: number) => void }) {
   return (
     <>
-      {list.map((h) => {
-        const a = localAt(c, h.t);
-        const d = highlightDetail(h);
+      {clipTags(c, media).map((t, i) => {
+        const a = localAt(c, t);
         return (
           <button
-            key={h.t}
-            className={`clip-star ${h.kind}`}
+            key={t}
+            className="clip-star"
             style={{ left: (a / 1e6) * pps }}
-            title={`${KIND_NAME[h.kind]}${d ? `: ${d}` : ''} — click to go there`}
-            aria-label={KIND_NAME[h.kind]}
+            title={`HiLight ${i + 1} — click to go there`}
+            aria-label={`HiLight tag ${i + 1}`}
             onPointerDown={(e) => { e.stopPropagation(); onSeek(startUs + a); }}
-          ><Icon name="star" size={11} /></button>
+          ><Icon name="star" size={15} /></button>
         );
       })}
     </>

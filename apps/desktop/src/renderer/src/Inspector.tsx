@@ -31,7 +31,7 @@ import { Icon } from './ui/Icon';
 import { fmtJumpLength } from './gaugeMath';
 import { copyState, ESRGAN, onCopyChange, RIFE } from './aiCopy';
 import { ModelNeeded } from './AiDialogs';
-import { HighlightsSection, type HighlightPick } from './Highlights';
+import { HilightSection } from './Hilights';
 import { canUpscale, enhancedSize, enhanceOn, smoothFactor, type Enhance } from '@ace/project';
 
 export interface InspectorProps {
@@ -88,10 +88,6 @@ export interface InspectorProps {
   onJumpMarks: () => void;
   /** Adds markers (timeline times, notes). */
   onAddMarkers: (list: { t: number; note: string }[]) => void;
-  /** Adds clips at the end of the main row (a highlight reel). */
-  onAppendClips: (clips: TimelineClip[], what: string) => void;
-  /** A highlight reel from every clip on the main row. */
-  onReelAll: (pick: HighlightPick) => void;
   /** Moves the playhead to a moment of the selected clip (media time). */
   onSeekMedia: (mediaUs: number) => void;
   /** Play from timeline time T (to show an overlay's animation). */
@@ -753,12 +749,8 @@ function clipSections(p: InspectorProps & { clip: TimelineClip; look: Look }): R
         <label className="check"><input type="checkbox" checked={p.speedLines} onChange={p.onSpeedLines} /> Show speed lines on the timeline</label>
       </Section>
     ),
-    'Highlights': media ? (
-      <HighlightsSection
-        clip={clip} media={media} clipStartUs={clipStart} clipCount={p.clipCount} onSeekMedia={p.onSeekMedia} onMark={p.onAddMarkers}
-        onReel={p.layerTrack ? null : (pieces) => p.onAppendClips(pieces, `highlight${pieces.length === 1 ? '' : 's'} from ${media.name}`)}
-        onReelAll={p.layerTrack ? null : p.onReelAll} marks={p.jumpMarks} onMarks={p.onJumpMarks}
-      />
+    'HiLight tags': media ? (
+      <HilightSection clip={clip} media={media} clipStartUs={clipStart} onSeekMedia={p.onSeekMedia} onMark={p.onAddMarkers} marks={p.jumpMarks} onMarks={p.onJumpMarks} />
     ) : null,
     'Airtime': media?.telemetry.hasAccel ? (() => {
       const set = { ...DEFAULT_AIRTIME, ...clip.airtime };

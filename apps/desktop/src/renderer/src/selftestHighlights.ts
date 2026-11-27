@@ -1,9 +1,10 @@
-// Highlights: found on the real ride (jumps, top speed, hard hits), listed in the Clip panel,
-// marked on the timeline, and cut into a highlight reel. Runs hidden.
+// HiLight tags: read from the file, listed in Clip ▸ HiLight tags, shown on the timeline and in
+// Media, and turned into markers. None of the real rides have tags, so a copy of a short Max 2
+// clip gets two, written into its (empty) HMMT box: same size, nothing else in the file moves.
+// Runs hidden.
 
 import { addClip, emptyTimeline, newClip } from '@ace/project';
 import { ace } from './api';
-import { clipHighlights } from './Highlights';
 import { getMedia } from './media';
 import type { EditorApi } from './selftest';
 import { openSection } from './ui';
@@ -18,96 +19,68 @@ export async function highlightsCheck(api: EditorApi) {
   const fails: string[] = [];
   const ok = (n: string, pass: boolean, info: unknown = undefined) => { out[n] = pass ? `ok${info === undefined ? '' : ` ${JSON.stringify(info)}`}` : { FAILED: info ?? true }; if (!pass) fails.push(n); };
   const all = await ace.listFixtures();
-  const ridePath = all.find((f) => f.endsWith('max2/GS010004.360'));
-  if (!ridePath) return { fails: ['needs fixtures/max2/GS010004.360'], ...out };
+  const src = all.find((f) => f.endsWith('max2/GS010114.360'));
+  if (!src) return { fails: ['needs fixtures/max2/GS010114.360'], ...out };
 
-  // The real ride: 7.7 min with GPS and jumps.
-  const m = await getMedia(ridePath);
-  const t0 = performance.now();
-  const hs = m.telemetry.highlights(m.durationUs, m.hilights);
-  const ms = performance.now() - t0;
-  out.found = hs.map((h) => `${(h.t / S).toFixed(1)}s ${h.kind}${h.also.length ? `+${h.also.join('+')}` : ''} ${(h.fromUs / S).toFixed(1)}–${(h.toUs / S).toFixed(1)} score ${h.score.toFixed(2)}${h.speedMs !== undefined ? ` ${(h.speedMs * 3.6).toFixed(0)}km/h` : ''}${h.g !== undefined ? ` ${h.g}G` : ''}`);
-  ok('worked out quickly', ms < 500, Math.round(ms));
-  ok('the camera’s HiLight tags are read (this ride has none)', Array.isArray(m.hilights) && m.hilights.length === 0, m.hilights);
-  const jumps = m.telemetry.jumps();
-  const kinds = new Set(hs.flatMap((h) => [h.kind, ...h.also]));
-  ok('every jump is part of a highlight', jumps.every((j) => hs.some((h) => j.startUs >= h.fromUs && j.endUs <= h.toUs)), { jumps: jumps.length, highlights: hs.length });
-  ok('the top speed is one', kinds.has('speed'), [...kinds]);
-  const top = hs.filter((h) => h.speedMs !== undefined).reduce((a, h) => Math.max(a, h.speedMs!), 0);
-  ok('at about the ride’s top speed', top > 0 && Math.abs(top - m.telemetry.maxSpeed) < 0.5, { top, max: m.telemetry.maxSpeed });
-  ok('in time order, inside the file, none overlapping', hs.every((h, i) => h.fromUs >= 0 && h.toUs <= m.durationUs && h.fromUs <= h.t && h.t <= h.toUs && (!i || hs[i - 1]!.toUs <= h.fromUs)));
-  ok('one for each jump or moment, none of them long', hs.length >= jumps.length / 2 && hs.length <= jumps.length + 12 && hs.every((h) => h.toUs - h.fromUs <= 20 * S), { count: hs.length, longest: Math.max(...hs.map((h) => (h.toUs - h.fromUs) / S)) });
+  // Untagged files have none (every real ride, .360 and .MP4).
+  const untagged: Record<string, number[]> = {};
+  for (const f of all.filter((x) => /max2\/G[SX]\d+\.(360|MP4)$/i.test(x)).slice(0, 4)) untagged[f.split('/').pop()!] = (await getMedia(f)).hilights;
+  ok('files without tags have none', Object.values(untagged).every((t) => t.length === 0), untagged);
 
-  // A regular GoPro clip, for the record.
-  const regular = all.find((f) => f.endsWith('GX010133.MP4'));
-  if (regular) { const r = await getMedia(regular); out.regular = r.telemetry.highlights(r.durationUs, r.hilights).map((h) => `${(h.t / S).toFixed(1)}s ${h.kind}`); }
+  // A copy with two tags.
+  const orig = await getMedia(src);
+  const want = [Math.round(orig.durationUs * 0.25 / 1000) * 1000, Math.round(orig.durationUs * 0.7 / 1000) * 1000];
+  const bytes = new Uint8Array((await ace.readAll(src)) as Uint8Array);
+  let at = -1;
+  for (let i = bytes.length - 8; i > 0; i--) if (bytes[i] === 0x48 && bytes[i + 1] === 0x4d && bytes[i + 2] === 0x4d && bytes[i + 3] === 0x54) { at = i + 4; break; }
+  ok('the clip has an HMMT box to write into', at > 0);
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  dv.setUint32(at, 2); dv.setUint32(at + 4, want[0]! / 1000); dv.setUint32(at + 8, want[1]! / 1000);
+  const path = await ace.writeFile(`${await ace.selftestOut('hilight')}/GS010114.360`, bytes);
+  const m = await getMedia(path);
+  ok('reads the tags from the file', JSON.stringify(m.hilights) === JSON.stringify(want), { got: m.hilights, want });
 
-  // In the app: the Clip panel lists the highlights of the clip.
+  // In the app.
   await api.importPaths([m.path]);
-  const clip = { ...newClip(m.path, m.durationUs, true), inUs: 60 * S, outUs: 400 * S };
-  api.setTimeline(addClip(emptyTimeline(), clip));
-  api.player.seek(10 * S);
+  api.setTimeline(addClip(emptyTimeline(), newClip(m.path, m.durationUs, true)));
+  api.player.seek(0);
   await sleep(600);
+  ok('Media says how many tags', $$('.bin-item').some((e) => e.textContent?.includes('2 HiLights')), $$('.bin-item').map((e) => e.textContent));
+  ok('a star on the timeline at each', $$('.clip-star').length === 2, $$('.clip-star').length);
   document.querySelector<HTMLElement>('.dock-tab[data-panel="clip"]')?.click();
-  openSection('Highlights');
+  openSection('HiLight tags');
   await sleep(500);
-  const mine = clipHighlights(clip, m);
-  const rows = $$('[data-section="Highlights"] .hl-row');
-  ok('the Clip panel lists this clip’s highlights', mine.length > 0 && rows.length === mine.length, { rows: rows.length, want: mine.length });
-  ok('only the ones inside the clip', mine.every((h) => h.t >= clip.inUs && h.t < clip.outUs && h.fromUs >= clip.inUs && h.toUs <= clip.outUs));
-  document.querySelector('[data-section="Highlights"]')?.scrollIntoView({ block: 'start' });
+  const rows = $$('[data-section="HiLight tags"] .hl-row');
+  ok('Clip ▸ HiLight tags lists them', rows.length === 2, rows.map((r) => r.textContent));
+  document.querySelector('[data-section="HiLight tags"]')?.scrollIntoView({ block: 'start' });
   await sleep(200);
-  await ace.capture('highlights-section');
-
-  // Clicking one goes there.
-  rows[0]?.click();
+  await ace.capture('hilight-section');
+  rows[1]?.click();
   await sleep(200);
-  ok('clicking one goes to it', Math.abs(api.player.time - (mine[0]!.t - clip.inUs)) < 50_000, { at: api.player.time, want: mine[0]!.t - clip.inUs });
-
-  // Stars on the timeline for the ones that aren't jumps.
-  const stars = $$('.clip-star').length, wantStars = mine.filter((h) => h.kind !== 'jump').length;
-  ok('stars on the timeline (jumps keep their arcs)', stars === wantStars, { stars, wantStars });
-
-  // Mark them: a marker each, with a note; again adds nothing. (The choice of how many is kept
-  // between runs: start from All.)
-  $$<HTMLButtonElement>('[data-section="Highlights"] .seg button').find((b) => b.textContent === 'All')?.click();
+  ok('clicking one goes to it', Math.abs(api.player.time - want[1]!) < 50_000, { at: api.player.time, want: want[1] });
+  api.player.seek(0);
   await sleep(200);
-  button('Mark them')?.click();
+  $$<HTMLElement>('.clip-star')[0]?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  await sleep(200);
+  ok('clicking a star goes to it', Math.abs(api.player.time - want[0]!) < 50_000, { at: api.player.time, want: want[0] });
+
+  button('Add as markers')?.click();
   await sleep(300);
-  let tl = api.getTimeline();
-  ok('Mark them adds a marker at each', tl.markers.length === mine.length && tl.markers.every((mk, i) => Math.abs(mk.t - (mine[i]!.t - clip.inUs)) < 1000 && mk.note.length > 3), tl.markers.map((x) => `${(x.t / S).toFixed(1)} ${x.note}`));
-  button('Mark them')?.click();
+  const mk = api.getTimeline().markers;
+  ok('Add as markers puts a marker at each', mk.length === 2 && mk.every((x, i) => Math.abs(x.t - want[i]!) < 1000 && x.note === `HiLight ${i + 1}`), mk.map((x) => `${x.t} ${x.note}`));
+  button('Add as markers')?.click();
   await sleep(300);
-  ok('marking again doesn’t double them', api.getTimeline().markers.length === mine.length);
+  ok('adding again doesn’t double them', api.getTimeline().markers.length === 2);
 
-  // Best 3, then a reel: three pieces after the clip, each around its moment.
-  $$<HTMLButtonElement>('[data-section="Highlights"] .seg button').find((b) => b.textContent === 'Best 3')?.click();
-  await sleep(200);
-  button('Make a highlight reel')?.click();
-  await sleep(500);
-  tl = api.getTimeline();
-  const pieces = tl.clips.slice(1);
-  const best = [...mine].sort((a, b) => b.score - a.score).slice(0, 3).sort((a, b) => a.t - b.t);
-  ok('the reel is added after the clip, the best three in order', pieces.length === 3 && pieces.every((p, i) => p.mediaPath === m.path && p.inUs === Math.round(best[i]!.fromUs) && p.outUs === Math.round(best[i]!.toUs)), pieces.map((p) => [p.inUs / S, p.outUs / S]));
-  ok('the clip itself stays as it was', tl.clips[0]!.inUs === clip.inUs && tl.clips[0]!.outUs === clip.outUs);
-  ok('the playhead goes to the reel', api.player.time >= clip.outUs - clip.inUs - 1000, api.player.time);
-  ok('it says what was added', document.body.textContent?.includes('at the end of the timeline') ?? false);
+  // A clip trimmed to leave the second tag out lists one, and says one is elsewhere.
+  const half = Math.round((want[0]! + want[1]!) / 2);
+  api.setTimeline(addClip(emptyTimeline(), { ...newClip(m.path, m.durationUs, true), outUs: half }));
+  api.player.seek(0);
+  await sleep(600);
+  openSection('HiLight tags');
   await sleep(300);
-  await ace.capture('highlights-reel');
-
-  // A reel from every clip: the reel's own pieces have highlights too.
-  const before = tl.clips.length;
-  const want = tl.clips.reduce((a, c) => a + Math.min(3, clipHighlights(c, m).length), 0);
-  api.player.seek(10 * S);
-  await sleep(400);
-  openSection('Highlights');
-  await sleep(200);
-  button('Reel from every clip')?.click();
-  await sleep(500);
-  ok('Reel from every clip adds the best of each', api.getTimeline().clips.length === before + want, { added: api.getTimeline().clips.length - before, want });
-  api.run?.('undo');
-  await sleep(300);
-  ok('undo takes them away', api.getTimeline().clips.length === before);
+  const sect = document.querySelector('[data-section="HiLight tags"]')?.textContent ?? '';
+  ok('a trimmed clip lists only its own', $$('[data-section="HiLight tags"] .hl-row').length === 1 && sect.includes('1 more tag is in parts of the file'), sect.slice(0, 200));
 
   return { fails, ...out };
 }
